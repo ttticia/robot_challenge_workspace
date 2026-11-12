@@ -1,0 +1,139 @@
+{
+  "scope": "Local software validation only; robot installation/calibration and course-launch wiring still need checking",
+  "pure_and_ros_contract_tests_passed": 12,
+  "nav2": {
+    "mission-nav2-verification.json": {
+      "scope": "Real Nav2 planner/controller/action integration with a kinematic test base; not robot physics",
+      "mode": "waypoints",
+      "duration_sec": 17.959654494999995,
+      "armed": true,
+      "state": {
+        "state": "MISSION_COMPLETE",
+        "armed": false,
+        "execution_enabled": true,
+        "active_goal": null,
+        "pose": [
+          0.4578393917480466,
+          -0.006630846888804433,
+          0.13296524963336434
+        ],
+        "waypoint_index": 1,
+        "mode": "waypoints"
+      },
+      "final_pose": {
+        "xy": [
+          0.4578393917480466,
+          -0.006630846888804433
+        ],
+        "yaw": 0.1329652496333643,
+        "velocity": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "command_samples": 334,
+      "maximum_linear_command": 0.1,
+      "maximum_yaw_command": 0.25,
+      "displacement_m": 0.457887406211051,
+      "passed": true
+    },
+    "mission-nav2-exploration-verification.json": {
+      "scope": "Real Nav2 planner/controller/action integration with a kinematic test base; not robot physics",
+      "mode": "explore",
+      "duration_sec": 14.749359541000103,
+      "armed": true,
+      "state": {
+        "state": "NO_REACHABLE_FRONTIER",
+        "armed": false,
+        "execution_enabled": true,
+        "active_goal": null,
+        "pose": [
+          0.9023087627980096,
+          -0.00819894390819624,
+          0.14402087911477027
+        ],
+        "waypoint_index": 0,
+        "mode": "explore"
+      },
+      "final_pose": {
+        "xy": [
+          0.9023087627980096,
+          -0.00819894390819624
+        ],
+        "yaw": 0.1440208791147702,
+        "velocity": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "command_samples": 269,
+      "maximum_linear_command": 0.1,
+      "maximum_yaw_command": 0.25,
+      "displacement_m": 0.9023460124050444,
+      "passed": true
+    }
+  },
+  "robot_connected_or_modified": false,
+  "default_mode": "shadow, no robot commands",
+  "course_sources": "Only on robot; integrated through documented Nav2/Lab 6 interfaces",
+  "not_validated": [
+    "actual robot dynamics",
+    "real scene service/client",
+    "mannequin detector",
+    "stairs or curtain pushing",
+    "physical stopping distance",
+    "actual course launcher remaps"
+  ],
+  "team_integration": {
+    "base_commit": "d84078d202f920275f6dad1de7756fa60c9df7a7",
+    "branch": "feat/autonomous-navigation",
+    "original_files_preserved": 33,
+    "combined_tests": {
+      "passed": 34,
+      "skipped": 1,
+      "expected_failures": 1
+    },
+    "unchanged_team_scanner_pipeline_passed": true,
+    "team_scanner_files_modified": false,
+    "robot_connected_or_modified": false,
+    "github_remote_modified": false,
+    "waypoint_nav2": {
+      "scope": "Real Nav2 planner/controller/action integration with a kinematic test base; not robot physics",
+      "mode": "waypoints",
+      "duration_sec": 8.378529910999987,
+      "armed": true,
+      "state": {
+        "state": "MISSION_COMPLETE",
+        "armed": false,
+        "execution_enabled": true,
+        "active_goal": null,
+        "pose": [
+          0.4679764190763113,
+          -0.0003002530573494395,
+          0.1399158033084582
+        ],
+        "waypoint_index": 1,
+        "mode": "waypoints"
+      },
+      "final_pose": {
+        "xy": [
+          0.4679764190763113,
+          -0.0003002530573494395
+        ],
+        "yaw": 0.13991580330845815,
+        "velocity": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "command_samples": 141,
+      "maximum_linear_command": 0.1,
+      "maximum_yaw_command": 0.2277327829999649,
+      "displacement_m": 0.4679765153972855,
+      "passed": true
+    }
+  }
+}

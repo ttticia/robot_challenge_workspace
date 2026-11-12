@@ -1,0 +1,29 @@
+mission:
+  ros__parameters:
+    use_sim_time: true
+    execution_enabled: false
+    mode: waypoints
+    map_frame: odom
+    base_frame: base_link
+    imu_topic: /imu/data
+    waypoints: [0.5, 0.0, 0.0]
+    waypoint_frame: initial_base
+    require_velocity_gate: true
+velocity_gate:
+  ros__parameters:
+    drive_output_enabled: false
+    # Simulation policy has a dead zone below approximately 0.15 m/s input.
+    # Never copy these policy-specific limits into the robot profile blindly.
+    max_linear_m_s: 0.2
+    max_angular_rad_s: 0.3
+    acceleration_m_s2: 1.0
+    angular_acceleration_rad_s2: 1.0
+observations:
+  ros__parameters:
+    use_sim_time: true
+    map_frame: odom
+qr:
+  ros__parameters:
+    image_topic: /camera/image_raw
+    camera_info_topic: /camera/camera_info
+    qr_size_m: 0.0
