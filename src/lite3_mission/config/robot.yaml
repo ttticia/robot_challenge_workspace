@@ -1,0 +1,69 @@
+mission:
+  ros__parameters:
+    use_sim_time: false
+    execution_enabled: false
+    mode: waypoints
+    map_topic: /map
+    map_frame: map
+    base_frame: base_link
+    imu_topic: /imu/data
+    nav_action: /navigate_to_pose
+    require_imu: true
+    require_velocity_gate: true
+    require_nav2_active: true
+    nav2_lifecycle_node: /bt_navigator
+    pose_timeout_sec: 0.75
+    imu_timeout_sec: 0.5
+    maximum_tilt_deg: 12.0
+    goal_timeout_sec: 45.0
+    frontier_clearance_m: 0.25
+    frontier_standoff_m: 0.32
+    minimum_frontier_size_m: 0.12
+    blacklist_duration_sec: 30.0
+    maximum_consecutive_failures: 3
+    frontier_yaw_mode: keep_current
+    # First manually armed trial: 0.5 m relative to the initial body heading.
+    # These are development goals, not the competition maze route.
+    waypoints: [0.5, 0.0, 0.0]
+    waypoint_frame: initial_base
+    map_transient_local: true
+velocity_gate:
+  ros__parameters:
+    drive_output_enabled: false
+    input_topic: /mission/nav_cmd_vel
+    output_topic: /cmd_vel
+    max_linear_m_s: 0.1
+    max_angular_rad_s: 0.25
+    acceleration_m_s2: 0.2
+    angular_acceleration_rad_s2: 0.5
+    command_timeout_sec: 0.25
+    lease_timeout_sec: 0.3
+observations:
+  ros__parameters:
+    use_sim_time: false
+    map_frame: map
+    input_topic: /mission/observations
+    point_topic: /detections
+    point_kind: target
+    point_label: lab_detection
+    dedup_radius_m: 0.25
+    cell_grid_enabled: false
+    cell_size_m: 0.8
+    cell_origin_x: 0.0
+    cell_origin_y: 0.0
+    report_directory: ~/.ros/lite3_mission
+qr:
+  ros__parameters:
+    image_topic: /camera/color/image_raw
+    camera_info_topic: /camera/color/camera_info
+    max_decode_hz: 2.0
+    # Set the measured physical QR side length before enabling PnP localization.
+    qr_size_m: 0.0
+scene_client:
+  ros__parameters:
+    image_topic: /camera/color/image_raw
+    client_path: ''
+    server: http://192.168.10.141:8000
+    group: group04
+    minimum_interval_sec: 5.0
+    request_timeout_sec: 20.0
