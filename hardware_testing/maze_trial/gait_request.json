@@ -1,0 +1,7 @@
+{
+  "requested_gait": "H-Step",
+  "cmd_code": "0x21010407",
+  "bridge_acknowledged": true,
+  "gait_state_feedback": "not exposed; requires handset confirmation",
+  "translation_commanded": false
+}

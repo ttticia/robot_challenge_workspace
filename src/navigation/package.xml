@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>navigation</name>
+  <version>0.1.0</version>
+  <description>SLAM Toolbox + Nav2 mapping for the Lite3, with automatic map saving.</description>
+  <maintainer email="user@example.com">Group 4</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_velocity_smoother</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_regulated_pure_pursuit_controller</exec_depend>
+  <!-- Provides Fast-LIO odometry and /scan; built in ~/ros2_ws. -->
+  <exec_depend>lite3_launcher</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

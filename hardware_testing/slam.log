@@ -1,0 +1,43 @@
+[INFO] [launch]: All log files can be found below /home/user/.ros/log/2026-11-12-11-44-28-523373-group4-14592
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [map_saver_server-1]: process started with pid [14593]
+[INFO] [lifecycle_manager-2]: process started with pid [14595]
+[INFO] [async_slam_toolbox_node-3]: process started with pid [14597]
+[lifecycle_manager-2] [INFO] [1794483869.041556411] [lifecycle_manager_slam]: Creating
+[map_saver_server-1] [INFO] [1794483869.043407541] [map_saver]: 
+[map_saver_server-1] 	map_saver lifecycle node launched. 
+[map_saver_server-1] 	Waiting on external lifecycle transitions to activate
+[map_saver_server-1] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[map_saver_server-1] [INFO] [1794483869.043895216] [map_saver]: Creating
+[lifecycle_manager-2] [INFO] [1794483869.046895196] [lifecycle_manager_slam]: [34m[1mCreating and initializing lifecycle service clients[0m[0m
+[lifecycle_manager-2] [INFO] [1794483869.048856625] [lifecycle_manager_slam]: [34m[1mStarting managed nodes bringup...[0m[0m
+[lifecycle_manager-2] [INFO] [1794483869.048917636] [lifecycle_manager_slam]: [34m[1mConfiguring map_saver[0m[0m
+[map_saver_server-1] [INFO] [1794483869.049780083] [map_saver]: Configuring
+[lifecycle_manager-2] [INFO] [1794483869.051523739] [lifecycle_manager_slam]: [34m[1mActivating map_saver[0m[0m
+[map_saver_server-1] [INFO] [1794483869.051620560] [map_saver]: Activating
+[map_saver_server-1] [INFO] [1794483869.051645241] [map_saver]: Creating bond (map_saver) to lifecycle manager.
+[async_slam_toolbox_node-3] [INFO] [1794483869.082004883] [slam_toolbox]: Using solver plugin solver_plugins::CeresSolver
+[async_slam_toolbox_node-3] [WARN] [1794483869.096808044] [slam_toolbox]: minimum laser range setting (0.0 m) exceeds the capabilities of the used Lidar (0.4 m)
+[async_slam_toolbox_node-3] Registering sensor: [Custom Described Lidar]
+[lifecycle_manager-2] [INFO] [1794483869.155295448] [lifecycle_manager_slam]: Server map_saver connected with bond.
+[lifecycle_manager-2] [INFO] [1794483869.155358205] [lifecycle_manager_slam]: [34m[1mManaged nodes are active[0m[0m
+[lifecycle_manager-2] [INFO] [1794483869.155369708] [lifecycle_manager_slam]: [34m[1mCreating bond timer...[0m[0m
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[INFO] [async_slam_toolbox_node-3]: sending signal 'SIGINT' to process[async_slam_toolbox_node-3]
+[INFO] [lifecycle_manager-2]: sending signal 'SIGINT' to process[lifecycle_manager-2]
+[INFO] [map_saver_server-1]: sending signal 'SIGINT' to process[map_saver_server-1]
+[lifecycle_manager-2] [INFO] [1794484036.275819864] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[lifecycle_manager-2] [INFO] [1794484036.275947067] [lifecycle_manager_slam]: Running Nav2 LifecycleManager rcl preshutdown (lifecycle_manager_slam)
+[lifecycle_manager-2] [INFO] [1794484036.276011013] [lifecycle_manager_slam]: [34m[1mTerminating bond timer...[0m[0m
+[map_saver_server-1] [INFO] [1794484036.277395483] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[async_slam_toolbox_node-3] [INFO] [1794484036.277554706] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[map_saver_server-1] [INFO] [1794484036.278289315] [map_saver]: Running Nav2 LifecycleNode rcl preshutdown (map_saver)
+[map_saver_server-1] [INFO] [1794484036.278420255] [map_saver]: Deactivating
+[map_saver_server-1] [INFO] [1794484036.280052226] [map_saver]: Destroying bond (map_saver) to lifecycle manager.
+[map_saver_server-1] [INFO] [1794484036.292247292] [map_saver]: Cleaning up
+[map_saver_server-1] [INFO] [1794484036.292318741] [map_saver]: Destroying bond (map_saver) to lifecycle manager.
+[lifecycle_manager-2] [INFO] [1794484036.299922483] [lifecycle_manager_slam]: Destroying lifecycle_manager_slam
+[map_saver_server-1] [INFO] [1794484036.301493046] [map_saver]: Destroying
+[INFO] [async_slam_toolbox_node-3]: process has finished cleanly [pid 14597]
+[INFO] [lifecycle_manager-2]: process has finished cleanly [pid 14595]
+[INFO] [map_saver_server-1]: process has finished cleanly [pid 14593]

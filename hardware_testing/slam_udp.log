@@ -1,0 +1,44 @@
+[INFO] [launch]: All log files can be found below /home/user/.ros/log/2026-11-12-11-53-59-737111-group4-22160
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [map_saver_server-1]: process started with pid [22186]
+[INFO] [lifecycle_manager-2]: process started with pid [22188]
+[INFO] [async_slam_toolbox_node-3]: process started with pid [22190]
+[map_saver_server-1] [INFO] [1794484439.973331317] [map_saver]: 
+[map_saver_server-1] 	map_saver lifecycle node launched. 
+[map_saver_server-1] 	Waiting on external lifecycle transitions to activate
+[map_saver_server-1] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[map_saver_server-1] [INFO] [1794484439.974435994] [map_saver]: Creating
+[lifecycle_manager-2] [INFO] [1794484439.988727811] [lifecycle_manager_slam]: Creating
+[lifecycle_manager-2] [INFO] [1794484439.994013623] [lifecycle_manager_slam]: [34m[1mCreating and initializing lifecycle service clients[0m[0m
+[lifecycle_manager-2] [INFO] [1794484439.996747022] [lifecycle_manager_slam]: [34m[1mStarting managed nodes bringup...[0m[0m
+[lifecycle_manager-2] [INFO] [1794484439.996826083] [lifecycle_manager_slam]: [34m[1mConfiguring map_saver[0m[0m
+[async_slam_toolbox_node-3] [INFO] [1794484440.011787733] [slam_toolbox]: Using solver plugin solver_plugins::CeresSolver
+[map_saver_server-1] [INFO] [1794484440.102683628] [map_saver]: Configuring
+[lifecycle_manager-2] [INFO] [1794484440.127344637] [lifecycle_manager_slam]: [34m[1mActivating map_saver[0m[0m
+[map_saver_server-1] [INFO] [1794484440.127712074] [map_saver]: Activating
+[map_saver_server-1] [INFO] [1794484440.127764808] [map_saver]: Creating bond (map_saver) to lifecycle manager.
+[lifecycle_manager-2] [INFO] [1794484440.247712592] [lifecycle_manager_slam]: Server map_saver connected with bond.
+[lifecycle_manager-2] [INFO] [1794484440.247778113] [lifecycle_manager_slam]: [34m[1mManaged nodes are active[0m[0m
+[lifecycle_manager-2] [INFO] [1794484440.247792434] [lifecycle_manager_slam]: [34m[1mCreating bond timer...[0m[0m
+[async_slam_toolbox_node-3] [INFO] [1794484440.527812261] [slam_toolbox]: Message Filter dropping message: frame 'base_link' at time 1794484440.379 for reason 'discarding message because the queue is full'
+[async_slam_toolbox_node-3] [WARN] [1794484441.003708258] [slam_toolbox]: minimum laser range setting (0.0 m) exceeds the capabilities of the used Lidar (0.4 m)
+[async_slam_toolbox_node-3] Registering sensor: [Custom Described Lidar]
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[INFO] [async_slam_toolbox_node-3]: sending signal 'SIGINT' to process[async_slam_toolbox_node-3]
+[INFO] [lifecycle_manager-2]: sending signal 'SIGINT' to process[lifecycle_manager-2]
+[INFO] [map_saver_server-1]: sending signal 'SIGINT' to process[map_saver_server-1]
+[async_slam_toolbox_node-3] [INFO] [1794484708.277203767] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[lifecycle_manager-2] [INFO] [1794484708.277591582] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[lifecycle_manager-2] [INFO] [1794484708.277769768] [lifecycle_manager_slam]: Running Nav2 LifecycleManager rcl preshutdown (lifecycle_manager_slam)
+[lifecycle_manager-2] [INFO] [1794484708.277850769] [lifecycle_manager_slam]: [34m[1mTerminating bond timer...[0m[0m
+[map_saver_server-1] [INFO] [1794484708.278238088] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[map_saver_server-1] [INFO] [1794484708.278355864] [map_saver]: Running Nav2 LifecycleNode rcl preshutdown (map_saver)
+[map_saver_server-1] [INFO] [1794484708.278458604] [map_saver]: Deactivating
+[map_saver_server-1] [INFO] [1794484708.278477244] [map_saver]: Destroying bond (map_saver) to lifecycle manager.
+[map_saver_server-1] [INFO] [1794484708.288902254] [map_saver]: Cleaning up
+[map_saver_server-1] [INFO] [1794484708.288975473] [map_saver]: Destroying bond (map_saver) to lifecycle manager.
+[lifecycle_manager-2] [INFO] [1794484708.301408321] [lifecycle_manager_slam]: Destroying lifecycle_manager_slam
+[map_saver_server-1] [INFO] [1794484708.309523137] [map_saver]: Destroying
+[INFO] [lifecycle_manager-2]: process has finished cleanly [pid 22188]
+[INFO] [async_slam_toolbox_node-3]: process has finished cleanly [pid 22190]
+[INFO] [map_saver_server-1]: process has finished cleanly [pid 22186]

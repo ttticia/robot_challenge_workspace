@@ -1,0 +1,12 @@
+mission:
+  ros__parameters:
+    mode: waypoints
+    waypoint_frame: initial_base
+    waypoints: [0.15, 0.0, 0.0]
+    goal_timeout_sec: 15.0
+velocity_gate:
+  ros__parameters:
+    max_linear_m_s: 0.03
+    max_angular_rad_s: 0.10
+    acceleration_m_s2: 0.06
+    angular_acceleration_rad_s2: 0.20

@@ -1,0 +1,14 @@
+[INFO] [launch]: All log files can be found below /home/user/.ros/log/2026-11-12-11-53-59-747803-group4-22162
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [mission-1]: process started with pid [22163]
+[INFO] [velocity_gate-2]: process started with pid [22165]
+[INFO] [observations-3]: process started with pid [22167]
+[observations-3] [INFO] [1794484440.477841738] [observations]: Mission report: /home/user/.ros/lite3_mission/20261112-115400-c2b703.json
+[mission-1] [INFO] [1794484440.711059568] [mission]: Mission ready: SHADOW: no Nav2 goals sent
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[INFO] [observations-3]: sending signal 'SIGINT' to process[observations-3]
+[INFO] [velocity_gate-2]: sending signal 'SIGINT' to process[velocity_gate-2]
+[INFO] [mission-1]: sending signal 'SIGINT' to process[mission-1]
+[INFO] [velocity_gate-2]: process has finished cleanly [pid 22165]
+[INFO] [observations-3]: process has finished cleanly [pid 22167]
+[INFO] [mission-1]: process has finished cleanly [pid 22163]

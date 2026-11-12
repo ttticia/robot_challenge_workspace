@@ -1,0 +1,10 @@
+mission:
+  ros__parameters:
+    mode: explore
+    goal_timeout_sec: 45.0
+velocity_gate:
+  ros__parameters:
+    max_linear_m_s: 0.10
+    max_angular_rad_s: 0.25
+    acceleration_m_s2: 0.15
+    angular_acceleration_rad_s2: 0.40

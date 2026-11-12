@@ -1,0 +1,7 @@
+{
+  "reason": "Operator reports robot not standing steadily after gait request",
+  "stop_cmd": "0x21020C0E",
+  "bridge_acknowledged": true,
+  "disarm_response": "not received",
+  "nonzero_velocity_commanded": false
+}

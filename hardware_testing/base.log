@@ -1,0 +1,28 @@
+[INFO] [launch]: All log files can be found below /home/user/.ros/log/2026-11-12-11-43-49-476972-group4-13996
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [fastlio_mapping-1]: process started with pid [13997]
+[INFO] [odom_relay.py-2]: process started with pid [13999]
+[INFO] [pointcloud_to_laserscan_node-3]: process started with pid [14001]
+[fastlio_mapping-1] [INFO] [1794483829.671010319] [laser_mapping]: p_pre->lidar_type 1
+[fastlio_mapping-1] Multi thread started 
+[fastlio_mapping-1] ~~~~/home/user/ros2_ws/src/FAST_LIO/ file opened
+[fastlio_mapping-1] [INFO] [1794483829.680630610] [laser_mapping]: Node init finished.
+[fastlio_mapping-1] IMU Initial Done
+[fastlio_mapping-1] [WARN] [1794483829.789889112] [laser_mapping]: No point, skip this scan!
+[fastlio_mapping-1] 
+[fastlio_mapping-1] [INFO] [1794483829.892781286] [laser_mapping]: Initialize the map kdtree
+[odom_relay.py-2] [WARN] [1794483830.006334520] [odom_relay]: Dropping odometry, base_link -> livox_frame not known yet
+[odom_relay.py-2] [INFO] [1794483830.321714130] [odom_relay]: Got base_link -> livox_frame; relaying /fastlio/odometry -> /odom
+[pointcloud_to_laserscan_node-3] [INFO] [1794483843.348631914] [pointcloud_to_laserscan]: Got a subscriber to laserscan, starting pointcloud subscriber
+[pointcloud_to_laserscan_node-3] [INFO] [1794483853.458248984] [pointcloud_to_laserscan]: No subscribers to laserscan, shutting down pointcloud subscriber
+[pointcloud_to_laserscan_node-3] [INFO] [1794483869.072139605] [pointcloud_to_laserscan]: Got a subscriber to laserscan, starting pointcloud subscriber
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[INFO] [pointcloud_to_laserscan_node-3]: sending signal 'SIGINT' to process[pointcloud_to_laserscan_node-3]
+[INFO] [odom_relay.py-2]: sending signal 'SIGINT' to process[odom_relay.py-2]
+[INFO] [fastlio_mapping-1]: sending signal 'SIGINT' to process[fastlio_mapping-1]
+[pointcloud_to_laserscan_node-3] [INFO] [1794484036.273920291] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[fastlio_mapping-1] catch sig %d2
+[fastlio_mapping-1] Rebuild thread terminated normally
+[INFO] [fastlio_mapping-1]: process has finished cleanly [pid 13997]
+[INFO] [pointcloud_to_laserscan_node-3]: process has finished cleanly [pid 14001]
+[INFO] [odom_relay.py-2]: process has finished cleanly [pid 13999]

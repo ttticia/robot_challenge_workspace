@@ -1,0 +1,8 @@
+[INFO] [1794484493.937254407] [motion_sender]: init params
+[INFO] [1794484493.937434719] [motion_sender]: target_port:  43893 
+[INFO] [1794484493.937493309] [motion_sender]: target_ip:  192.168.1.120 
+[INFO] [1794484493.937503439] [motion_sender]: init socket
+[INFO] [1794484493.937528224] [motion_sender]: init sub
+[INFO] [1794484493.940838356] [motion_sender]: ##### MotionSender initialized! #####
+[INFO] [1794484524.924820207] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[INFO] [1794484524.926889048] [motion_sender]: ~MotionSender()

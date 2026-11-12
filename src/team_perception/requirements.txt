@@ -4,3 +4,6 @@
 # The scanner still works without it (falls back to pyzbar), but is slower and misses
 # tilted codes.
 zxing-cpp==2.3.0
+
+# CPU people inference; install without replacing the ROS-provided NumPy.
+onnxruntime==1.20.1

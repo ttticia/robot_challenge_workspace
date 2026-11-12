@@ -1,0 +1,409 @@
+[INFO] [launch]: All log files can be found below /home/user/.ros/log/2026-11-12-11-53-59-771956-group4-22161
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [controller_server-1]: process started with pid [22231]
+[INFO] [smoother_server-2]: process started with pid [22233]
+[INFO] [planner_server-3]: process started with pid [22235]
+[INFO] [behavior_server-4]: process started with pid [22238]
+[INFO] [bt_navigator-5]: process started with pid [22240]
+[INFO] [waypoint_follower-6]: process started with pid [22243]
+[INFO] [velocity_smoother-7]: process started with pid [22245]
+[INFO] [lifecycle_manager-8]: process started with pid [22247]
+[waypoint_follower-6] [INFO] [1794484440.063795925] [waypoint_follower]: 
+[waypoint_follower-6] 	waypoint_follower lifecycle node launched. 
+[waypoint_follower-6] 	Waiting on external lifecycle transitions to activate
+[waypoint_follower-6] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[waypoint_follower-6] [INFO] [1794484440.066248246] [waypoint_follower]: Creating
+[lifecycle_manager-8] [INFO] [1794484440.105323509] [lifecycle_manager_navigation]: Creating
+[planner_server-3] [INFO] [1794484440.106988060] [planner_server]: 
+[planner_server-3] 	planner_server lifecycle node launched. 
+[planner_server-3] 	Waiting on external lifecycle transitions to activate
+[planner_server-3] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[planner_server-3] [INFO] [1794484440.108865099] [planner_server]: Creating
+[behavior_server-4] [INFO] [1794484440.115749234] [behavior_server]: 
+[behavior_server-4] 	behavior_server lifecycle node launched. 
+[behavior_server-4] 	Waiting on external lifecycle transitions to activate
+[behavior_server-4] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[lifecycle_manager-8] [INFO] [1794484440.124477134] [lifecycle_manager_navigation]: [34m[1mCreating and initializing lifecycle service clients[0m[0m
+[bt_navigator-5] [INFO] [1794484440.125632912] [bt_navigator]: 
+[bt_navigator-5] 	bt_navigator lifecycle node launched. 
+[bt_navigator-5] 	Waiting on external lifecycle transitions to activate
+[bt_navigator-5] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[bt_navigator-5] [INFO] [1794484440.125935774] [bt_navigator]: Creating
+[smoother_server-2] [INFO] [1794484440.133648356] [smoother_server]: 
+[smoother_server-2] 	smoother_server lifecycle node launched. 
+[smoother_server-2] 	Waiting on external lifecycle transitions to activate
+[smoother_server-2] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[smoother_server-2] [INFO] [1794484440.136103191] [smoother_server]: Creating smoother server
+[controller_server-1] [INFO] [1794484440.142133702] [controller_server]: 
+[controller_server-1] 	controller_server lifecycle node launched. 
+[controller_server-1] 	Waiting on external lifecycle transitions to activate
+[controller_server-1] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[velocity_smoother-7] [INFO] [1794484440.142562824] [velocity_smoother]: 
+[velocity_smoother-7] 	velocity_smoother lifecycle node launched. 
+[velocity_smoother-7] 	Waiting on external lifecycle transitions to activate
+[velocity_smoother-7] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[controller_server-1] [INFO] [1794484440.151980111] [controller_server]: Creating controller server
+[planner_server-3] [INFO] [1794484440.179156547] [global_costmap.global_costmap]: 
+[planner_server-3] 	global_costmap lifecycle node launched. 
+[planner_server-3] 	Waiting on external lifecycle transitions to activate
+[planner_server-3] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[planner_server-3] [INFO] [1794484440.180329649] [global_costmap.global_costmap]: Creating Costmap
+[controller_server-1] [INFO] [1794484440.208241394] [local_costmap.local_costmap]: 
+[controller_server-1] 	local_costmap lifecycle node launched. 
+[controller_server-1] 	Waiting on external lifecycle transitions to activate
+[controller_server-1] 	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[controller_server-1] [INFO] [1794484440.209179619] [local_costmap.local_costmap]: Creating Costmap
+[lifecycle_manager-8] [INFO] [1794484440.300055118] [lifecycle_manager_navigation]: [34m[1mStarting managed nodes bringup...[0m[0m
+[lifecycle_manager-8] [INFO] [1794484440.300139553] [lifecycle_manager_navigation]: [34m[1mConfiguring controller_server[0m[0m
+[controller_server-1] [INFO] [1794484440.301722186] [controller_server]: Configuring controller interface
+[controller_server-1] [INFO] [1794484440.302542160] [controller_server]: getting goal checker plugins..
+[controller_server-1] [INFO] [1794484440.303677690] [controller_server]: Controller frequency set to 20.0000Hz
+[controller_server-1] [INFO] [1794484440.303808039] [local_costmap.local_costmap]: Configuring
+[controller_server-1] [INFO] [1794484440.314808450] [local_costmap.local_costmap]: Using plugin "obstacle_layer"
+[controller_server-1] [INFO] [1794484440.318914136] [local_costmap.local_costmap]: Subscribed to Topics: scan
+[controller_server-1] [INFO] [1794484440.326135944] [local_costmap.local_costmap]: Initialized plugin "obstacle_layer"
+[controller_server-1] [INFO] [1794484440.326195665] [local_costmap.local_costmap]: Using plugin "voxel_layer"
+[controller_server-1] [INFO] [1794484440.329545436] [local_costmap.local_costmap]: Subscribed to Topics: scan
+[controller_server-1] [INFO] [1794484440.341455683] [local_costmap.local_costmap]: Initialized plugin "voxel_layer"
+[controller_server-1] [INFO] [1794484440.341502122] [local_costmap.local_costmap]: Using plugin "inflation_layer"
+[controller_server-1] [INFO] [1794484440.342525437] [local_costmap.local_costmap]: Initialized plugin "inflation_layer"
+[controller_server-1] [INFO] [1794484440.374644565] [controller_server]: Created progress_checker : progress_checker of type nav2_controller::SimpleProgressChecker
+[controller_server-1] [INFO] [1794484440.379130920] [controller_server]: Created goal checker : goal_checker of type nav2_controller::SimpleGoalChecker
+[controller_server-1] [INFO] [1794484440.383149968] [controller_server]: Controller Server has goal_checker  goal checkers available.
+[controller_server-1] [INFO] [1794484440.384510834] [controller_server]: Created controller : FollowPath of type nav2_mppi_controller::MPPIController
+[controller_server-1] [INFO] [1794484440.391068854] [controller_server]: Controller period is equal to model dt. Control sequence shifting is ON
+[controller_server-1] [INFO] [1794484440.392890682] [controller_server]: ConstraintCritic instantiated with 1 power and 4.000000 weight.
+[controller_server-1] [INFO] [1794484440.392974983] [controller_server]: Critic loaded : mppi::critics::ConstraintCritic
+[controller_server-1] [INFO] [1794484440.397710145] [controller_server]: InflationCostCritic instantiated with 1 power and 300.000000 / 0.015000 weights. Critic will collision check based on footprint cost.
+[controller_server-1] [INFO] [1794484440.399079945] [controller_server]: Critic loaded : mppi::critics::CostCritic
+[controller_server-1] [INFO] [1794484440.400526114] [controller_server]: GoalCritic instantiated with 1 power and 5.000000 weight.
+[controller_server-1] [INFO] [1794484440.400601439] [controller_server]: Critic loaded : mppi::critics::GoalCritic
+[controller_server-1] [INFO] [1794484440.404958538] [controller_server]: GoalAngleCritic instantiated with 1 power, 3.000000 weight, and 0.500000 angular threshold.
+[controller_server-1] [INFO] [1794484440.405023020] [controller_server]: Critic loaded : mppi::critics::GoalAngleCritic
+[controller_server-1] [INFO] [1794484440.409550939] [controller_server]: ReferenceTrajectoryCritic instantiated with 1 power and 14.000000 weight
+[controller_server-1] [INFO] [1794484440.409648145] [controller_server]: Critic loaded : mppi::critics::PathAlignCritic
+[controller_server-1] [INFO] [1794484440.413449685] [controller_server]: Critic loaded : mppi::critics::PathFollowCritic
+[controller_server-1] [INFO] [1794484440.421131629] [controller_server]: PathAngleCritic instantiated with 1 power and 2.000000 weight. Reversing not allowed.
+[controller_server-1] [INFO] [1794484440.421216213] [controller_server]: Critic loaded : mppi::critics::PathAngleCritic
+[controller_server-1] [INFO] [1794484440.421621289] [controller_server]: PreferForwardCritic instantiated with 1 power and 5.000000 weight.
+[controller_server-1] [INFO] [1794484440.421641806] [controller_server]: Critic loaded : mppi::critics::PreferForwardCritic
+[controller_server-1] [INFO] [1794484440.427046766] [controller_server]: Optimizer reset
+[controller_server-1] [INFO] [1794484440.438446182] [MPPIController]: Configured MPPI Controller: FollowPath
+[controller_server-1] [INFO] [1794484440.439470644] [controller_server]: Controller Server has FollowPath  controllers available.
+[lifecycle_manager-8] [INFO] [1794484440.459992188] [lifecycle_manager_navigation]: [34m[1mConfiguring smoother_server[0m[0m
+[smoother_server-2] [INFO] [1794484440.460350212] [smoother_server]: Configuring smoother server
+[smoother_server-2] [INFO] [1794484440.480486761] [smoother_server]: Created smoother : simple_smoother of type nav2_smoother::SimpleSmoother
+[smoother_server-2] [INFO] [1794484440.481647767] [smoother_server]: Smoother Server has simple_smoother  smoothers available.
+[lifecycle_manager-8] [INFO] [1794484440.491752370] [lifecycle_manager_navigation]: [34m[1mConfiguring planner_server[0m[0m
+[planner_server-3] [INFO] [1794484440.492317068] [planner_server]: Configuring
+[planner_server-3] [INFO] [1794484440.492424598] [global_costmap.global_costmap]: Configuring
+[planner_server-3] [INFO] [1794484440.503763575] [global_costmap.global_costmap]: Using plugin "static_layer"
+[planner_server-3] [INFO] [1794484440.506754754] [global_costmap.global_costmap]: Subscribing to the map topic (/map) with transient local durability
+[planner_server-3] [INFO] [1794484440.509624513] [global_costmap.global_costmap]: Initialized plugin "static_layer"
+[planner_server-3] [INFO] [1794484440.509687385] [global_costmap.global_costmap]: Using plugin "obstacle_layer"
+[planner_server-3] [INFO] [1794484440.510237735] [global_costmap.global_costmap]: Subscribed to Topics: scan
+[planner_server-3] [INFO] [1794484440.513927210] [global_costmap.global_costmap]: Initialized plugin "obstacle_layer"
+[planner_server-3] [INFO] [1794484440.513979493] [global_costmap.global_costmap]: Using plugin "voxel_layer"
+[planner_server-3] [INFO] [1794484440.514688930] [global_costmap.global_costmap]: Subscribed to Topics: scan
+[planner_server-3] [INFO] [1794484440.531399971] [global_costmap.global_costmap]: Initialized plugin "voxel_layer"
+[planner_server-3] [INFO] [1794484440.531444748] [global_costmap.global_costmap]: Using plugin "inflation_layer"
+[planner_server-3] [INFO] [1794484440.534685950] [global_costmap.global_costmap]: Initialized plugin "inflation_layer"
+[planner_server-3] [INFO] [1794484440.549268194] [planner_server]: Created global planner plugin GridBased of type nav2_navfn_planner/NavfnPlanner
+[planner_server-3] [INFO] [1794484440.549345332] [planner_server]: Configuring plugin GridBased of type NavfnPlanner
+[planner_server-3] [INFO] [1794484440.549939318] [planner_server]: Planner Server has GridBased  planners available.
+[lifecycle_manager-8] [INFO] [1794484440.567382400] [lifecycle_manager_navigation]: [34m[1mConfiguring behavior_server[0m[0m
+[behavior_server-4] [INFO] [1794484440.567639424] [behavior_server]: Configuring
+[behavior_server-4] [INFO] [1794484440.577487972] [behavior_server]: Creating behavior plugin spin of type nav2_behaviors/Spin
+[behavior_server-4] [INFO] [1794484440.578934973] [behavior_server]: Configuring spin
+[behavior_server-4] [INFO] [1794484440.585056665] [behavior_server]: Creating behavior plugin backup of type nav2_behaviors/BackUp
+[behavior_server-4] [INFO] [1794484440.587755313] [behavior_server]: Configuring backup
+[behavior_server-4] [INFO] [1794484440.596858172] [behavior_server]: Creating behavior plugin drive_on_heading of type nav2_behaviors/DriveOnHeading
+[behavior_server-4] [INFO] [1794484440.598954331] [behavior_server]: Configuring drive_on_heading
+[behavior_server-4] [INFO] [1794484440.603852086] [behavior_server]: Creating behavior plugin wait of type nav2_behaviors/Wait
+[behavior_server-4] [INFO] [1794484440.607361509] [behavior_server]: Configuring wait
+[lifecycle_manager-8] [INFO] [1794484440.618512584] [lifecycle_manager_navigation]: [34m[1mConfiguring bt_navigator[0m[0m
+[bt_navigator-5] [INFO] [1794484440.619877372] [bt_navigator]: Configuring
+[lifecycle_manager-8] [INFO] [1794484440.762012027] [lifecycle_manager_navigation]: [34m[1mConfiguring waypoint_follower[0m[0m
+[waypoint_follower-6] [INFO] [1794484440.762235120] [waypoint_follower]: Configuring
+[waypoint_follower-6] [INFO] [1794484440.772387824] [waypoint_follower]: Created waypoint_task_executor : wait_at_waypoint of type nav2_waypoint_follower::WaitAtWaypoint
+[lifecycle_manager-8] [INFO] [1794484440.773167150] [lifecycle_manager_navigation]: [34m[1mConfiguring velocity_smoother[0m[0m
+[velocity_smoother-7] [INFO] [1794484440.773361889] [velocity_smoother]: Configuring velocity smoother
+[lifecycle_manager-8] [INFO] [1794484440.776619590] [lifecycle_manager_navigation]: [34m[1mActivating controller_server[0m[0m
+[controller_server-1] [INFO] [1794484440.776725855] [controller_server]: Activating
+[controller_server-1] [INFO] [1794484440.776752600] [local_costmap.local_costmap]: Activating
+[controller_server-1] [INFO] [1794484440.776759792] [local_costmap.local_costmap]: Checking transform
+[controller_server-1] [INFO] [1794484440.776776858] [local_costmap.local_costmap]: Timed out waiting for transform from base_link to odom to become available, tf error: Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist
+[controller_server-1] [INFO] [1794484441.276937521] [local_costmap.local_costmap]: start
+[controller_server-1] [WARN] [1794484441.478698950] [controller_server]: Parameter controller_server.verbose not found
+[controller_server-1] [INFO] [1794484441.479754045] [controller_server]: Optimizer reset
+[controller_server-1] [INFO] [1794484441.480037602] [MPPIController]: Activated MPPI Controller: FollowPath
+[controller_server-1] [INFO] [1794484441.480067713] [controller_server]: Creating bond (controller_server) to lifecycle manager.
+[lifecycle_manager-8] [INFO] [1794484441.584613092] [lifecycle_manager_navigation]: Server controller_server connected with bond.
+[lifecycle_manager-8] [INFO] [1794484441.584694608] [lifecycle_manager_navigation]: [34m[1mActivating smoother_server[0m[0m
+[smoother_server-2] [INFO] [1794484441.585122449] [smoother_server]: Activating
+[smoother_server-2] [INFO] [1794484441.585167794] [smoother_server]: Creating bond (smoother_server) to lifecycle manager.
+[lifecycle_manager-8] [INFO] [1794484441.691031367] [lifecycle_manager_navigation]: Server smoother_server connected with bond.
+[lifecycle_manager-8] [INFO] [1794484441.691131424] [lifecycle_manager_navigation]: [34m[1mActivating planner_server[0m[0m
+[planner_server-3] [INFO] [1794484441.691633652] [planner_server]: Activating
+[planner_server-3] [INFO] [1794484441.691707598] [global_costmap.global_costmap]: Activating
+[planner_server-3] [INFO] [1794484441.691724640] [global_costmap.global_costmap]: Checking transform
+[planner_server-3] [INFO] [1794484441.691944068] [global_costmap.global_costmap]: start
+[planner_server-3] [INFO] [1794484442.041605195] [global_costmap.global_costmap]: StaticLayer: Resizing costmap to 107 X 220 at 0.050000 m/pix
+[planner_server-3] [INFO] [1794484442.694801096] [planner_server]: Activating plugin GridBased of type NavfnPlanner
+[planner_server-3] [INFO] [1794484442.696024794] [planner_server]: Creating bond (planner_server) to lifecycle manager.
+[lifecycle_manager-8] [INFO] [1794484442.799204948] [lifecycle_manager_navigation]: Server planner_server connected with bond.
+[lifecycle_manager-8] [INFO] [1794484442.799261992] [lifecycle_manager_navigation]: [34m[1mActivating behavior_server[0m[0m
+[behavior_server-4] [INFO] [1794484442.799548424] [behavior_server]: Activating
+[behavior_server-4] [INFO] [1794484442.799585313] [behavior_server]: Activating spin
+[behavior_server-4] [INFO] [1794484442.799601446] [behavior_server]: Activating backup
+[behavior_server-4] [INFO] [1794484442.799613204] [behavior_server]: Activating drive_on_heading
+[behavior_server-4] [INFO] [1794484442.799623705] [behavior_server]: Activating wait
+[behavior_server-4] [INFO] [1794484442.799640327] [behavior_server]: Creating bond (behavior_server) to lifecycle manager.
+[lifecycle_manager-8] [INFO] [1794484442.905756021] [lifecycle_manager_navigation]: Server behavior_server connected with bond.
+[lifecycle_manager-8] [INFO] [1794484442.905793559] [lifecycle_manager_navigation]: [34m[1mActivating bt_navigator[0m[0m
+[bt_navigator-5] [INFO] [1794484442.906069046] [bt_navigator]: Activating
+[bt_navigator-5] [INFO] [1794484442.949381770] [bt_navigator]: Creating bond (bt_navigator) to lifecycle manager.
+[lifecycle_manager-8] [INFO] [1794484443.054596397] [lifecycle_manager_navigation]: Server bt_navigator connected with bond.
+[lifecycle_manager-8] [INFO] [1794484443.054641122] [lifecycle_manager_navigation]: [34m[1mActivating waypoint_follower[0m[0m
+[waypoint_follower-6] [INFO] [1794484443.055060090] [waypoint_follower]: Activating
+[waypoint_follower-6] [INFO] [1794484443.055107973] [waypoint_follower]: Creating bond (waypoint_follower) to lifecycle manager.
+[lifecycle_manager-8] [INFO] [1794484443.162464086] [lifecycle_manager_navigation]: Server waypoint_follower connected with bond.
+[lifecycle_manager-8] [INFO] [1794484443.162508048] [lifecycle_manager_navigation]: [34m[1mActivating velocity_smoother[0m[0m
+[velocity_smoother-7] [INFO] [1794484443.162883389] [velocity_smoother]: Activating
+[velocity_smoother-7] [INFO] [1794484443.162935266] [velocity_smoother]: Creating bond (velocity_smoother) to lifecycle manager.
+[lifecycle_manager-8] [INFO] [1794484443.266526201] [lifecycle_manager_navigation]: Server velocity_smoother connected with bond.
+[lifecycle_manager-8] [INFO] [1794484443.266560489] [lifecycle_manager_navigation]: [34m[1mManaged nodes are active[0m[0m
+[lifecycle_manager-8] [INFO] [1794484443.266566620] [lifecycle_manager_navigation]: [34m[1mCreating bond timer...[0m[0m
+[planner_server-3] [WARN] [1794484443.692189440] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.03 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484456.692129837] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484461.692134739] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484466.692161058] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484467.692163534] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484468.692229941] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484469.692155603] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484475.692113948] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484478.692117628] [global_costmap.global_costmap]: Sensor origin at (-0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484483.692104971] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484485.692142588] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484486.692261761] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.03 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484487.692266638] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.03 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484488.692157404] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484495.692105191] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484503.692107999] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484522.692384987] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484523.692192726] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484524.692331224] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484526.692221431] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484527.692212846] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484528.692290641] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484537.692093050] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.03 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484546.692166823] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484547.692218696] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484549.692091988] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484553.692091840] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484559.692187211] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484561.692121870] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484562.692190790] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484563.692107943] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484564.692148041] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484565.692104100] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484566.692219920] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484568.692152788] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484570.692137627] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484574.692127604] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484575.692096444] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484576.692211216] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484578.692116912] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484579.692134562] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484581.692184869] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484584.692153177] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484585.692105746] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484586.692130957] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484587.692141587] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484588.692145034] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484590.692122779] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484594.692214418] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[controller_server-1] [WARN] [1794484595.077072671] [local_costmap.local_costmap]: Sensor origin at (0.00, -0.04 -0.02) is out of map bounds (-1.45, -1.50, 0.00) to (1.52, 1.48, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484595.692102133] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484596.692206497] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484597.692097982] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484598.692292374] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484599.692143166] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484600.692279716] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484601.692100486] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484602.692153361] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484605.692083634] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484606.692186566] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484608.692177447] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484609.692131493] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484616.692187565] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484617.692086885] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484618.692120256] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484619.692072314] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484622.692129254] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484623.692084751] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484624.692182800] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484625.692103036] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484626.692139183] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.06 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484627.692094527] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484628.692158215] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484629.692120643] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484630.692116269] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484631.692115804] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484632.692122021] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484633.692088772] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484634.692212795] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484635.692092274] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484636.692237377] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484637.692178049] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484638.692239710] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484639.692208779] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484640.692261248] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484641.692165662] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484642.692192981] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484643.692184265] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484646.692126606] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.06 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484647.692084320] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484648.692151140] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484649.692113879] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484650.692120562] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484651.692113458] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.06 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484652.692144178] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484653.692177033] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484654.692112659] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484655.692119913] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484656.692236270] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484657.692099551] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484658.692167559] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484659.692125739] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484660.692153056] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.06 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484661.692103099] [global_costmap.global_costmap]: Sensor origin at (-0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484662.692158199] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484663.692122166] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484664.692218497] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484665.692134230] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484666.692186193] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484667.692184448] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484668.692140420] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484669.692169328] [global_costmap.global_costmap]: Sensor origin at (-0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484670.692136389] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484671.692134273] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484672.692156786] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484673.692148940] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484674.692127120] [global_costmap.global_costmap]: Sensor origin at (0.01, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484675.692104118] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484676.692165588] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.06 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484677.692103465] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484678.692142094] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484679.692080932] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484680.692120511] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.06 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484681.692102455] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484682.692137895] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484683.692092052] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484684.692112111] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484685.692092689] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484686.692148459] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484687.692082519] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.06 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484688.692108697] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.06 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484689.692092220] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484690.692142966] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484691.692182591] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484692.692188398] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.04 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484693.692197017] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.06 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484694.692169199] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.06 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484695.692188943] [global_costmap.global_costmap]: Sensor origin at (-0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484696.692233856] [global_costmap.global_costmap]: Sensor origin at (-0.01, -0.06 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484697.692167212] [global_costmap.global_costmap]: Sensor origin at (-0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484698.692226049] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.06 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484699.692112122] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484700.692286006] [global_costmap.global_costmap]: Sensor origin at (-0.01, -0.06 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484701.692146516] [global_costmap.global_costmap]: Sensor origin at (-0.01, -0.06 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484702.692206330] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484703.692087076] [global_costmap.global_costmap]: Sensor origin at (-0.01, -0.05 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484704.692108473] [global_costmap.global_costmap]: Sensor origin at (0.00, -0.05 -0.01) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484705.692094636] [global_costmap.global_costmap]: Sensor origin at (-0.01, -0.06 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484706.692113563] [global_costmap.global_costmap]: Sensor origin at (-0.01, -0.06 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[planner_server-3] [WARN] [1794484707.692088212] [global_costmap.global_costmap]: Sensor origin at (-0.00, -0.06 -0.00) is out of map bounds (-1.48, -8.81, 0.00) to (3.85, 2.16, 0.78). The costmap cannot raytrace for it.
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[INFO] [lifecycle_manager-8]: sending signal 'SIGINT' to process[lifecycle_manager-8]
+[INFO] [velocity_smoother-7]: sending signal 'SIGINT' to process[velocity_smoother-7]
+[INFO] [waypoint_follower-6]: sending signal 'SIGINT' to process[waypoint_follower-6]
+[INFO] [bt_navigator-5]: sending signal 'SIGINT' to process[bt_navigator-5]
+[INFO] [behavior_server-4]: sending signal 'SIGINT' to process[behavior_server-4]
+[INFO] [planner_server-3]: sending signal 'SIGINT' to process[planner_server-3]
+[INFO] [smoother_server-2]: sending signal 'SIGINT' to process[smoother_server-2]
+[INFO] [controller_server-1]: sending signal 'SIGINT' to process[controller_server-1]
+[lifecycle_manager-8] [INFO] [1794484708.279403962] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[lifecycle_manager-8] [INFO] [1794484708.279600604] [lifecycle_manager_navigation]: Running Nav2 LifecycleManager rcl preshutdown (lifecycle_manager_navigation)
+[lifecycle_manager-8] [INFO] [1794484708.279666043] [lifecycle_manager_navigation]: [34m[1mTerminating bond timer...[0m[0m
+[velocity_smoother-7] [INFO] [1794484708.281033851] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[velocity_smoother-7] [INFO] [1794484708.281184075] [velocity_smoother]: Running Nav2 LifecycleNode rcl preshutdown (velocity_smoother)
+[velocity_smoother-7] [INFO] [1794484708.281267181] [velocity_smoother]: Deactivating
+[velocity_smoother-7] [INFO] [1794484708.281292437] [velocity_smoother]: Destroying bond (velocity_smoother) to lifecycle manager.
+[waypoint_follower-6] [INFO] [1794484708.284001794] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[waypoint_follower-6] [INFO] [1794484708.284171662] [waypoint_follower]: Running Nav2 LifecycleNode rcl preshutdown (waypoint_follower)
+[waypoint_follower-6] [INFO] [1794484708.284282788] [waypoint_follower]: Deactivating
+[waypoint_follower-6] [INFO] [1794484708.284303300] [waypoint_follower]: Destroying bond (waypoint_follower) to lifecycle manager.
+[bt_navigator-5] [INFO] [1794484708.286605142] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[bt_navigator-5] [INFO] [1794484708.286727934] [bt_navigator]: Running Nav2 LifecycleNode rcl preshutdown (bt_navigator)
+[bt_navigator-5] [INFO] [1794484708.286810215] [bt_navigator]: Deactivating
+[bt_navigator-5] [INFO] [1794484708.286832011] [bt_navigator]: Destroying bond (bt_navigator) to lifecycle manager.
+[behavior_server-4] [INFO] [1794484708.288119633] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[behavior_server-4] [INFO] [1794484708.288307467] [behavior_server]: Running Nav2 LifecycleNode rcl preshutdown (behavior_server)
+[behavior_server-4] [INFO] [1794484708.288400325] [behavior_server]: Deactivating
+[behavior_server-4] [INFO] [1794484708.288434317] [behavior_server]: Destroying bond (behavior_server) to lifecycle manager.
+[planner_server-3] [INFO] [1794484708.289815824] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[planner_server-3] [INFO] [1794484708.289961314] [planner_server]: Running Nav2 LifecycleNode rcl preshutdown (planner_server)
+[planner_server-3] [INFO] [1794484708.290055252] [planner_server]: Deactivating
+[planner_server-3] [INFO] [1794484708.290104946] [global_costmap.global_costmap]: Deactivating
+[velocity_smoother-7] [INFO] [1794484708.291708265] [velocity_smoother]: Cleaning up
+[controller_server-1] [INFO] [1794484708.293299454] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[controller_server-1] [INFO] [1794484708.293403808] [controller_server]: Running Nav2 LifecycleNode rcl preshutdown (controller_server)
+[controller_server-1] [INFO] [1794484708.293487052] [controller_server]: Deactivating
+[controller_server-1] [INFO] [1794484708.293516643] [MPPIController]: Deactivated MPPI Controller: FollowPath
+[controller_server-1] [INFO] [1794484708.293534043] [local_costmap.local_costmap]: Deactivating
+[velocity_smoother-7] [INFO] [1794484708.291805687] [velocity_smoother]: Destroying bond (velocity_smoother) to lifecycle manager.
+[smoother_server-2] [INFO] [1794484708.293500601] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[smoother_server-2] [INFO] [1794484708.293564834] [smoother_server]: Running Nav2 LifecycleNode rcl preshutdown (smoother_server)
+[smoother_server-2] [INFO] [1794484708.293630056] [smoother_server]: Deactivating
+[smoother_server-2] [INFO] [1794484708.293648748] [smoother_server]: Destroying bond (smoother_server) to lifecycle manager.
+[waypoint_follower-6] [INFO] [1794484708.295475411] [waypoint_follower]: Cleaning up
+[bt_navigator-5] [INFO] [1794484708.297228563] [bt_navigator]: Cleaning up
+[behavior_server-4] [INFO] [1794484708.299045143] [behavior_server]: Cleaning up
+[smoother_server-2] [INFO] [1794484708.307253983] [smoother_server]: Cleaning up
+[velocity_smoother-7] [INFO] [1794484708.325061908] [velocity_smoother]: Destroying
+[behavior_server-4] [INFO] [1794484708.325822378] [behavior_server]: Destroying bond (behavior_server) to lifecycle manager.
+[smoother_server-2] [INFO] [1794484708.326823934] [smoother_server]: Destroying bond (smoother_server) to lifecycle manager.
+[waypoint_follower-6] [INFO] [1794484708.329271743] [waypoint_follower]: Destroying bond (waypoint_follower) to lifecycle manager.
+[smoother_server-2] [INFO] [1794484708.335451232] [smoother_server]: Destroying
+[waypoint_follower-6] [INFO] [1794484708.337607343] [waypoint_follower]: Destroying
+[behavior_server-4] [INFO] [1794484708.360208111] [behavior_server]: Destroying
+[bt_navigator-5] [INFO] [1794484708.393094338] [bt_navigator]: Completed Cleaning up
+[bt_navigator-5] [INFO] [1794484708.393172224] [bt_navigator]: Destroying bond (bt_navigator) to lifecycle manager.
+[bt_navigator-5] [INFO] [1794484708.398768750] [bt_navigator]: Destroying
+[lifecycle_manager-8] [INFO] [1794484708.418450273] [lifecycle_manager_navigation]: Destroying lifecycle_manager_navigation
+[INFO] [velocity_smoother-7]: process has finished cleanly [pid 22245]
+[INFO] [waypoint_follower-6]: process has finished cleanly [pid 22243]
+[INFO] [smoother_server-2]: process has finished cleanly [pid 22233]
+[controller_server-1] [INFO] [1794484708.477230433] [controller_server]: Destroying bond (controller_server) to lifecycle manager.
+[INFO] [behavior_server-4]: process has finished cleanly [pid 22238]
+[controller_server-1] [INFO] [1794484708.487457299] [controller_server]: Cleaning up
+[controller_server-1] [INFO] [1794484708.487540059] [MPPIController]: Cleaned up MPPI Controller: FollowPath
+[controller_server-1] [INFO] [1794484708.487686319] [local_costmap.local_costmap]: Cleaning up
+[controller_server-1] [INFO] [1794484708.493571398] [controller_server]: Destroying bond (controller_server) to lifecycle manager.
+[planner_server-3] [INFO] [1794484708.494586496] [global_costmap.global_costmap]: Message Filter dropping message: frame 'base_link' at time 1794484708.180 for reason 'the timestamp on the message is earlier than all the data in the transform cache'
+[controller_server-1] [INFO] [1794484708.495147096] [local_costmap.local_costmap]: Destroying
+[controller_server-1] [INFO] [1794484708.497772190] [controller_server]: Destroying
+[INFO] [bt_navigator-5]: process has finished cleanly [pid 22240]
+[INFO] [lifecycle_manager-8]: process has finished cleanly [pid 22247]
+[INFO] [controller_server-1]: process has finished cleanly [pid 22231]
+[planner_server-3] [INFO] [1794484708.692288810] [planner_server]: Deactivating plugin GridBased of type NavfnPlanner
+[planner_server-3] [INFO] [1794484708.692333262] [planner_server]: Destroying bond (planner_server) to lifecycle manager.
+[planner_server-3] [INFO] [1794484708.702527916] [planner_server]: Cleaning up
+[planner_server-3] [INFO] [1794484708.706002887] [global_costmap.global_costmap]: Cleaning up
+[planner_server-3] [INFO] [1794484708.707885451] [planner_server]: Cleaning up plugin GridBased of type NavfnPlanner
+[planner_server-3] [INFO] [1794484708.708081781] [planner_server]: Destroying plugin GridBased of type NavfnPlanner
+[planner_server-3] [INFO] [1794484708.710380711] [planner_server]: Destroying bond (planner_server) to lifecycle manager.
+[planner_server-3] [INFO] [1794484708.712395378] [global_costmap.global_costmap]: Destroying
+[planner_server-3] [INFO] [1794484708.714935063] [planner_server]: Destroying
+[INFO] [planner_server-3]: process has finished cleanly [pid 22235]

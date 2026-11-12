@@ -1,0 +1,69 @@
+{
+  "/mission/gate_status": {
+    "ready_to_arm": false,
+    "reason": "PREVIEW_ONLY",
+    "drive_output_enabled": false,
+    "lease_fresh": false,
+    "command_fresh": false,
+    "output": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "input_publishers": 0
+  },
+  "/mission/status": {
+    "state": "SHADOW_START_NOT_CLEAR",
+    "armed": false,
+    "execution_enabled": false,
+    "active_goal": null,
+    "pose": [
+      1.61916086696434,
+      0.7585300782517004,
+      0.7331206955363461
+    ],
+    "waypoint_index": 0,
+    "mode": "explore"
+  },
+  "map": {
+    "width": 73,
+    "height": 69,
+    "resolution": 0.05000000074505806,
+    "frame": "map",
+    "free_cells": 774,
+    "occupied_cells": 82
+  },
+  "odom_observation": {
+    "samples": 121,
+    "span_sec": 11.998403675999953,
+    "xyz_span_m": [
+      0.01855756590821045,
+      0.01447402097562911,
+      0.010363417918794915
+    ],
+    "first": [
+      1.629574981979842,
+      0.7540677782617468,
+      -0.2400304374436547
+    ],
+    "last": [
+      1.6177448436432857,
+      0.759587738647435,
+      -0.24900750205159106
+    ]
+  },
+  "/cmd_vel": {
+    "publishers": [],
+    "subscribers": []
+  },
+  "/mission/nav_cmd_vel": {
+    "publishers": [],
+    "subscribers": [
+      "velocity_gate"
+    ]
+  },
+  "/nav_cmd_vel": {
+    "publishers": [],
+    "subscribers": []
+  }
+}

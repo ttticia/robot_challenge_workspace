@@ -1,0 +1,114 @@
+{
+  "/mission/gate_status": {
+    "ready_to_arm": true,
+    "reason": "READY",
+    "drive_output_enabled": true,
+    "lease_fresh": false,
+    "command_fresh": false,
+    "output": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "input_publishers": 1
+  },
+  "/mission/status": {
+    "state": "DISARMED",
+    "armed": false,
+    "execution_enabled": true,
+    "active_goal": null,
+    "pose": [
+      -0.052453080522671724,
+      -0.05285619065334511,
+      -0.00693068532256684
+    ],
+    "waypoint_index": 0,
+    "mode": "waypoints"
+  },
+  "terrain_bins": [
+    {
+      "x": [
+        0.2,
+        0.3
+      ],
+      "n": 1,
+      "z_percentiles": [
+        0.15912419608622425,
+        0.15912419608622425,
+        0.15912419608622425,
+        0.15912419608622425,
+        0.15912419608622425
+      ]
+    },
+    {
+      "x": [
+        0.3,
+        0.4
+      ],
+      "n": 0,
+      "z_percentiles": []
+    },
+    {
+      "x": [
+        0.4,
+        0.5
+      ],
+      "n": 0,
+      "z_percentiles": []
+    },
+    {
+      "x": [
+        0.5,
+        0.6
+      ],
+      "n": 0,
+      "z_percentiles": []
+    },
+    {
+      "x": [
+        0.6,
+        0.7
+      ],
+      "n": 0,
+      "z_percentiles": []
+    },
+    {
+      "x": [
+        0.7,
+        0.8
+      ],
+      "n": 0,
+      "z_percentiles": []
+    },
+    {
+      "x": [
+        0.8,
+        1.0
+      ],
+      "n": 0,
+      "z_percentiles": []
+    },
+    {
+      "x": [
+        1.0,
+        1.2
+      ],
+      "n": 0,
+      "z_percentiles": []
+    }
+  ],
+  "/cmd_vel": {
+    "publishers": [
+      "velocity_gate"
+    ],
+    "subscribers": [
+      "lite3_domain_bridge_4"
+    ]
+  },
+  "/simple_cmd": {
+    "publishers": [],
+    "subscribers": [
+      "lite3_domain_bridge_4"
+    ]
+  }
+}

@@ -2,3 +2,15 @@
 *.db3
 __pycache__/
 .pytest_cache/
+
+# colcon output
+build/
+install/
+log/
+
+# Large local data: keep on the robot, never in git
+ROS_bags/
+recordings/
+runs/
+maps/
+models/*.onnx

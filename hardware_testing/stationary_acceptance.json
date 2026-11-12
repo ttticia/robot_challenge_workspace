@@ -1,0 +1,40 @@
+{
+  "/mission/gate_status": {
+    "ready_to_arm": false,
+    "reason": "PREVIEW_ONLY",
+    "drive_output_enabled": false,
+    "lease_fresh": false,
+    "command_fresh": false,
+    "output": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "input_publishers": 1
+  },
+  "/mission/status": {
+    "state": "SHADOW_FRONTIER",
+    "armed": false,
+    "execution_enabled": false,
+    "active_goal": null,
+    "pose": [
+      -1.6433101535836099,
+      0.23235085849652548,
+      2.567452200905617
+    ],
+    "waypoint_index": 0,
+    "mode": "explore"
+  },
+  "planner_server": "active",
+  "bt_navigator": "active",
+  "controller_server": "active",
+  "velocity_smoother": "active",
+  "/cmd_vel_publishers": [],
+  "/simple_cmd_publishers": [],
+  "received_counts": {
+    "/scan": 80,
+    "/map": 4,
+    "/odom": 58
+  },
+  "alternate_sender_running": false
+}

@@ -1,0 +1,13 @@
+{
+  "tilt_deg": [
+    0.15704500104631683,
+    -0.5414799881002116
+  ],
+  "sensor_topics_received": [
+    "/imu/data",
+    "/camera/color/image_raw/compressed",
+    "/livox/points"
+  ],
+  "/cmd_vel_publishers": [],
+  "/simple_cmd_publishers": []
+}

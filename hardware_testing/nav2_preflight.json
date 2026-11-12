@@ -1,0 +1,21 @@
+{
+  "planner_server": "unconfigured",
+  "behavior_server": "unconfigured",
+  "bt_navigator": "unconfigured",
+  "controller_server": "inactive",
+  "velocity_smoother": "unconfigured",
+  "start_map_check": {
+    "cell": [
+      17,
+      14
+    ],
+    "pose": [
+      1.6145996565514902,
+      0.763406346133975
+    ],
+    "occupancy": 0,
+    "known_free_clearance_m": 0.05000000074505806
+  },
+  "cmd_vel_subscribers": [],
+  "cmd_vel_publishers": []
+}

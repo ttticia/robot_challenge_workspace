@@ -1,0 +1,22 @@
+mission:
+  ros__parameters:
+    mode: explore
+    tilt_check_enabled: false
+    frontier_clearance_m: 0.25
+    frontier_standoff_m: 0.35
+    frontier_yaw_mode: face_frontier
+    maximum_consecutive_failures: 6
+    goal_timeout_sec: 60.0
+    map_timeout_sec: 5.0
+    exit_detection_enabled: true
+    exit_enclosed_radius_m: 0.8
+    exit_open_radius_m: 1.2
+    exit_minimum_displacement_m: 2.0
+    exit_dwell_sec: 3.0
+velocity_gate:
+  ros__parameters:
+    output_transient_local: true
+    max_linear_m_s: 0.10
+    max_angular_rad_s: 0.25
+    acceleration_m_s2: 0.15
+    angular_acceleration_rad_s2: 0.4
