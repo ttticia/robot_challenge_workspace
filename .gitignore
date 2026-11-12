@@ -1,0 +1,4 @@
+# ROS bag data: too large for GitHub (100 MB per-file limit)
+*.db3
+__pycache__/
+.pytest_cache/
