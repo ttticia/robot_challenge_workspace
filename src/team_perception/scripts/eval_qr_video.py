@@ -1,7 +1,7 @@
 """
 Measure how well each QR decoding strategy works on a recorded clip (no ROS needed).
 
-Input: a folder of frames (from webcam_sender_windows.py --record), a video file
+Input: a folder of frames (e.g. exported from a ROS bag), a video file
 (.mp4/.avi from any camera), or a ROS 2 bag is NOT supported - export frames first.
 
     python3 scripts/eval_qr_video.py /mnt/c/qr_clip

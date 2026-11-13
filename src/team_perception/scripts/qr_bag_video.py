@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Run the team QR scanner on a ROS 2 bag and write an annotated .mp4.
+"""
+Run the team QR scanner on a ROS 2 bag and write an annotated .mp4.
 
 Usage:
   python3 qr_bag_video.py <bag_folder> [output.mp4] [topic]

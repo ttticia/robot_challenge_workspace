@@ -3,20 +3,29 @@
 <package format="3">
   <name>team_perception</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="ngtri@todo.todo">ngtri</maintainer>
-  <license>TODO: License declaration</license>
+  <description>QR code scanner, YOLO person detector and poster detector nodes, a robot
+    launch file, and an offline tool that annotates photos and videos into test_runs/.</description>
+  <maintainer email="ng.tricia2005@gmail.com">ngtri</maintainer>
+  <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
   <depend>cv_bridge</depend>
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
   <!-- Humble's OpenCV is built without QUIRC and cannot decode QR codes -->
   <exec_depend>python3-pyzbar</exec_depend>
-  <!-- Also needs zxing-cpp from pip (no rosdep key): see requirements.txt -->
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <!-- Only for the offline bag tools in scripts/ -->
+  <exec_depend>rosbag2_py</exec_depend>
+  <!-- Also needs zxing-cpp, ultralytics and CPU torch from pip (no rosdep keys):
+       see requirements.txt -->
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Convert a camera topic in a ROS 2 bag to an .mp4 video.
+"""
+Convert a camera topic in a ROS 2 bag to an .mp4 video.
 
 Usage:
   python3 bag_to_video.py <bag_folder> [output.mp4] [topic]

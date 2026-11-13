@@ -14,3 +14,7 @@ recordings/
 runs/
 maps/
 models/*.onnx
+
+# team_perception: annotate results and downloaded YOLO weights
+**/test_runs/
+*.pt
