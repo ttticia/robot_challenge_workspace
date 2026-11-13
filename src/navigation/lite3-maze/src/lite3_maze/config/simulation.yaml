@@ -1,0 +1,15 @@
+maze_navigator:
+  ros__parameters:
+    use_sim_time: true
+    localization_source: scan
+    maximum_tilt_deg: 0.0
+    max_traversable_height_m: 0.16
+    forward_speed: 0.3
+    reverse_speed: 0.4
+    turn_speed: 0.4
+    footprint_length: 0.64
+    footprint_width: 0.46
+    exit_radius: 0.9
+    minimum_exit_travel: 3.0
+    exit_hold_seconds: 2.0
+    startup_seconds: 5.0

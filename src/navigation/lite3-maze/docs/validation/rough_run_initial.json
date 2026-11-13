@@ -1,0 +1,365 @@
+{
+  "completed": true,
+  "wall_seconds": 77.66804632599997,
+  "states": {
+    "WAIT_FOR_LITE3_AUTO": 2,
+    "FOLLOW_FACING_PATH": 33,
+    "ALIGN_PATH": 29,
+    "ALIGN_CLEARANCE": 5,
+    "EXPLORE": 3,
+    "MAZE_EXIT_REACHED": 3
+  },
+  "placeholders_seen": [
+    "people",
+    "qr",
+    "scene"
+  ],
+  "manual_pause_seen": true,
+  "resumed": true,
+  "final_status": {
+    "state": "MAZE_EXIT_REACHED",
+    "xy_m": [
+      -2.159063227625653,
+      3.1471943974256833
+    ],
+    "yaw_rad": -2.9667801985046505,
+    "icp_rmse_m": 0.0035540564932047235,
+    "known_map_cells": 65935,
+    "localization": "IMU heading + planar scan ICP; no loop closure",
+    "goal": [
+      -5.859999999999999,
+      0.7400000000000002
+    ],
+    "clearance_recovery": false,
+    "desired_heading_rad": -2.9276561444678424,
+    "travel_camera": "body-forward stereo",
+    "terrain": "flat",
+    "cells": {
+      "cell_size_m": 1.0,
+      "origin": "initial_robot_cell",
+      "anchor": [
+        0.0015323980056834254,
+        -0.0019193890512558239,
+        -0.008448457052121272
+      ],
+      "cell": [
+        -2,
+        3
+      ],
+      "visited": [
+        {
+          "cell": [
+            -2,
+            3
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            -1,
+            3
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            0,
+            0
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            0,
+            1
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            0,
+            2
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            0,
+            3
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            1,
+            0
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            1,
+            1
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            1,
+            2
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            1,
+            3
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            2,
+            0
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            2,
+            1
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            2,
+            2
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            2,
+            3
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            3,
+            0
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            3,
+            1
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            3,
+            2
+          ],
+          "entries": 1
+        },
+        {
+          "cell": [
+            3,
+            3
+          ],
+          "entries": 1
+        }
+      ],
+      "edges": [
+        [
+          [
+            -2,
+            3
+          ],
+          [
+            -1,
+            3
+          ]
+        ],
+        [
+          [
+            -1,
+            3
+          ],
+          [
+            0,
+            3
+          ]
+        ],
+        [
+          [
+            0,
+            0
+          ],
+          [
+            1,
+            0
+          ]
+        ],
+        [
+          [
+            0,
+            1
+          ],
+          [
+            0,
+            2
+          ]
+        ],
+        [
+          [
+            0,
+            1
+          ],
+          [
+            1,
+            1
+          ]
+        ],
+        [
+          [
+            0,
+            2
+          ],
+          [
+            1,
+            2
+          ]
+        ],
+        [
+          [
+            0,
+            3
+          ],
+          [
+            1,
+            3
+          ]
+        ],
+        [
+          [
+            1,
+            0
+          ],
+          [
+            2,
+            0
+          ]
+        ],
+        [
+          [
+            1,
+            1
+          ],
+          [
+            2,
+            1
+          ]
+        ],
+        [
+          [
+            1,
+            2
+          ],
+          [
+            2,
+            2
+          ]
+        ],
+        [
+          [
+            1,
+            3
+          ],
+          [
+            2,
+            3
+          ]
+        ],
+        [
+          [
+            2,
+            0
+          ],
+          [
+            3,
+            0
+          ]
+        ],
+        [
+          [
+            2,
+            1
+          ],
+          [
+            3,
+            1
+          ]
+        ],
+        [
+          [
+            2,
+            2
+          ],
+          [
+            3,
+            2
+          ]
+        ],
+        [
+          [
+            2,
+            3
+          ],
+          [
+            3,
+            3
+          ]
+        ],
+        [
+          [
+            3,
+            0
+          ],
+          [
+            3,
+            1
+          ]
+        ],
+        [
+          [
+            3,
+            2
+          ],
+          [
+            3,
+            3
+          ]
+        ]
+      ],
+      "travel_m": 11.354205649329185,
+      "enclosed_start_seen": true,
+      "exit_candidate": true,
+      "complete": true
+    },
+    "maximum_tilt_deg": 0.0,
+    "auto": true,
+    "localization_source": "scan"
+  },
+  "final_truth_position": [
+    -1.6490895621517694,
+    3.6644297125870122,
+    0.34221052359298515
+  ],
+  "command_zero_after_exit": true,
+  "exit_drift_m": 0.04948417287225692
+}

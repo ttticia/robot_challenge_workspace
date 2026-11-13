@@ -1,0 +1,20 @@
+{
+  "publishPresetData": {
+    "publishNodeDetail": {
+      "dingTalkDocsHideSwitch": false,
+      "cpUrl": "https://alidocs.oss-cn-zhangjiakou.aliyuncs.com/collab/a2QnV45VNQG89O4X/cp/c7bd07a7-9f2f-478b-8984-614d343cfe38",
+      "pubUuid": "V1_2_OlnXRBgDyP2DxXLp",
+      "declarationHideSwitch": false,
+      "snapshotDocKey": "a2QnV45VNQG89O4X",
+      "pubUrl": "https://alidocs.dingtalk.com/i/p/OlnXRxOLAljEbGLp/docs/P7QG4Yx2Jp7mXxnmiQ2bpp5nV9dEq3XD"
+    },
+    "nodeType": 0,
+    "nodeId": "P7QG4Yx2Jp7mXxnmiQ2bpp5nV9dEq3XD"
+  },
+  "name": "绝影Lite3开发指南",
+  "toc": "{\\\"children\\\":[{\\\"children\\\":[{\\\"data\\\":{\\\"nodeId\\\":\\\"XPwkYGxZV3RbA43bUyekykwjWAgozOKL\\\",\\\"title\\\":\\\"\\u8FD0\\u52A8\\u5F00\\u53D1\\u6307\\u5357\\\",\\\"type\\\":0},\\\"key\\\":\\\"202714341250\\\"},{\\\"data\\\":{\\\"nodeId\\\":\\\"93NwLYZXWyg6Rxw6tO6aOoppJkyEqBQm\\\",\\\"title\\\":\\\"\\u611F\\u77E5\\u5F00\\u53D1\\u6307\\u5357\\\",\\\"type\\\":0},\\\"key\\\":\\\"202714367164\\\"},{\\\"data\\\":{\\\"nodeId\\\":\\\"6LeBq413JAz3A9Y3CYjEZL4O8DOnGvpb\\\",\\\"title\\\":\\\"\\u8FD0\\u52A8\\u4E3B\\u673A\\u901A\\u8BAF\\u63A5\\u53E3\\\",\\\"type\\\":0},\\\"key\\\":\\\"202714305507\\\"},{\\\"data\\\":{\\\"nodeId\\\":\\\"Y1OQX0akWm3RjzXRSQ5aQZz3JGlDd3mE\\\",\\\"title\\\":\\\"Lite3\\u63A2\\u7D22\\u7248\\u6559\\u80B2\\u79D1\\u7814\\u5957\\u4EF6\\u5B89\\u88C5\\u8BF4\\u660E\\u4E66\\\",\\\"type\\\":0},\\\"key\\\":\\\"213996269099\\\"},{\\\"data\\\":{\\\"nodeId\\\":\\\"oP0MALyR8k73gzN3iKZ0waZ583bzYmDO\\\",\\\"title\\\":\\\"Lite3\\u63A2\\u7D22\\u7248\\u8FD0\\u52A8\\u4E3B\\u673ASDK\\u6A21\\u5F0F\\\",\\\"type\\\":0},\\\"key\\\":\\\"222191240277\\\"}],\\\"data\\\":{\\\"nodeId\\\":\\\"NZQYprEoWoemkxOmi0OGMqPMJ1waOeDk\\\",\\\"title\\\":\\\"\\u7EDD\\u5F71Lite3\\u5F00\\u53D1\\u6307\\u5357\\\",\\\"type\\\":0},\\\"key\\\":\\\"202714296118\\\"},{\\\"children\\\":[{\\\"data\\\":{\\\"nodeId\\\":\\\"Qnp9zOoBVBZwADmwh0q9Z62bV1DK0g6l\\\",\\\"title\\\":\\\"Motion Development Guide\\\",\\\"type\\\":0},\\\"key\\\":\\\"204144375470\\\"},{\\\"data\\\":{\\\"nodeId\\\":\\\"20eMKjyp81RbA0YbU9NyvjO5WxAZB1Gv\\\",\\\"title\\\":\\\"Perception Development Guide\\\",\\\"type\\\":0},\\\"key\\\":\\\"204144432182\\\"},{\\\"data\\\":{\\\"nodeId\\\":\\\"kDnRL6jAJM3d9LPdSG4dpq6AWyMoPYe1\\\",\\\"title\\\":\\\"Motion Host Communication Interface\\\",\\\"type\\\":0},\\\"key\\\":\\\"204144624409\\\"},{\\\"data\\\":{\\\"nodeId\\\":\\\"P7QG4Yx2Jp7mXxnmiQ2bpp5nV9dEq3XD\\\",\\\"title\\\":\\\"Lite3 Venture Edition Motion Host SDK Mode\\\",\\\"type\\\":0},\\\"key\\\":\\\"227650982735\\\"},{\\\"data\\\":{\\\"nodeId\\\":\\\"2Amq4vjg89gGAj5Gtmk4mDERV3kdP0wQ\\\",\\\"title\\\":\\\"Lite3 Venture Edition Education and Research Kit Installation Manual\\\",\\\"type\\\":0},\\\"key\\\":\\\"227650813552\\\"}],\\\"data\\\":{\\\"nodeId\\\":\\\"YndMj49yWjPnDl2nIM65wX17J3pmz5aA\\\",\\\"title\\\":\\\"Jueying Lite3 Development Guide\\\",\\\"type\\\":0},\\\"key\\\":\\\"202714629936\\\"}],\\\"key\\\":\\\"#[TREE_ROOT]\\\"}",
+  "pubType": 1,
+  "avatar": "Upload:$iwELAqNwbmcDBgTRANAF0QDQBrATNc3uabNlrQkZm2ZOs08AB9J7G9oMCAAJsGRvY1RlYW1Xb3Jrc3BhY2UKAAvSAACRwg",
+  "cloudSpaceGray": true,
+  "pubKey": "OlnXRxOLAljEbGLp"
+}

@@ -1,0 +1,382 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Motion Development Guide</title><style>body{max-width:1100px;margin:40px auto;padding:0 24px;font:16px/1.6 system-ui,sans-serif;color:#222}a{color:#075ea8}img{max-width:100%;height:auto}table{border-collapse:collapse;display:block;overflow-x:auto;margin:1em 0}td,th{border:1px solid #bbb;padding:7px;min-width:65px;vertical-align:top}tr:first-child{background:#f0f4f8}pre{background:#f4f5f6;padding:16px;overflow:auto;line-height:1.4}code{font-family:monospace}aside{background:#f2f6fa;padding:12px}h1,h2,h3,h4{line-height:1.3}</style><body><nav><a href="index.html">All guides</a> · <a href="https://alidocs.dingtalk.com/i/p/OlnXRxOLAljEbGLp/docs/Qnp9zOoBVBZwADmwh0q9Z62bV1DK0g6l">Original on DingTalk</a></nav><h1>Motion Development Guide</h1><p><strong>Update Date：</strong>2026-03-28<strong></strong></p>
+<p><strong>Version：V2.2.1-0</strong></p>
+<p></p>
+<hr>
+<p></p>
+<h1><strong>1 </strong>Motion System</h1>
+<p></p>
+<p>Jueying Lite3&#x27;s motion host uses an ARM-architecture CPU processor, RK3588, with commonly used software, dependencies, and libraries in it, to meet the needs of highly-dynamic motion control and gait planning development. Jueying Lite3 is composed of Front Left Leg (FL), Front Right Leg (FR), Hind Left Leg (HL), Hind Right Leg (HR) and the body. Each leg consists of 3 joints, including HipX (the hip joint for abduction and adduction), HipY (the hip joint for flexion and extension), and Knee. A joint consists of a high-power DC motor, a precise reducer and an absolute encoder.</p>
+<p><img src="images/317a52cc9d7c10b9138a.png" alt="image.png"></p>
+<p></p>
+<h2><strong>1.1 </strong>Coordinate System</h2>
+<p>Jueying Lite3 uses 3D coordinate systems to describe the relationship between the body, sensors, joints, and soles of the feet.</p>
+<p></p>
+<h3><strong>1.1.1 Body Coordinate System</strong></h3>
+<p>The origin of the body coordinate system is located at the geometric center of the robot&#x27;s body.</p>
+<p><img src="images/9c4c8b4a680c827e779b.png" alt="image.png"></p>
+<p></p>
+<h3><strong>1.1.2 Joint Coordinate System</strong></h3>
+<p><img src="images/0bf874da096643f5822f.png" alt="image.png"></p>
+<aside><p><strong>[Notes]</strong> The arc-shaped arrow indicates the positive direction of rotation for the joint coordinate system with the same color.</p>
+</aside>
+<table><tr><td><p><strong>Coord</strong></p>
+</td><td><p><strong>Color</strong></p>
+</td><td><p><strong>X（m）</strong></p>
+</td><td><p><strong>Y（m）</strong></p>
+</td><td><p><strong>Z（m）</strong></p>
+</td><td><p><strong>Notes</strong></p>
+</td></tr>
+<tr><td><p>FL_HipX</p>
+</td><td><p>Red</p>
+</td><td><p>0.1745</p>
+</td><td><p>0.062</p>
+</td><td><p>0</p>
+</td><td><p>Relative to Body Coordinate System</p>
+</td></tr>
+<tr><td><p>FL_HipY</p>
+</td><td><p>Yellow</p>
+</td><td><p>0</p>
+</td><td><p>0.0985</p>
+</td><td><p>0</p>
+</td><td><p>Relative to FL_HipX Coordinate System</p>
+</td></tr>
+<tr><td><p>FL_Knee</p>
+</td><td><p>Blue</p>
+</td><td><p>0</p>
+</td><td><p>0</p>
+</td><td><p>-0.20</p>
+</td><td><p>Relative to FL_HipY Coordinate System</p>
+</td></tr>
+<tr><td><p>FL_Foot</p>
+</td><td><p>Green</p>
+</td><td><p>0</p>
+</td><td><p>0</p>
+</td><td><p>-0.21</p>
+</td><td><p>Relative to FL_Knee Coordinate System</p>
+</td></tr>
+<tr><td><p>FR_HipX</p>
+</td><td><p>Red</p>
+</td><td><p>0.1745</p>
+</td><td><p>-0.062</p>
+</td><td><p>0</p>
+</td><td><p>Relative to Body Coordinate System</p>
+</td></tr>
+<tr><td><p>FR_HipY</p>
+</td><td><p>Yellow</p>
+</td><td><p>0</p>
+</td><td><p>-0.0985</p>
+</td><td><p>0</p>
+</td><td><p>Relative to FR_HipX Coordinate System</p>
+</td></tr>
+<tr><td><p>FR_Knee</p>
+</td><td><p>Blue</p>
+</td><td><p>0</p>
+</td><td><p>0</p>
+</td><td><p>-0.20</p>
+</td><td><p>Relative to FR_HipY Coordinate System</p>
+</td></tr>
+<tr><td><p>FR_Foot</p>
+</td><td><p>Green</p>
+</td><td><p>0</p>
+</td><td><p>0</p>
+</td><td><p>-0.21</p>
+</td><td><p>Relative to FR_Knee Coordinate System</p>
+</td></tr>
+<tr><td><p>HL_HipX</p>
+</td><td><p>Red</p>
+</td><td><p>-0.1745</p>
+</td><td><p>0.062</p>
+</td><td><p>0</p>
+</td><td><p>Relative to Body Coordinate System</p>
+</td></tr>
+<tr><td><p>HL_HipY</p>
+</td><td><p>Yellow</p>
+</td><td><p>0</p>
+</td><td><p>0.0985</p>
+</td><td><p>0</p>
+</td><td><p>Relative to HL_HipX Coordinate System</p>
+</td></tr>
+<tr><td><p>HL_Knee</p>
+</td><td><p>Blue</p>
+</td><td><p>0</p>
+</td><td><p>0</p>
+</td><td><p>-0.20</p>
+</td><td><p>Relative to HL_HipY Coordinate System</p>
+</td></tr>
+<tr><td><p>HL_Foot</p>
+</td><td><p>Green</p>
+</td><td><p>0</p>
+</td><td><p>0</p>
+</td><td><p>-0.21</p>
+</td><td><p>Relative to HL_Knee Coordinate System</p>
+</td></tr>
+<tr><td><p>HR_HipX</p>
+</td><td><p>Red</p>
+</td><td><p>-0.1745</p>
+</td><td><p>-0.062</p>
+</td><td><p>0</p>
+</td><td><p>Relative to Body Coordinate System</p>
+</td></tr>
+<tr><td><p>HR_HipY</p>
+</td><td><p>Yellow</p>
+</td><td><p>0</p>
+</td><td><p>-0.0985</p>
+</td><td><p>0</p>
+</td><td><p>Relative to HR_HipX Coordinate System</p>
+</td></tr>
+<tr><td><p>HR_Knee</p>
+</td><td><p>Blue</p>
+</td><td><p>0</p>
+</td><td><p>0</p>
+</td><td><p>-0.20</p>
+</td><td><p>Relative to HR_HipY Coordinate System</p>
+</td></tr>
+<tr><td><p>HR_Foot</p>
+</td><td><p>Green</p>
+</td><td><p>0</p>
+</td><td><p>0</p>
+</td><td><p>-0.21</p>
+</td><td><p>Relative to HR_Knee Coordinate System</p>
+</td></tr>
+</table>
+<p></p>
+<h3><strong>1.1.3 Sensor Coordinates</strong></h3>
+<p>This section introduces the coordinate parameters of the Jueying Lite3 base sensor. The IMU connects directly to the motion host; the depth camera connects directly to the perception host; LiDAR connects to the perception host via a network switch:</p>
+<table><tr><td rowspan="2"><p><strong>Sensor</strong></p>
+</td><td colspan="3"><p><strong>Coordinate system values</strong></p>
+<p><strong>(relative to the body coordinate system)</strong></p>
+</td><td><p></p>
+</td><td><p></p>
+</td></tr>
+<tr><td><p></p>
+</td><td><p><strong>X(mm)</strong></p>
+</td><td><p><strong>Y(mm)</strong></p>
+</td><td><p><strong>Z(mm)</strong></p>
+</td></tr>
+<tr><td><p>IMU</p>
+</td><td><p>5.00</p>
+</td><td><p>0</p>
+</td><td><p>0</p>
+</td></tr>
+<tr><td><p>Depth Camera</p>
+<p>(Only Pro and LiDAR Edition include)</p>
+</td><td><p>252.28</p>
+</td><td><p>-0.50</p>
+</td><td><p>74.10</p>
+</td></tr>
+<tr><td><p>LiDAR</p>
+<p>(Mid 360, Only LiDAR Edition include)</p>
+</td><td><p>186.78</p>
+</td><td><p>0</p>
+</td><td><p>124.98</p>
+</td></tr>
+<tr><td><p>LiDAR (RoboSense, Only LiDAR Edition include）</p>
+</td><td><p>203.3</p>
+</td><td><p>0</p>
+</td><td><p>129.06</p>
+</td></tr>
+</table>
+<p></p>
+<h2><strong>1.2 </strong>Specifications</h2>
+<p></p>
+<h3>1.<strong>2.1 Body Dimensions</strong></h3>
+<p><img src="images/59cded179cfa1a20c3d9.png" alt="image.png"></p>
+<table><tr><td><p><strong>Parameter</strong></p>
+</td><td><p><strong>Value</strong></p>
+</td><td><p><strong>Description</strong></p>
+</td></tr>
+<tr><td><p>mbody</p>
+</td><td><p>11kg</p>
+</td><td><p>mass of body(with battery and HipX joints)</p>
+</td></tr>
+<tr><td><p>Lbody</p>
+</td><td><p>548mm</p>
+</td><td><p>length of body</p>
+</td></tr>
+<tr><td><p>Wbody</p>
+</td><td><p>370mm</p>
+</td><td><p>width of body</p>
+</td></tr>
+<tr><td><p>Hup</p>
+</td><td><p>74mm</p>
+</td><td><p>distance from the top of body to Body Coordinate Origin</p>
+</td></tr>
+<tr><td><p>Hdown</p>
+</td><td><p>44mm</p>
+</td><td><p>distance from the bottom of body to Body   Coordinate Origin</p>
+</td></tr>
+<tr><td><p>Whip</p>
+</td><td><p>124mm</p>
+</td><td><p>distance between the centers of left hip and right hip</p>
+</td></tr>
+<tr><td><p>Lhip</p>
+</td><td><p>349mm</p>
+</td><td><p>distance between the centers of front hip and hind hip</p>
+</td></tr>
+<tr><td><p>Wleg</p>
+</td><td><p>328mm</p>
+</td><td><p>distance between the centers of left leg and right leg</p>
+</td></tr>
+</table>
+<p></p>
+<h3>1.<strong>2.2 Leg Dimensions</strong></h3>
+<p><img src="images/4b6a1e724a1ca1dbacd6.png" alt="image.png"></p>
+<table><tr><td><p><strong>Parameter</strong></p>
+</td><td><p><strong>Value</strong></p>
+</td><td><p><strong>Description</strong></p>
+</td></tr>
+<tr><td><p>mleg</p>
+</td><td><p>1.12kg</p>
+</td><td><p>weight of a single leg</p>
+</td></tr>
+<tr><td><p>L1</p>
+</td><td><p>102mm</p>
+</td><td><p>distance between the centers of leg and HipX</p>
+</td></tr>
+<tr><td><p>L2</p>
+</td><td><p>200mm</p>
+</td><td><p>length of upper leg</p>
+</td></tr>
+<tr><td><p>L3</p>
+</td><td><p>210mm</p>
+</td><td><p>length of lower leg</p>
+</td></tr>
+<tr><td><p>Rfoot</p>
+</td><td><p>20mm</p>
+</td><td><p>foot radius</p>
+</td></tr>
+</table>
+<p></p>
+<h3>1.<strong>2.3 Joint Dimensions</strong></h3>
+<table><tr><td rowspan="2"><p><strong>Joint</strong></p>
+</td><td rowspan="2"><p><strong>Weight</strong></p>
+</td><td colspan="3"><p><strong>Principal Moment of Inertia</strong></p>
+</td><td><p></p>
+</td><td><p></p>
+</td></tr>
+<tr><td><p></p>
+</td><td><p></p>
+</td><td><p><strong>Px</strong></p>
+</td><td><p><strong>Py</strong></p>
+</td><td><p><strong>Pz</strong></p>
+</td></tr>
+<tr><td><p>HipX</p>
+</td><td><p>0.435kg</p>
+</td><td><p>220kg·mm2</p>
+</td><td><p>220kg·mm2</p>
+</td><td><p>254kg·mm2</p>
+</td></tr>
+<tr><td><p>HipY</p>
+</td><td><p>0.501kg</p>
+</td><td><p>267kg·mm2</p>
+</td><td><p>316kg·mm2</p>
+</td><td><p>369kg·mm2</p>
+</td></tr>
+<tr><td><p>Knee + upper leg</p>
+</td><td><p>0.96kg</p>
+</td><td><p>945kg·mm2</p>
+</td><td><p>4440kg·mm2</p>
+</td><td><p>4692kg·mm2</p>
+</td></tr>
+<tr><td><p>Lower leg</p>
+</td><td><p>0.16kg</p>
+</td><td><p>32kg·mm2</p>
+</td><td><p>1294kg·mm2</p>
+</td><td><p>1310kg·mm2</p>
+</td></tr>
+</table>
+<p></p>
+<h3>1.<strong>2.4</strong> <strong>Joint Performance</strong></h3>
+<table><tr><td><p><strong>Joint</strong></p>
+</td><td><p><strong>Range</strong></p>
+</td><td><p><strong>Nominal Torque</strong></p>
+</td><td><p><strong>Max Torque</strong></p>
+</td><td><p><strong>Max Velocity</strong></p>
+</td></tr>
+<tr><td><p>HipX</p>
+</td><td><p>-24°~24°</p>
+</td><td><p>6.48N·m</p>
+</td><td><p>24N·m</p>
+</td><td><p>26.16rad/s</p>
+</td></tr>
+<tr><td><p>HipY</p>
+</td><td><p>-200°~20°</p>
+</td><td><p>6.48N·m</p>
+</td><td><p>24N·m</p>
+</td><td><p>26.1rad/s</p>
+</td></tr>
+<tr><td><p>Knee</p>
+</td><td><p>34.5°~156°</p>
+</td><td><p>9.72N·m</p>
+</td><td><p>36N·m</p>
+</td><td><p>17.1rad/s</p>
+</td></tr>
+</table>
+<p></p>
+<h2><strong>1.3 </strong>Log</h2>
+<p>The system will generate three kinds of log files, which will be saved in the <code><strong>/jy_exe/data</strong></code> directory in the motion host.</p>
+<p>Event Log(.log): Record every event during operation.</p>
+<p>Zipped Package of Operation Log(.csv) and Failure Snapshot(.snapshot.csv): If the robot fails during operation, please press the button [SAVE DATA] on the app, and then robot will save the fault data and stop the motion program. The default recording frequency of the log file is 1000Hz. Operation Log(.csv) can be viewed directly with Microsoft Excel.</p>
+<p></p>
+<h2><strong>1.4 </strong>Protection</h2>
+<p></p>
+<h3>1<strong>.4.1</strong> <strong>Overtemperature Protection</strong></h3>
+<p>When the robot runs for a long time and cause the motor or driver to overheat, it will automatically turn on overtemperature protection: stop moving and lie down in place. Please do not use the robot until it cools down.</p>
+<p></p>
+<h3>1<strong>.4.2</strong> <strong>Fall Down Protection</strong></h3>
+<p>When the IMU module detects that the posture changes too much and judges that the robot will inevitably fall, the damping of the joints will automatically be increased and the velocity of the robot will go to zero. </p>
+<p>Please make sure that there are no obstacles around the robot and then let it stand up. If the robot doesn&#x27;t react to the command, please press the button [SAVE DATA] and shut down the robot.</p>
+<p></p>
+<hr>
+<p></p>
+<h1><strong>2 </strong>Motion Control Algorithm Development</h1>
+<p></p>
+<h2><strong>2.1 </strong>Reinforcement Learning Control Algorithm Training and Deployment</h2>
+<p>The <a href="https://github.com/DeepRoboticsLab/rl_training">training</a> and <a href="https://github.com/DeepRoboticsLab/Lite3_rl_deploy">deployment</a> code for the reinforcement learning policy has been uploaded to the <a href="https://github.com/DeepRoboticsLab/Lite3_rl_deploy">GitHub</a> repository, and the corresponding tutorial videos have been published on the <a href="https://www.youtube.com/watch?v=6kzpja9FneA&amp;list=PLQQnSiJ-BD-QoqBOgiSpgSKm2WTnlgfwB">YouTube</a> platform.</p>
+<p></p>
+<h2><strong>2.2 </strong>Motion SDK</h2>
+<p>Jueying Lite3 Motion SDK can get the data of each joint and send joint control command, to control the robot to move.</p>
+<p>SDK structure reads as below:</p>
+<pre><code>.  
+├── CMakeLists.txt  
+├── include  
+│   ├── common  
+│   ├── dr_timer.h  
+│   ├── motionexample.h  
+│   ├── receiver.h  
+│   ├── robot_types.h  
+│   └── sender.h  
+├── lib  
+│   ├── eigen3  
+│   ├── libdeeprobotics_legged_sdk_aarch64.so  
+│   └── libdeeprobotics_legged_sdk_x86_64.so  
+├── main.cpp  
+└── src  
+    └── motionexample.cpp  </code></pre>
+<p>SDK contains:</p>
+<p><strong>CMakeLists</strong> Compiler: needed to be slightly modified according to the two different architectures, ARM and x86;</p>
+<p><strong>include</strong> Directory: about receiving, sending, motion algorithms, timer, and general tools;</p>
+<p><strong>lib</strong> Directory: contains the libraries needed for the motion algorithms, and dynamic libraries for x86 and ARM;</p>
+<p><strong>main.cpp</strong>: main function file.</p>
+<p><strong>src</strong> Directory: contains the main demos of motion algorithms.</p>
+<p>Users can modify the code in main.cpp to control the joints and develop new motions.</p>
+<p></p>
+<h3><strong>2.2.1 Program Flow</strong></h3>
+<p><img src="images/dbe4e8d82a961a17e551.png" alt="image.png"></p>
+<p>Timer Initialization: Create a timer DRTimer and set the timer period to 1 (algorithm period);</p>
+<p>Network Communication Initialization: Create a Sender and a Receiver for sending and receiving data;</p>
+<p>Robot Initialization: reset joints to zero (obtaining control);</p>
+<p>Get the current timestamp (for running motion algorithm);</p>
+<p>Obtain the data RobotData of robot joints (preparation is completed);</p>
+<p>Enter the main loop:</p>
+<p>Wait for the timer to trigger;</p>
+<p>Get the current time;</p>
+<p>Obtain the joint status and data;</p>
+<p>Run the motion algorithm MotionExample (including example code);</p>
+<p>Send the robot control commands;</p>
+<p>(After robot completes all the control commands, release control of robot);</p>
+<p>End.</p>
+<p></p>
+<h3><strong>2.2.2 Development Steps</strong></h3>
+<p>Please refer to <a href="https://github.com/DeepRoboticsLab/Lite3_MotionSDK/tree/main"><strong>Lite3_MotionSDK Repository</strong></a>.</p>
+</body></html>

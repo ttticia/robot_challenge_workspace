@@ -1,0 +1,519 @@
+<mujoco model="lite3_rough_cell_maze">
+  <default>
+    <default class="robot">
+      <default class="motor">
+        <joint />
+        <motor />
+      </default>
+      <default class="visual">
+        <geom material="visualgeom" contype="0" conaffinity="0" group="2" />
+      </default>
+      <default class="collision">
+        <geom material="collision_material" condim="3" contype="0" conaffinity="1" group="1" solref="0.005 1" friction="1 0.01 0.01" />
+        <equality solimp="0.99 0.999 1e-05" solref="0.005 1" />
+      </default>
+    </default>
+  </default>
+  <compiler angle="radian" />
+  <compiler autolimits="true" />
+  <asset>
+    <material name="default_material" rgba="0.7 0.7 0.7 1" />
+    <material name="collision_material" rgba="0.0 0.4 0.8 0.2" />
+    <texture type="2d" name="checker" builtin="checker" rgb1="0.2 0.3 0.4" rgb2="0.9 0.9 0.9" width="500" height="500" />
+    <material name="checker_mat" texture="checker" specular="1" shininess="1" texrepeat="15 15" />
+    <mesh name="torso.STL" file="../vendor/lite3/meshes/torso.STL" />
+    <mesh name="fl_hip.STL" file="../vendor/lite3/meshes/hip.STL" />
+    <mesh name="fl_thigh.STL" file="../vendor/lite3/meshes/thigh.STL" />
+    <mesh name="fl_shank_collision.STL" file="../vendor/lite3/meshes/shank.STL" />
+    <mesh name="fr_hip.STL" file="../vendor/lite3/meshes/hip.STL" />
+    <mesh name="fr_thigh.STL" file="../vendor/lite3/meshes/thigh.STL" scale="1 -1 1" />
+    <mesh name="fr_shank_collision.STL" file="../vendor/lite3/meshes/shank.STL" />
+    <mesh name="hl_hip.STL" file="../vendor/lite3/meshes/hip.STL" />
+    <mesh name="hl_thigh.STL" file="../vendor/lite3/meshes/thigh.STL" />
+    <mesh name="hl_shank_collision.STL" file="../vendor/lite3/meshes/shank.STL" />
+    <mesh name="hr_hip.STL" file="../vendor/lite3/meshes/hip.STL" />
+    <mesh name="hr_thigh.STL" file="../vendor/lite3/meshes/thigh.STL" scale="1 -1 1" />
+    <mesh name="hr_shank_collision.STL" file="../vendor/lite3/meshes/shank.STL" />
+  </asset>
+  <worldbody>
+    <geom name="floor" type="plane" size="10 10 0.1" pos="0 0 0" material="checker_mat" />
+    <light directional="true" pos="-0.5 0.5 3" dir="0 0 -1" />
+    <body name="TORSO" pos="0.5 0.5 0.35" quat="1 0 0 0" childclass="robot">
+      <freejoint name="floating_base" />
+      <site name="imu_site" pos="0 0 0" size="0.005" rgba="1 0 0 1" />
+      <inertial pos="0 0 0" mass="5.6056" diaginertia="0.02456 0.05518 0.07016" />
+      <geom name="TORSO_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="torso.STL" class="collision" />
+      <geom name="TORSO_visual" pos="0 0 0" quat="1 0 0 0" material="" type="mesh" mesh="torso.STL" class="visual" />
+      <body name="FL_HIP" pos="0.1745 0.062 0" quat="1.0 0.0 0.0 0.0">
+        <joint name="FL_HipX_joint" type="hinge" ref="0.0" class="motor" range="-0.523 0.523" axis="-1 0 0" />
+        <inertial pos="-0.00601 -0.0066532 0.00034295" quat="1.0 0.0 0.0 0.0" mass="0.550" diaginertia="0.0003949 0.0004028 0.0004472" />
+        <geom name="FL_HIP_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="fl_hip.STL" class="collision" />
+        <geom name="FL_HIP_visual" pos="0 0 0" quat="1 0 0 0" material="" type="mesh" mesh="fl_hip.STL" class="visual" />
+        <body name="FL_THIGH" pos="0 0.09735 0" quat="1.0 0.0 0.0 0.0">
+          <joint name="FL_HipY_joint" type="hinge" ref="0.0" class="motor" range="-2.67 0.314" axis="0 -1 0" />
+          <inertial pos="-0.0039245 -0.014632 -0.025146" quat="1.0 0.0 0.0 0.0" mass="0.86" diaginertia="0.005736 0.00496 0.001436" />
+          <geom name="FL_THIGH_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="fl_thigh.STL" class="collision" />
+          <geom name="FL_THIGH_visual" pos="0 0 0" quat="1 0 0 0" material="" type="mesh" mesh="fl_thigh.STL" class="visual" />
+          <body name="FL_SHANK" pos="0 0 -0.20" quat="1.0 0.0 0.0 0.0">
+            <joint name="FL_Knee_joint" type="hinge" ref="0.0" class="motor" range="0.524 2.792" axis="0 -1 0" />
+            <inertial pos="0.0064794 -1.4535E-06 -0.12157" quat="1.0 0.0 0.0 0.0" mass="0.153" diaginertia="0.00089039 0.00090672 3.1266e-05" />
+            <geom name="FL_SHANK_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="fl_shank_collision.STL" class="collision" />
+            <geom name="FL_SHANK_visual" pos="0 0 0" quat="1 0 0 0" material="" type="mesh" mesh="fl_shank_collision.STL" class="visual" />
+            <body name="FL_FOOT" pos="0 0 -0.21012" quat="1.0 0.0 0.0 0.0">
+              <inertial pos="0 0 0" mass="0.02" diaginertia="0.0 0.0 0.0" />
+              <geom name="FL_FOOT_collision" pos="0 0 0" quat="0.7071067811882787 0.7071067811848163 0.0 0.0" type="sphere" size="0.022" class="collision" />
+              <geom name="FL_FOOT_visual" pos="0 0 0" quat="1 0 0 0" material="" type="sphere" size="0.022" class="visual" />
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="FR_HIP" pos="0.1745 -0.062 0" quat="1.0 0.0 0.0 0.0">
+        <joint name="FR_HipX_joint" type="hinge" ref="0.0" class="motor" range="-0.523 0.523" axis="-1 0 0" />
+        <inertial pos="-0.010579 0.011358 0.00048546" quat="1.0 0.0 0.0 0.0" mass="0.550" diaginertia="0.0004472 0.0004028 0.0003949" />
+        <geom name="FR_HIP_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="fr_hip.STL" class="collision" />
+        <geom name="FR_HIP_visual" pos="0 0 0" quat="1 0 0 0" material="" type="mesh" mesh="fr_hip.STL" class="visual" />
+        <body name="FR_THIGH" pos="0 -0.09735 0" quat="1.0 0.0 0.0 0.0">
+          <joint name="FR_HipY_joint" type="hinge" ref="0.0" class="motor" range="-2.67 0.314" axis="0 -1 0" />
+          <inertial pos="-0.0039245 0.014632 -0.025146" quat="1.0 0.0 0.0 0.0" mass="0.86" diaginertia="0.005736 0.00496 0.001436" />
+          <geom name="FR_THIGH_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="fr_thigh.STL" class="collision" />
+          <geom name="FR_THIGH_visual" pos="0 0 0" quat="1 0 0 0" material="" type="mesh" mesh="fr_thigh.STL" class="visual" />
+          <body name="FR_SHANK" pos="0 0 -0.20" quat="1.0 0.0 0.0 0.0">
+            <joint name="FR_Knee_joint" type="hinge" ref="0.0" class="motor" range="0.524 2.792" axis="0 -1 0" />
+            <inertial pos="0.0064794 -1.4552E-06 -0.12157" quat="1.0 0.0 0.0 0.0" mass="0.153" diaginertia="0.00089039 0.00090672 3.1266e-05" />
+            <geom name="FR_SHANK_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="fr_shank_collision.STL" class="collision" />
+            <geom name="FR_SHANK_visual" pos="0 0 0" quat="1 0 0 0" material="" type="mesh" mesh="fr_shank_collision.STL" class="visual" />
+            <body name="FR_FOOT" pos="0 0 -0.21012" quat="1.0 0.0 0.0 0.0">
+              <inertial pos="0 0 0" mass="0.02" diaginertia="0.0 0.0 0.0" />
+              <geom name="FR_FOOT_collision" pos="0 0 0" quat="0.7071067811882787 0.7071067811848163 0.0 0.0" type="sphere" size="0.022" class="collision" />
+              <geom name="FR_FOOT_visual" pos="0 0 0" quat="1 0 0 0" material="" type="sphere" size="0.022" class="visual" />
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="HL_HIP" pos="-0.1745 0.062 0" quat="1.0 0.0 0.0 0.0">
+        <joint name="HL_HipX_joint" type="hinge" ref="0.0" class="motor" range="-0.523 0.523" axis="-1 0 0" />
+        <inertial pos="0.010905 -0.012636 0.001051" quat="1.0 0.0 0.0 0.0" mass="0.550" diaginertia="0.0003949 0.0004028 0.0004472" />
+        <geom name="HL_HIP_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="hl_hip.STL" class="collision" />
+        <geom name="HL_HIP_visual" pos="0 0 0" quat="1 0 0 0" material="" type="mesh" mesh="hl_hip.STL" class="visual" />
+        <body name="HL_THIGH" pos="0 0.09735 0" quat="1.0 0.0 0.0 0.0">
+          <joint name="HL_HipY_joint" type="hinge" ref="0.0" class="motor" range="-2.67 0.314" axis="0 -1 0" />
+          <inertial pos="-0.0039245 -0.014632 -0.025146" quat="1.0 0.0 0.0 0.0" mass="0.86" diaginertia="0.005736 0.00496 0.001436" />
+          <geom name="HL_THIGH_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="hl_thigh.STL" class="collision" />
+          <geom name="HL_THIGH_visual" pos="0 0 0" quat="1 0 0 0" material="" type="mesh" mesh="hl_thigh.STL" class="visual" />
+          <body name="HL_SHANK" pos="0 0 -0.20" quat="1.0 0.0 0.0 0.0">
+            <joint name="HL_Knee_joint" type="hinge" ref="0.0" class="motor" range="0.524 2.792" axis="0 -1 0" />
+            <inertial pos="0.0064794 -1.4558E-06 -0.12157" quat="1.0 0.0 0.0 0.0" mass="0.153" diaginertia="0.00089039 0.00090672 3.1266e-05" />
+            <geom name="HL_SHANK_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="hl_shank_collision.STL" class="collision" />
+            <geom name="HL_SHANK_visual" pos="0 0 0" quat="1 0 0 0" material="" type="mesh" mesh="hl_shank_collision.STL" class="visual" />
+            <body name="HL_FOOT" pos="0 0 -0.21012" quat="1.0 0.0 0.0 0.0">
+              <inertial pos="0 0 0" mass="0.02" diaginertia="0.0 0.0 0.0" />
+              <geom name="HL_FOOT_collision" pos="0 0 0" quat="0.7071067811882787 0.7071067811848163 0.0 0.0" type="sphere" size="0.022" class="collision" />
+              <geom name="HL_FOOT_visual" pos="0 0 0" quat="1 0 0 0" material="" type="sphere" size="0.022" class="visual" />
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="HR_HIP" pos="-0.1745 -0.062 0" quat="1.0 0.0 0.0 0.0">
+        <joint name="HR_HipX_joint" type="hinge" ref="0.0" class="motor" range="-0.523 0.523" axis="-1 0 0" />
+        <inertial pos="0.010354 0.011423 0.00049498" quat="1.0 0.0 0.0 0.0" mass="0.550" diaginertia="0.0003949 0.0004028 0.0004472" />
+        <geom name="HR_HIP_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="hr_hip.STL" class="collision" />
+        <geom name="HR_HIP_visual" pos="0 0 0" quat="1 0 0 0" material="" type="mesh" mesh="hr_hip.STL" class="visual" />
+        <body name="HR_THIGH" pos="0 -0.09735 0" quat="1.0 0.0 0.0 0.0">
+          <joint name="HR_HipY_joint" type="hinge" ref="0.0" class="motor" range="-2.67 0.314" axis="0 -1 0" />
+          <inertial pos="-0.0039245 0.014632 -0.025146" quat="1.0 0.0 0.0 0.0" mass="0.86" diaginertia="0.005736 0.00496 0.001436" />
+          <geom name="HR_THIGH_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="hr_thigh.STL" class="collision" />
+          <geom name="HR_THIGH_visual" pos="0 0 0" quat="1 0 0 0" material="" type="mesh" mesh="hr_thigh.STL" class="visual" />
+          <body name="HR_SHANK" pos="0 0 -0.20" quat="1.0 0.0 0.0 0.0">
+            <joint name="HR_Knee_joint" type="hinge" ref="0.0" class="motor" range="0.524 2.792" axis="0 -1 0" />
+            <inertial pos="0.0064794 -1.4529E-06 -0.12157" quat="1.0 0.0 0.0 0.0" mass="0.153" diaginertia="0.00089039 0.00090672 3.1266e-05" />
+            <geom name="HR_SHANK_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="hr_shank_collision.STL" class="collision" />
+            <geom name="HR_SHANK_visual" pos="0 0 0" quat="1 0 0 0" material="" type="mesh" mesh="hr_shank_collision.STL" class="visual" />
+            <body name="HR_FOOT" pos="0 0 -0.21012" quat="1.0 0.0 0.0 0.0">
+              <inertial pos="0 0 0" mass="0.02" diaginertia="0.0 0.0 0.0" />
+              <geom name="HR_FOOT_collision" pos="0 0 0" quat="0.7071067811882787 0.7071067811848163 0.0 0.0" type="sphere" size="0.022" class="collision" />
+              <geom name="HR_FOOT_visual" pos="0 0 0" quat="1 0 0 0" material="" type="sphere" size="0.022" class="visual" />
+            </body>
+          </body>
+        </body>
+      </body>
+      <site name="TORSO_site" pos="0 0 0" quat="1 0 0 0" />
+      <camera name="front_camera" mode="track" fovy="90.0" quat="4.329780281177467e-17 4.329780281177466e-17 0.7071067811865475 0.7071067811865476" pos="0.0 2.0 0.5" />
+      <camera name="side_camera" mode="track" fovy="90.0" quat="-0.5 -0.4999999999999999 0.5 0.5000000000000001" pos="-2.0 0.0 0.5" />
+      <site name="lidar_site" pos="0 0 .12" size=".015" rgba=".2 .2 .2 1" />
+      <camera name="rgb" pos=".24 0 .08" xyaxes="0 -1 0 0 0 1" fovy="50" />
+      <camera name="left" pos=".24 0.03 .08" xyaxes="0 -1 0 0 0 1" fovy="50" />
+      <camera name="right" pos=".24 -0.03 .08" xyaxes="0 -1 0 0 0 1" fovy="50" />
+    </body>
+    <body name="wall_x_0_0" pos="0 0.5 0.4" euler="0 0 0">
+      <geom name="wall_x_0_0_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.0125 0.5125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_x_0_1" pos="0 1.5 0.4" euler="0 0 0">
+      <geom name="wall_x_0_1_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.0125 0.5125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_x_0_2" pos="0 2.5 0.4" euler="0 0 0">
+      <geom name="wall_x_0_2_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.0125 0.5125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_x_4_0" pos="4 0.5 0.4" euler="0 0 0">
+      <geom name="wall_x_4_0_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.0125 0.5125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_x_4_1" pos="4 1.5 0.4" euler="0 0 0">
+      <geom name="wall_x_4_1_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.0125 0.5125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_x_4_2" pos="4 2.5 0.4" euler="0 0 0">
+      <geom name="wall_x_4_2_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.0125 0.5125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_x_4_3" pos="4 3.5 0.4" euler="0 0 0">
+      <geom name="wall_x_4_3_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.0125 0.5125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_0_0" pos="0.5 0 0.4" euler="0 0 0">
+      <geom name="wall_y_0_0_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_1_0" pos="1.5 0 0.4" euler="0 0 0">
+      <geom name="wall_y_1_0_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_2_0" pos="2.5 0 0.4" euler="0 0 0">
+      <geom name="wall_y_2_0_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_3_0" pos="3.5 0 0.4" euler="0 0 0">
+      <geom name="wall_y_3_0_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_0_1" pos="0.5 1 0.4" euler="0 0 0">
+      <geom name="wall_y_0_1_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_1_1" pos="1.5 1 0.4" euler="0 0 0">
+      <geom name="wall_y_1_1_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_2_1" pos="2.5 1 0.4" euler="0 0 0">
+      <geom name="wall_y_2_1_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_1_2" pos="1.5 2 0.4" euler="0 0 0">
+      <geom name="wall_y_1_2_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_2_2" pos="2.5 2 0.4" euler="0 0 0">
+      <geom name="wall_y_2_2_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_3_2" pos="3.5 2 0.4" euler="0 0 0">
+      <geom name="wall_y_3_2_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_0_3" pos="0.5 3 0.4" euler="0 0 0">
+      <geom name="wall_y_0_3_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_1_3" pos="1.5 3 0.4" euler="0 0 0">
+      <geom name="wall_y_1_3_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_2_3" pos="2.5 3 0.4" euler="0 0 0">
+      <geom name="wall_y_2_3_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_0_4" pos="0.5 4 0.4" euler="0 0 0">
+      <geom name="wall_y_0_4_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_1_4" pos="1.5 4 0.4" euler="0 0 0">
+      <geom name="wall_y_1_4_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_2_4" pos="2.5 4 0.4" euler="0 0 0">
+      <geom name="wall_y_2_4_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <body name="wall_y_3_4" pos="3.5 4 0.4" euler="0 0 0">
+      <geom name="wall_y_3_4_geom" type="box" pos="0 0 0" euler="0 0 0" size="0.5125 0.0125 0.4" rgba=".65 .65 .65 1" group="0" friction="1 .01 .001" />
+    </body>
+    <geom name="terrain_0_0_0_0" type="box" pos="0.125 0.125 0.008141952235947415" size=".12 .12 0.008141952235947415" euler="0.0046195637892553695 -0.010553604666858299 0" rgba="0.41721867040582694 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_0_1_0" type="box" pos="0.375 0.125 0.009530609744198363" size=".12 .12 0.009530609744198363" euler="-0.009134076992864122 -0.005746840072511326 0" rgba="0.41721867040582694 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_0_2_0" type="box" pos="0.625 0.125 0.01973029340983639" size=".12 .12 0.01973029340983639" euler="0.018910869641062922 -0.038776827472263076 0" rgba="0.41721867040582694 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_0_3_0" type="box" pos="0.875 0.125 0.01053665356901268" size=".12 .12 0.01053665356901268" euler="0.008331668365114411 -0.033301064425028545 0" rgba="0.41721867040582694 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_0_0_1" type="box" pos="0.125 0.375 0.02967316983932758" size=".12 .12 0.02967316983932758" euler="0.026587689960056317 -0.037057811386614015 0" rgba="0.41721867040582694 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_0_3_1" type="box" pos="0.875 0.375 0.018603203435969773" size=".12 .12 0.018603203435969773" euler="0.008747210963608282 -0.03944587363885854 0" rgba="0.41721867040582694 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_0_0_2" type="box" pos="0.125 0.625 0.008607955569405135" size=".12 .12 0.008607955569405135" euler="-0.026806222917888346 -0.0030433672372908657 0" rgba="0.41721867040582694 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_0_3_2" type="box" pos="0.875 0.625 0.01858940670745854" size=".12 .12 0.01858940670745854" euler="-0.0038472620930278603 0.03358205440866103 0" rgba="0.41721867040582694 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_0_0_3" type="box" pos="0.125 0.875 0.024968580004613616" size=".12 .12 0.024968580004613616" euler="-0.007906715640004676 -0.02374707548305354 0" rgba="0.41721867040582694 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_0_1_3" type="box" pos="0.375 0.875 0.013219971205569978" size=".12 .12 0.013219971205569978" euler="0.028962802898989372 -0.012094755633366025 0" rgba="0.41721867040582694 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_0_2_3" type="box" pos="0.625 0.875 0.02950082401581402" size=".12 .12 0.02950082401581402" euler="0.005261507160604945 -0.021052331741733613 0" rgba="0.41721867040582694 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_0_3_3" type="box" pos="0.875 0.875 0.020948750599583895" size=".12 .12 0.020948750599583895" euler="0.012818120871650664 0.0011686058571030514 0" rgba="0.41721867040582694 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_0_0" type="box" pos="1.125 0.125 0.01383540846990536" size=".12 .12 0.01383540846990536" euler="-0.0016647341061516302 0.012263105190138818 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_1_0" type="box" pos="1.375 0.125 0.012466424117931063" size=".12 .12 0.012466424117931063" euler="-0.03030310841417338 0.03269904206507732 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_2_0" type="box" pos="1.625 0.125 0.004268764179001715" size=".12 .12 0.004268764179001715" euler="-0.015139149688503207 -0.026290915085833914 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_3_0" type="box" pos="1.875 0.125 0.009356309156463929" size=".12 .12 0.009356309156463929" euler="0.009401178769992795 0.004066986088546817 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_0_1" type="box" pos="1.125 0.375 0.015180959065591445" size=".12 .12 0.015180959065591445" euler="-0.0008437012861763349 0.02731983984867873 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_1_1" type="box" pos="1.375 0.375 0.00943282814278527" size=".12 .12 0.00943282814278527" euler="0.0038436018006969067 0.0003551432636638985 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_2_1" type="box" pos="1.625 0.375 0.004344372546670933" size=".12 .12 0.004344372546670933" euler="-0.02176168521317658 -0.033307421121804355 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_3_1" type="box" pos="1.875 0.375 0.007885019183163358" size=".12 .12 0.007885019183163358" euler="-0.03947297582518747 -0.01654333657285015 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_0_2" type="box" pos="1.125 0.625 0.00983779588056926" size=".12 .12 0.00983779588056926" euler="0.01174588598317882 0.027497647761716766 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_1_2" type="box" pos="1.375 0.625 0.01048737388384336" size=".12 .12 0.01048737388384336" euler="0.01053347860379706 0.0015812277653751289 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_2_2" type="box" pos="1.625 0.625 0.007602523652154949" size=".12 .12 0.007602523652154949" euler="-0.024085995805265582 -0.003817020602545726 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_3_2" type="box" pos="1.875 0.625 0.016403021531239244" size=".12 .12 0.016403021531239244" euler="0.0074621905183193254 0.015945764603426137 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_0_3" type="box" pos="1.125 0.875 0.015401565811817902" size=".12 .12 0.015401565811817902" euler="0.009701223302712086 -0.020456887078979663 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_1_3" type="box" pos="1.375 0.875 0.010896664799697565" size=".12 .12 0.010896664799697565" euler="0.0010924677755974888 -0.03911101562519313 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_2_3" type="box" pos="1.625 0.875 0.00861394520422135" size=".12 .12 0.00861394520422135" euler="-0.01125853680886043 -0.039172770637758286 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_0_3_3" type="box" pos="1.875 0.875 0.012777562013604938" size=".12 .12 0.012777562013604938" euler="0.003912206826085243 -0.03284131301016463 0" rgba="0.37052517016187997 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_0_0" type="box" pos="2.125 0.125 0.017636641736773144" size=".12 .12 0.017636641736773144" euler="-0.004938913145686202 -0.019163677781883638 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_1_0" type="box" pos="2.375 0.125 0.017009300413115443" size=".12 .12 0.017009300413115443" euler="-0.0035462748251983006 0.010027882625026477 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_2_0" type="box" pos="2.625 0.125 0.01763008386450151" size=".12 .12 0.01763008386450151" euler="0.0035982040042716046 -0.02739903810513989 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_3_0" type="box" pos="2.875 0.125 0.014766040677872207" size=".12 .12 0.014766040677872207" euler="0.03484061185364317 -0.006533929430399252 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_0_1" type="box" pos="2.125 0.375 0.01397909103716686" size=".12 .12 0.01397909103716686" euler="0.029941545250146827 -0.02750973339523067 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_1_1" type="box" pos="2.375 0.375 0.015799512819240823" size=".12 .12 0.015799512819240823" euler="-0.002092531479748201 0.004207077424660227 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_2_1" type="box" pos="2.625 0.375 0.017937721873815343" size=".12 .12 0.017937721873815343" euler="0.025052319175180686 -0.029285350628585984 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_3_1" type="box" pos="2.875 0.375 0.010254674785999217" size=".12 .12 0.010254674785999217" euler="0.01406231972276549 0.024937681893261628 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_0_2" type="box" pos="2.125 0.625 0.006423670455955039" size=".12 .12 0.006423670455955039" euler="0.016100420955347874 0.0015135369787059733 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_1_2" type="box" pos="2.375 0.625 0.0051725924296907345" size=".12 .12 0.0051725924296907345" euler="0.0015565691260607112 -0.004095832015795893 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_2_2" type="box" pos="2.625 0.625 0.010693309810057009" size=".12 .12 0.010693309810057009" euler="-0.018596079285268765 -0.010783104496419914 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_3_2" type="box" pos="2.875 0.625 0.015489104252746027" size=".12 .12 0.015489104252746027" euler="-0.012617184977489312 0.028707225993742057 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_0_3" type="box" pos="2.125 0.875 0.014587114822274524" size=".12 .12 0.014587114822274524" euler="0.02019055957459783 -0.00778786086484997 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_1_3" type="box" pos="2.375 0.875 0.006604680545313529" size=".12 .12 0.006604680545313529" euler="-0.03922623713181046 -0.007436527051615738 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_2_3" type="box" pos="2.625 0.875 0.011022481475461123" size=".12 .12 0.011022481475461123" euler="-0.00919380457313742 -0.03172762711995193 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_0_3_3" type="box" pos="2.875 0.875 0.004654867997636895" size=".12 .12 0.004654867997636895" euler="0.030209767532770708 -0.008731472696560195 0" rgba="0.36806159834556307 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_0_0" type="box" pos="3.125 0.125 0.02576756541331989" size=".12 .12 0.02576756541331989" euler="0.005971904371133478 0.029138713857919878 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_1_0" type="box" pos="3.375 0.125 0.028874901700149138" size=".12 .12 0.028874901700149138" euler="0.010967328865423565 -0.039775725978710055 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_2_0" type="box" pos="3.625 0.125 0.02075083583694599" size=".12 .12 0.02075083583694599" euler="-0.0005331036232516725 0.02325736679529925 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_3_0" type="box" pos="3.875 0.125 0.013385301182231085" size=".12 .12 0.013385301182231085" euler="0.01547576264670189 -0.010791668842061598 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_0_1" type="box" pos="3.125 0.375 0.019262071425883057" size=".12 .12 0.019262071425883057" euler="-0.003865284956624214 -0.023140100661742772 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_1_1" type="box" pos="3.375 0.375 0.012370832175484663" size=".12 .12 0.012370832175484663" euler="-0.034896258636543234 0.009893958405022038 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_2_1" type="box" pos="3.625 0.375 0.027317744256002623" size=".12 .12 0.027317744256002623" euler="0.007637832967532156 -0.026394091044390812 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_3_1" type="box" pos="3.875 0.375 0.01806238537834872" size=".12 .12 0.01806238537834872" euler="-0.01920987839586546 -0.00931816679200561 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_0_2" type="box" pos="3.125 0.625 0.004065883935835996" size=".12 .12 0.004065883935835996" euler="0.036721404071337234 0.0018337345795002152 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_1_2" type="box" pos="3.375 0.625 0.01893558183465917" size=".12 .12 0.01893558183465917" euler="-0.03242315660866615 -0.0294582095381713 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_2_2" type="box" pos="3.625 0.625 0.02705483022453012" size=".12 .12 0.02705483022453012" euler="0.027672389715668287 0.013891747870126557 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_3_2" type="box" pos="3.875 0.625 0.022161022497023928" size=".12 .12 0.022161022497023928" euler="0.03452110407170005 0.014106693578884402 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_0_3" type="box" pos="3.125 0.875 0.019719517047769936" size=".12 .12 0.019719517047769936" euler="-0.02812452524175304 -0.021642622302650114 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_1_3" type="box" pos="3.375 0.875 0.00972607175647329" size=".12 .12 0.00972607175647329" euler="-0.03650920516821977 -0.006898351655478863 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_2_3" type="box" pos="3.625 0.875 0.0052011189953464695" size=".12 .12 0.0052011189953464695" euler="0.03266730742283077 0.009837554601604966 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_0_3_3" type="box" pos="3.875 0.875 0.012716556017539406" size=".12 .12 0.012716556017539406" euler="-0.018833609923499754 0.01898318368118153 0" rgba="0.41907751872256593 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_0_0" type="box" pos="0.125 1.125 0.03054506858401538" size=".12 .12 0.03054506858401538" euler="-0.033274856152739826 -0.004378051587229523 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_1_0" type="box" pos="0.375 1.125 0.029966747126753783" size=".12 .12 0.029966747126753783" euler="0.006970987899292833 0.024057004553764992 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_2_0" type="box" pos="0.625 1.125 0.014275663409002902" size=".12 .12 0.014275663409002902" euler="0.02998793942304872 0.03718415226106502 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_3_0" type="box" pos="0.875 1.125 0.011163689085160858" size=".12 .12 0.011163689085160858" euler="-0.01329127328493862 -0.006517138897014434 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_0_1" type="box" pos="0.125 1.375 0.029687077527322126" size=".12 .12 0.029687077527322126" euler="-0.0346318304554342 0.008548184789478615 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_1_1" type="box" pos="0.375 1.375 0.019350549701617585" size=".12 .12 0.019350549701617585" euler="0.021341664416526143 -0.03367856561634411 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_2_1" type="box" pos="0.625 1.375 0.008242834605834283" size=".12 .12 0.008242834605834283" euler="0.023302766559830122 0.03562384775016756 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_3_1" type="box" pos="0.875 1.375 0.018391441807596158" size=".12 .12 0.018391441807596158" euler="0.001202453799505239 0.01681624957940188 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_0_2" type="box" pos="0.125 1.625 0.009319515342852882" size=".12 .12 0.009319515342852882" euler="0.026183943717268517 -0.038020188788642106 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_1_2" type="box" pos="0.375 1.625 0.02078653801440444" size=".12 .12 0.02078653801440444" euler="0.027364536658115175 -0.029747213535528685 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_2_2" type="box" pos="0.625 1.625 0.013620694083896637" size=".12 .12 0.013620694083896637" euler="-0.01812262386826638 0.022123145499094853 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_3_2" type="box" pos="0.875 1.625 0.008774773125286989" size=".12 .12 0.008774773125286989" euler="-0.00805458421059805 0.006668937397162129 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_0_3" type="box" pos="0.125 1.875 0.005039651684512509" size=".12 .12 0.005039651684512509" euler="-0.009966988868416831 -0.02591624933130647 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_1_3" type="box" pos="0.375 1.875 0.011151576734346903" size=".12 .12 0.011151576734346903" euler="-0.026395124172288398 -0.008795189326208198 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_2_3" type="box" pos="0.625 1.875 0.0050589723349604284" size=".12 .12 0.0050589723349604284" euler="-0.020407559505490395 -0.022748834116292364 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_1_3_3" type="box" pos="0.875 1.875 0.022099998808302587" size=".12 .12 0.022099998808302587" euler="0.015058416057098852 -0.0072210919734060075 0" rgba="0.4216132928015581 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_0_0" type="box" pos="1.125 1.125 0.010620449018708605" size=".12 .12 0.010620449018708605" euler="0.0016098811312508648 0.001385135587111952 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_1_0" type="box" pos="1.375 1.125 0.00875850470839045" size=".12 .12 0.00875850470839045" euler="-0.01842541327765458 -0.03851150060894571 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_2_0" type="box" pos="1.625 1.125 0.0056293478410563" size=".12 .12 0.0056293478410563" euler="-0.028776701499282673 -0.0153153152841543 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_3_0" type="box" pos="1.875 1.125 0.0074053034751755415" size=".12 .12 0.0074053034751755415" euler="-0.0055008887452079255 0.029175177432687098 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_0_1" type="box" pos="1.125 1.375 0.015526524516222885" size=".12 .12 0.015526524516222885" euler="-0.008763871482865202 0.005229850527859944 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_1_1" type="box" pos="1.375 1.375 0.015747516716686602" size=".12 .12 0.015747516716686602" euler="0.01393719459881166 -0.036185873173460247 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_2_1" type="box" pos="1.625 1.375 0.009318421286709766" size=".12 .12 0.009318421286709766" euler="0.02181731149587958 -0.008414784651185024 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_3_1" type="box" pos="1.875 1.375 0.015755212913714664" size=".12 .12 0.015755212913714664" euler="-0.022215706631377376 0.022087916651497473 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_0_2" type="box" pos="1.125 1.625 0.012385003859693256" size=".12 .12 0.012385003859693256" euler="0.013480788693391574 -0.013850460069733048 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_1_2" type="box" pos="1.375 1.625 0.007873369129855456" size=".12 .12 0.007873369129855456" euler="-0.005669352861236626 0.015294398379391984 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_2_2" type="box" pos="1.625 1.625 0.00863701003336136" size=".12 .12 0.00863701003336136" euler="0.03665463683465337 0.007453183815966151 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_3_2" type="box" pos="1.875 1.625 0.009497886693542044" size=".12 .12 0.009497886693542044" euler="0.010678608276987751 -0.029629875119278497 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_0_3" type="box" pos="1.125 1.875 0.01280415574252803" size=".12 .12 0.01280415574252803" euler="-0.02810934352724213 0.025584612607134065 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_1_3" type="box" pos="1.375 1.875 0.004657870637848063" size=".12 .12 0.004657870637848063" euler="0.01367903301533789 0.020536688567307018 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_2_3" type="box" pos="1.625 1.875 0.006514436875735543" size=".12 .12 0.006514436875735543" euler="-0.030440377619796566 0.020615861135967063 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_1_3_3" type="box" pos="1.875 1.875 0.007631415952748906" size=".12 .12 0.007631415952748906" euler="0.0002363067158219767 -0.01331799387355672 0" rgba="0.3563202229749832 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_0_0" type="box" pos="2.125 1.125 0.01688484972637711" size=".12 .12 0.01688484972637711" euler="-0.015055515842414203 -0.0019741470882045226 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_1_0" type="box" pos="2.375 1.125 0.008957238594059471" size=".12 .12 0.008957238594059471" euler="0.02570385107468056 0.024854712702433716 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_2_0" type="box" pos="2.625 1.125 0.015759099394298717" size=".12 .12 0.015759099394298717" euler="-0.016827467309151158 0.010121692529327903 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_3_0" type="box" pos="2.875 1.125 0.004150561958202654" size=".12 .12 0.004150561958202654" euler="-0.01776180738438425 0.0016545021812774258 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_0_1" type="box" pos="2.125 1.375 0.008510531442476064" size=".12 .12 0.008510531442476064" euler="0.038937242413767066 0.012650787680543889 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_1_1" type="box" pos="2.375 1.375 0.016496856097104655" size=".12 .12 0.016496856097104655" euler="-0.02233871992672091 0.010726792147547737 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_2_1" type="box" pos="2.625 1.375 0.00912868814224137" size=".12 .12 0.00912868814224137" euler="0.013778600609597354 0.019536168307870236 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_3_1" type="box" pos="2.875 1.375 0.013744905042234025" size=".12 .12 0.013744905042234025" euler="-0.01799670694362792 0.030112107150668803 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_0_2" type="box" pos="2.125 1.625 0.009112867868006809" size=".12 .12 0.009112867868006809" euler="0.006639496537259648 0.03541759414160659 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_1_2" type="box" pos="2.375 1.625 0.014684957766708157" size=".12 .12 0.014684957766708157" euler="-0.026011753389139657 0.023670383039267696 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_2_2" type="box" pos="2.625 1.625 0.008168254845168768" size=".12 .12 0.008168254845168768" euler="-0.014593245622880283 -0.010101707630496951 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_3_2" type="box" pos="2.875 1.625 0.009708939910163791" size=".12 .12 0.009708939910163791" euler="0.03106234904561398 0.008104265525164592 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_0_3" type="box" pos="2.125 1.875 0.008405032254731335" size=".12 .12 0.008405032254731335" euler="-0.019190296434677744 0.03159645260221872 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_1_3" type="box" pos="2.375 1.875 0.004505232138545891" size=".12 .12 0.004505232138545891" euler="-0.03033650227076918 0.034904288456173556 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_2_3" type="box" pos="2.625 1.875 0.013456485801675088" size=".12 .12 0.013456485801675088" euler="0.015227591180815639 0.005533071755370059 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_1_3_3" type="box" pos="2.875 1.875 0.005151300715604073" size=".12 .12 0.005151300715604073" euler="-0.01073628102967751 -0.011427561646652668 0" rgba="0.3609966701049024 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_0_0" type="box" pos="3.125 1.125 0.011798348067186867" size=".12 .12 0.011798348067186867" euler="0.01670696594462865 -0.03999521852809879 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_1_0" type="box" pos="3.375 1.125 0.014520525260663896" size=".12 .12 0.014520525260663896" euler="0.018170782197254598 0.019157974897318138 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_2_0" type="box" pos="3.625 1.125 0.005284142580541466" size=".12 .12 0.005284142580541466" euler="-0.030294981559705406 -0.029986348343548005 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_3_0" type="box" pos="3.875 1.125 0.010427672808553449" size=".12 .12 0.010427672808553449" euler="-0.016912881294207375 -0.015164601957998736 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_0_1" type="box" pos="3.125 1.375 0.008930030428542714" size=".12 .12 0.008930030428542714" euler="-0.02129389958903766 0.006805718217717943 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_1_1" type="box" pos="3.375 1.375 0.010127205170263987" size=".12 .12 0.010127205170263987" euler="-0.008619145367339397 -0.009820295526304711 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_2_1" type="box" pos="3.625 1.375 0.017809434538867568" size=".12 .12 0.017809434538867568" euler="0.0052567182433922235 0.010690690821776178 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_3_1" type="box" pos="3.875 1.375 0.015183590340912724" size=".12 .12 0.015183590340912724" euler="-0.018748697576906618 0.0060058168800999415 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_0_2" type="box" pos="3.125 1.625 0.018455666108461825" size=".12 .12 0.018455666108461825" euler="-0.007356069418801153 -0.012889758656338107 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_1_2" type="box" pos="3.375 1.625 0.012024274090399472" size=".12 .12 0.012024274090399472" euler="-0.018701152603422085 0.020858979386823483 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_2_2" type="box" pos="3.625 1.625 0.016278168424977205" size=".12 .12 0.016278168424977205" euler="0.03460940477313546 -0.017168364890984885 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_3_2" type="box" pos="3.875 1.625 0.015103918415715978" size=".12 .12 0.015103918415715978" euler="0.004288300611462799 -0.036566316223745135 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_0_3" type="box" pos="3.125 1.875 0.00507225855425568" size=".12 .12 0.00507225855425568" euler="0.017841330215014342 -0.028680388403907478 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_1_3" type="box" pos="3.375 1.875 0.015408154683054677" size=".12 .12 0.015408154683054677" euler="0.0014026299744974158 0.01929036241658142 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_2_3" type="box" pos="3.625 1.875 0.006121569281807933" size=".12 .12 0.006121569281807933" euler="0.009454006125430563 0.004047498310557195 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_1_3_3" type="box" pos="3.875 1.875 0.005472306444919394" size=".12 .12 0.005472306444919394" euler="0.03742866474169625 -0.029549402103629357 0" rgba="0.3810781091845769 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_0_0" type="box" pos="0.125 2.125 0.004042391044580403" size=".12 .12 0.004042391044580403" euler="-0.025306205866808238 0.007423478790168782 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_1_0" type="box" pos="0.375 2.125 0.029062838946655532" size=".12 .12 0.029062838946655532" euler="0.03596969809323904 -0.008469690252952439 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_2_0" type="box" pos="0.625 2.125 0.007074232260464707" size=".12 .12 0.007074232260464707" euler="0.01336785475127851 0.032386778133147366 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_3_0" type="box" pos="0.875 2.125 0.031197577772284893" size=".12 .12 0.031197577772284893" euler="-0.017687177927398236 -0.03792579176616502 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_0_1" type="box" pos="0.125 2.375 0.01759834454376215" size=".12 .12 0.01759834454376215" euler="0.03440713797877384 0.009524617754424376 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_1_1" type="box" pos="0.375 2.375 0.018266903927010626" size=".12 .12 0.018266903927010626" euler="0.039598575671523494 -0.02091686264232572 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_2_1" type="box" pos="0.625 2.375 0.00705657456209472" size=".12 .12 0.00705657456209472" euler="-0.0019101270309590038 0.032159422766565395 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_3_1" type="box" pos="0.875 2.375 0.010853526033594544" size=".12 .12 0.010853526033594544" euler="0.004802525675923874 0.03578425437473514 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_0_2" type="box" pos="0.125 2.625 0.007166230904735402" size=".12 .12 0.007166230904735402" euler="0.03586139550983667 -0.029270804862216417 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_1_2" type="box" pos="0.375 2.625 0.005877118643558341" size=".12 .12 0.005877118643558341" euler="-0.009895488704348195 0.027309621903098137 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_2_2" type="box" pos="0.625 2.625 0.019832419864777812" size=".12 .12 0.019832419864777812" euler="-0.036999888592787196 0.006358827472125635 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_3_2" type="box" pos="0.875 2.625 0.00819715778670689" size=".12 .12 0.00819715778670689" euler="-0.024918732420812547 0.0234413238982946 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_0_3" type="box" pos="0.125 2.875 0.020409472236290506" size=".12 .12 0.020409472236290506" euler="0.019603629145527872 -0.036073529352881016 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_1_3" type="box" pos="0.375 2.875 0.010164902170544703" size=".12 .12 0.010164902170544703" euler="0.03890054391121583 0.034842360615102465 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_2_3" type="box" pos="0.625 2.875 0.017394641771371445" size=".12 .12 0.017394641771371445" euler="0.029972943880443935 0.011796297244148303 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_2_3_3" type="box" pos="0.875 2.875 0.029919350861512005" size=".12 .12 0.029919350861512005" euler="0.0015273820625473014 0.009965410506805654 0" rgba="0.4274547870756713 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_0_0" type="box" pos="1.125 2.125 0.0052496061068343525" size=".12 .12 0.0052496061068343525" euler="0.005070060814106332 0.0001969303286374624 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_1_0" type="box" pos="1.375 2.125 0.012811307981756745" size=".12 .12 0.012811307981756745" euler="-0.021345668863144544 0.0008913772756545396 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_2_0" type="box" pos="1.625 2.125 0.021056787604641518" size=".12 .12 0.021056787604641518" euler="-0.0061501724521619006 -0.035383489485083616 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_3_0" type="box" pos="1.875 2.125 0.01681989791674196" size=".12 .12 0.01681989791674196" euler="0.031057762204634305 -0.003509023442556651 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_0_1" type="box" pos="1.125 2.375 0.011743237109987256" size=".12 .12 0.011743237109987256" euler="0.001972723602396566 -0.023428220406420952 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_1_1" type="box" pos="1.375 2.375 0.02287994492317309" size=".12 .12 0.02287994492317309" euler="-0.014085323782443683 0.016348869164208024 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_2_1" type="box" pos="1.625 2.375 0.013685650433390874" size=".12 .12 0.013685650433390874" euler="0.028688790496869863 0.03164994316274874 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_3_1" type="box" pos="1.875 2.375 0.015073933780653411" size=".12 .12 0.015073933780653411" euler="-0.027616570906414888 -0.008675358342222932 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_0_2" type="box" pos="1.125 2.625 0.008297062824146379" size=".12 .12 0.008297062824146379" euler="-0.005227465761647718 -0.01872230365558023 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_1_2" type="box" pos="1.375 2.625 0.005906435527123263" size=".12 .12 0.005906435527123263" euler="0.014660571666944844 -0.005519046368156706 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_2_2" type="box" pos="1.625 2.625 0.018135845835915036" size=".12 .12 0.018135845835915036" euler="-0.035797533461057365 0.023025352970802902 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_3_2" type="box" pos="1.875 2.625 0.022244330354556398" size=".12 .12 0.022244330354556398" euler="-0.035714418506457624 0.016753964558832907 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_0_3" type="box" pos="1.125 2.875 0.02096337279849882" size=".12 .12 0.02096337279849882" euler="-0.03138253654435702 -0.03965254478387902 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_1_3" type="box" pos="1.375 2.875 0.008467336140886711" size=".12 .12 0.008467336140886711" euler="-0.004107336263454872 -0.008544860360140669 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_2_3" type="box" pos="1.625 2.875 0.0048701556636687095" size=".12 .12 0.0048701556636687095" euler="0.038474435480829676 0.016657280854239592 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_2_3_3" type="box" pos="1.875 2.875 0.022753177741085217" size=".12 .12 0.022753177741085217" euler="-0.006090961672250289 0.015066985545273234 0" rgba="0.38966705808028584 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_0_0" type="box" pos="2.125 2.125 0.006169489089252165" size=".12 .12 0.006169489089252165" euler="0.036402138095887195 0.03891903963103694 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_1_0" type="box" pos="2.375 2.125 0.004381137872884512" size=".12 .12 0.004381137872884512" euler="0.023870444456133295 -0.0011681495924958235 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_2_0" type="box" pos="2.625 2.125 0.0072550520519250525" size=".12 .12 0.0072550520519250525" euler="0.03494497944512361 -0.016289463322474385 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_3_0" type="box" pos="2.875 2.125 0.009868921897284007" size=".12 .12 0.009868921897284007" euler="0.03798137100591808 -0.008317952402829183 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_0_1" type="box" pos="2.125 2.375 0.021260096689161977" size=".12 .12 0.021260096689161977" euler="-0.039949062164402055 -0.029276684506776195 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_1_1" type="box" pos="2.375 2.375 0.014182968075609996" size=".12 .12 0.014182968075609996" euler="0.005766690722807846 0.0009226151583590081 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_2_1" type="box" pos="2.625 2.375 0.01796016835949031" size=".12 .12 0.01796016835949031" euler="0.011143011064336926 -0.0014491742024250673 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_3_1" type="box" pos="2.875 2.375 0.007980009589981973" size=".12 .12 0.007980009589981973" euler="-0.03571732424452789 -0.015409484831972468 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_0_2" type="box" pos="2.125 2.625 0.006536940393067457" size=".12 .12 0.006536940393067457" euler="0.010429621334083157 0.022536875327348778 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_1_2" type="box" pos="2.375 2.625 0.018073568166540186" size=".12 .12 0.018073568166540186" euler="0.024998387098873094 -0.01071148874724754 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_2_2" type="box" pos="2.625 2.625 0.02126362979734926" size=".12 .12 0.02126362979734926" euler="0.007402698043578827 0.024995609038403428 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_3_2" type="box" pos="2.875 2.625 0.02150150552848059" size=".12 .12 0.02150150552848059" euler="0.0178381023965977 0.02169984285527697 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_0_3" type="box" pos="2.125 2.875 0.018322495720501895" size=".12 .12 0.018322495720501895" euler="0.02087585057054806 0.03429819231309133 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_1_3" type="box" pos="2.375 2.875 0.009424914305419732" size=".12 .12 0.009424914305419732" euler="0.005650247324413431 -0.012489138402270249 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_2_3" type="box" pos="2.625 2.875 0.014971265705414868" size=".12 .12 0.014971265705414868" euler="-0.018294037470403753 0.02914445755116426 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_2_3_3" type="box" pos="2.875 2.875 0.012224610873748326" size=".12 .12 0.012224610873748326" euler="0.039203448228851766 -0.016697470998599914 0" rgba="0.38106774449935027 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_0_0" type="box" pos="3.125 2.125 0.01255250574112759" size=".12 .12 0.01255250574112759" euler="0.009333428202260692 -0.0026746887197006616 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_1_0" type="box" pos="3.375 2.125 0.006567013258295265" size=".12 .12 0.006567013258295265" euler="0.014190919130764132 0.03601335850429247 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_2_0" type="box" pos="3.625 2.125 0.009976758101043086" size=".12 .12 0.009976758101043086" euler="-0.03106492348353699 -0.03451456658176752 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_3_0" type="box" pos="3.875 2.125 0.021143056867829902" size=".12 .12 0.021143056867829902" euler="0.03730590386144198 -0.03067258068561276 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_0_1" type="box" pos="3.125 2.375 0.00837461152100014" size=".12 .12 0.00837461152100014" euler="0.02323670473364358 -0.008428963716150907 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_1_1" type="box" pos="3.375 2.375 0.026383096047569853" size=".12 .12 0.026383096047569853" euler="0.014906895646952939 0.022280463426519723 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_2_1" type="box" pos="3.625 2.375 0.027093230042867747" size=".12 .12 0.027093230042867747" euler="-0.008044991920065366 -0.03095914510387404 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_3_1" type="box" pos="3.875 2.375 0.007675323697328509" size=".12 .12 0.007675323697328509" euler="0.03426400062786481 0.0025782304354723257 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_0_2" type="box" pos="3.125 2.625 0.009405347380731115" size=".12 .12 0.009405347380731115" euler="0.03971902341210814 -0.026978184577880357 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_1_2" type="box" pos="3.375 2.625 0.006734036314412606" size=".12 .12 0.006734036314412606" euler="-0.02522593799237629 -0.03642078655311502 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_2_2" type="box" pos="3.625 2.625 0.014487730357912433" size=".12 .12 0.014487730357912433" euler="-0.011773620606588632 0.027417666596457467 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_3_2" type="box" pos="3.875 2.625 0.008253324709985571" size=".12 .12 0.008253324709985571" euler="-0.02705497247971686 0.009872374987847564 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_0_3" type="box" pos="3.125 2.875 0.01335755164694455" size=".12 .12 0.01335755164694455" euler="0.02593999710467656 -0.032441900861726485 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_1_3" type="box" pos="3.375 2.875 0.0053716005987080005" size=".12 .12 0.0053716005987080005" euler="0.0026271987351202605 -0.011642789774629254 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_2_3" type="box" pos="3.625 2.875 0.014237288111811639" size=".12 .12 0.014237288111811639" euler="-0.009720424823726006 0.024373142380954317 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_2_3_3" type="box" pos="3.875 2.875 0.011174968886768853" size=".12 .12 0.011174968886768853" euler="0.03977379146784251 -0.022998483847383584 0" rgba="0.4116856779743844 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_0_0" type="box" pos="0.125 3.125 0.008850647798907334" size=".12 .12 0.008850647798907334" euler="-0.026892943300345005 -0.03550435278241165 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_1_0" type="box" pos="0.375 3.125 0.015607987876528184" size=".12 .12 0.015607987876528184" euler="0.025165286180976305 -0.03757384657055307 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_2_0" type="box" pos="0.625 3.125 0.007374352533586448" size=".12 .12 0.007374352533586448" euler="0.015188062643544976 -0.014516950261754272 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_3_0" type="box" pos="0.875 3.125 0.004765550188853736" size=".12 .12 0.004765550188853736" euler="0.005606818795105849 0.03876256897528683 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_0_1" type="box" pos="0.125 3.375 0.006587784315771582" size=".12 .12 0.006587784315771582" euler="0.015180570079683396 0.010717868952175393 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_1_1" type="box" pos="0.375 3.375 0.017080374849873695" size=".12 .12 0.017080374849873695" euler="-0.029414154797755734 0.0070175476637203485 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_2_1" type="box" pos="0.625 3.375 0.007053006997720262" size=".12 .12 0.007053006997720262" euler="0.00915773653239687 -0.026256134953442596 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_3_1" type="box" pos="0.875 3.375 0.00806397328528875" size=".12 .12 0.00806397328528875" euler="0.03048425326427106 0.02643009883985057 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_0_2" type="box" pos="0.125 3.625 0.00683534697345548" size=".12 .12 0.00683534697345548" euler="0.005239945473636175 0.008586654828027271 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_1_2" type="box" pos="0.375 3.625 0.00831485296077827" size=".12 .12 0.00831485296077827" euler="0.006667264375631775 0.03347500578507868 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_2_2" type="box" pos="0.625 3.625 0.017129430365760704" size=".12 .12 0.017129430365760704" euler="-0.015099989260092154 -0.020087655253716738 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_3_2" type="box" pos="0.875 3.625 0.01618395445947124" size=".12 .12 0.01618395445947124" euler="0.02744373923748445 0.024457486451140202 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_0_3" type="box" pos="0.125 3.875 0.0117723655341281" size=".12 .12 0.0117723655341281" euler="-0.010467410670362672 0.012361749912503009 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_1_3" type="box" pos="0.375 3.875 0.008996112874323413" size=".12 .12 0.008996112874323413" euler="-0.014999612723863062 0.03522092329458145 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_2_3" type="box" pos="0.625 3.875 0.01895930443725042" size=".12 .12 0.01895930443725042" euler="-0.0256051868342092 0.028770282174601543 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_0_3_3_3" type="box" pos="0.875 3.875 0.010305833328513012" size=".12 .12 0.010305833328513012" euler="-0.0019023935868355685 0.03051885247132164 0" rgba="0.3685225895285315 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_0_0" type="box" pos="1.125 3.125 0.0116742266733636" size=".12 .12 0.0116742266733636" euler="0.010897446597766168 -0.00303105525760073 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_1_0" type="box" pos="1.375 3.125 0.015526895295241308" size=".12 .12 0.015526895295241308" euler="0.02316558200973374 0.0022686797865945144 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_2_0" type="box" pos="1.625 3.125 0.015131015938533441" size=".12 .12 0.015131015938533441" euler="-0.014319550227128684 -0.011672023702350272 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_3_0" type="box" pos="1.875 3.125 0.005579562907634287" size=".12 .12 0.005579562907634287" euler="-0.012988274569967116 0.011825453418579004 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_0_1" type="box" pos="1.125 3.375 0.008363326729235374" size=".12 .12 0.008363326729235374" euler="0.024739890477115105 -0.036427841810613024 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_1_1" type="box" pos="1.375 3.375 0.00996811981667617" size=".12 .12 0.00996811981667617" euler="-0.02577813120009438 -0.0009122448101613681 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_2_1" type="box" pos="1.625 3.375 0.013798276433670592" size=".12 .12 0.013798276433670592" euler="0.034281983836192124 0.03051044385673634 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_3_1" type="box" pos="1.875 3.375 0.009779728526673772" size=".12 .12 0.009779728526673772" euler="-0.013517561177844667 0.030979100655612386 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_0_2" type="box" pos="1.125 3.625 0.010854582183054275" size=".12 .12 0.010854582183054275" euler="0.015382975836000033 -0.026797622390365844 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_1_2" type="box" pos="1.375 3.625 0.01084455407835407" size=".12 .12 0.01084455407835407" euler="-0.027978960352838103 -0.004737419597334647 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_2_2" type="box" pos="1.625 3.625 0.020591287004546238" size=".12 .12 0.020591287004546238" euler="0.0013589315344864974 0.0196186023424288 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_3_2" type="box" pos="1.875 3.625 0.0053686988371341796" size=".12 .12 0.0053686988371341796" euler="-0.01937128432543812 0.006920083786891552 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_0_3" type="box" pos="1.125 3.875 0.017591989123008786" size=".12 .12 0.017591989123008786" euler="0.03792276431758506 0.011504060249083528 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_1_3" type="box" pos="1.375 3.875 0.017013140173950406" size=".12 .12 0.017013140173950406" euler="-0.024144346140334463 0.016328770527466167 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_2_3" type="box" pos="1.625 3.875 0.014972633579178628" size=".12 .12 0.014972633579178628" euler="-0.0030512196649703227 -0.026840850995666514 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_1_3_3_3" type="box" pos="1.875 3.875 0.017928307442209385" size=".12 .12 0.017928307442209385" euler="0.007347533980797051 -0.03752610904576764 0" rgba="0.3756506816409277 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_0_0" type="box" pos="2.125 3.125 0.009563400677152077" size=".12 .12 0.009563400677152077" euler="0.013734507226579637 -0.029609448007321897 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_1_0" type="box" pos="2.375 3.125 0.016942198281617957" size=".12 .12 0.016942198281617957" euler="-0.03647332433367505 -0.03180286371412937 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_2_0" type="box" pos="2.625 3.125 0.015698385093975635" size=".12 .12 0.015698385093975635" euler="-0.004922328267422921 0.015298726715059947 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_3_0" type="box" pos="2.875 3.125 0.00852724650591525" size=".12 .12 0.00852724650591525" euler="-0.03390347600108663 0.03023078877389953 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_0_1" type="box" pos="2.125 3.375 0.008991921710063473" size=".12 .12 0.008991921710063473" euler="0.0260481216794674 0.016805526638217654 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_1_1" type="box" pos="2.375 3.375 0.008382848660195785" size=".12 .12 0.008382848660195785" euler="0.024791912993036687 0.025173793900609386 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_2_1" type="box" pos="2.625 3.375 0.012648946040143336" size=".12 .12 0.012648946040143336" euler="0.027629065675570323 -0.033631672637254695 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_3_1" type="box" pos="2.875 3.375 0.016610555940485758" size=".12 .12 0.016610555940485758" euler="-0.0010776471722621986 0.01072124023208626 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_0_2" type="box" pos="2.125 3.625 0.01750363694285613" size=".12 .12 0.01750363694285613" euler="-0.013560063064557717 0.03370916119660757 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_1_2" type="box" pos="2.375 3.625 0.019098283568507672" size=".12 .12 0.019098283568507672" euler="0.0010638665015279408 0.016891438617858932 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_2_2" type="box" pos="2.625 3.625 0.009959460874214489" size=".12 .12 0.009959460874214489" euler="-0.03528325931488582 0.02495935281677463 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_3_2" type="box" pos="2.875 3.625 0.00782952570876375" size=".12 .12 0.00782952570876375" euler="0.020415954913583133 -0.011616953372518671 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_0_3" type="box" pos="2.125 3.875 0.006312629956079964" size=".12 .12 0.006312629956079964" euler="0.027586052765377907 -0.023622294447634744 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_1_3" type="box" pos="2.375 3.875 0.0178845975293004" size=".12 .12 0.0178845975293004" euler="-0.03021421784783109 0.005773697463697047 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_2_3" type="box" pos="2.625 3.875 0.01917868923278178" size=".12 .12 0.01917868923278178" euler="-0.02240777889694109 -0.037005876279833747 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_2_3_3_3" type="box" pos="2.875 3.875 0.009521473447816604" size=".12 .12 0.009521473447816604" euler="0.009222433182537675 -0.027241090154718137 0" rgba="0.3746401444465974 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_0_0" type="box" pos="3.125 3.125 0.016101140021451438" size=".12 .12 0.016101140021451438" euler="-0.031034380094808356 0.02349898708553525 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_1_0" type="box" pos="3.375 3.125 0.014370590404615679" size=".12 .12 0.014370590404615679" euler="0.025504455809289416 0.026850072294127815 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_2_0" type="box" pos="3.625 3.125 0.0051178275452172925" size=".12 .12 0.0051178275452172925" euler="0.023074592733945846 -0.0087082328411471 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_3_0" type="box" pos="3.875 3.125 0.01285628535073417" size=".12 .12 0.01285628535073417" euler="0.006723657717057477 0.019685163724499667 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_0_1" type="box" pos="3.125 3.375 0.014094817232670457" size=".12 .12 0.014094817232670457" euler="-0.008106082509904473 -0.01374052037559011 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_1_1" type="box" pos="3.375 3.375 0.01903483996716519" size=".12 .12 0.01903483996716519" euler="-0.03005945850759039 -0.012384316430293928 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_2_1" type="box" pos="3.625 3.375 0.009524645899181021" size=".12 .12 0.009524645899181021" euler="-0.03131716432493243 -0.029730924353527942 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_3_1" type="box" pos="3.875 3.375 0.021419315601216005" size=".12 .12 0.021419315601216005" euler="-0.017563554707200425 -0.03148321991785773 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_0_2" type="box" pos="3.125 3.625 0.016089672342479655" size=".12 .12 0.016089672342479655" euler="0.01564753487465246 0.005318170093657856 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_1_2" type="box" pos="3.375 3.625 0.005384777646069181" size=".12 .12 0.005384777646069181" euler="0.03947757354533494 -0.033808187637224985 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_2_2" type="box" pos="3.625 3.625 0.008754513952931895" size=".12 .12 0.008754513952931895" euler="-0.004059562611098612 -0.018029272259202686 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_3_2" type="box" pos="3.875 3.625 0.015547074963015044" size=".12 .12 0.015547074963015044" euler="-0.0003494225781329602 0.016049181716285263 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_0_3" type="box" pos="3.125 3.875 0.017890629488725975" size=".12 .12 0.017890629488725975" euler="0.008584430677239914 0.010195239278255157 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_1_3" type="box" pos="3.375 3.875 0.009256970083228299" size=".12 .12 0.009256970083228299" euler="-0.03438687652049852 0.03207437769841063 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_2_3" type="box" pos="3.625 3.875 0.013240851611484233" size=".12 .12 0.013240851611484233" euler="-0.02804266231110117 -0.02389248125616489 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+    <geom name="terrain_3_3_3_3" type="box" pos="3.875 3.875 0.00885670780208268" size=".12 .12 0.00885670780208268" euler="0.025769521939583977 0.016229416281712386 0" rgba="0.37978503575650274 .32 .22 1" group="0" friction="1 .01 .001" />
+  </worldbody>
+  <actuator>
+    <motor name="FL_HipX_joint_ctrl" joint="FL_HipX_joint" class="motor" gear="1" ctrlrange="-30 30" />
+    <motor name="FL_HipY_joint_ctrl" joint="FL_HipY_joint" class="motor" gear="1" ctrlrange="-30 30" />
+    <motor name="FL_Knee_joint_ctrl" joint="FL_Knee_joint" class="motor" gear="1" ctrlrange="-30 30" />
+    <motor name="FR_HipX_joint_ctrl" joint="FR_HipX_joint" class="motor" gear="1" ctrlrange="-30 30" />
+    <motor name="FR_HipY_joint_ctrl" joint="FR_HipY_joint" class="motor" gear="1" ctrlrange="-30 30" />
+    <motor name="FR_Knee_joint_ctrl" joint="FR_Knee_joint" class="motor" gear="1" ctrlrange="-30 30" />
+    <motor name="HL_HipX_joint_ctrl" joint="HL_HipX_joint" class="motor" gear="1" ctrlrange="-30 30" />
+    <motor name="HL_HipY_joint_ctrl" joint="HL_HipY_joint" class="motor" gear="1" ctrlrange="-30 30" />
+    <motor name="HL_Knee_joint_ctrl" joint="HL_Knee_joint" class="motor" gear="1" ctrlrange="-30 30" />
+    <motor name="HR_HipX_joint_ctrl" joint="HR_HipX_joint" class="motor" gear="1" ctrlrange="-30 30" />
+    <motor name="HR_HipY_joint_ctrl" joint="HR_HipY_joint" class="motor" gear="1" ctrlrange="-30 30" />
+    <motor name="HR_Knee_joint_ctrl" joint="HR_Knee_joint" class="motor" gear="1" ctrlrange="-30 30" />
+  </actuator>
+  <contact>
+    <exclude body1="TORSO" body2="FL_HIP" />
+    <exclude body1="FL_HIP" body2="FL_THIGH" />
+    <exclude body1="FL_THIGH" body2="FL_SHANK" />
+    <exclude body1="FL_SHANK" body2="FL_FOOT" />
+    <exclude body1="TORSO" body2="FR_HIP" />
+    <exclude body1="FR_HIP" body2="FR_THIGH" />
+    <exclude body1="FR_THIGH" body2="FR_SHANK" />
+    <exclude body1="FR_SHANK" body2="FR_FOOT" />
+    <exclude body1="TORSO" body2="HL_HIP" />
+    <exclude body1="HL_HIP" body2="HL_THIGH" />
+    <exclude body1="HL_THIGH" body2="HL_SHANK" />
+    <exclude body1="HL_SHANK" body2="HL_FOOT" />
+    <exclude body1="TORSO" body2="HR_HIP" />
+    <exclude body1="HR_HIP" body2="HR_THIGH" />
+    <exclude body1="HR_THIGH" body2="HR_SHANK" />
+    <exclude body1="HR_SHANK" body2="HR_FOOT" />
+  </contact>
+  <sensor>
+    <framepos name="TORSO_site_pos" objtype="site" objname="TORSO_site" />
+    <framequat name="TORSO_site_quat" objtype="site" objname="TORSO_site" />
+    <framelinvel name="TORSO_site_linvel" objtype="site" objname="TORSO_site" />
+    <frameangvel name="TORSO_site_angvel" objtype="site" objname="TORSO_site" />
+    <velocimeter name="TORSO_site_vel" site="TORSO_site" />
+    <accelerometer site="imu_site" />
+    <gyro site="imu_site" />
+  </sensor>
+  <option timestep=".001" gravity="0 0 -9.81" />
+  <visual>
+    <global offwidth="640" offheight="480" />
+    <map znear=".01" zfar="30" />
+    <headlight ambient=".4 .4 .4" diffuse=".6 .6 .6" specular=".1 .1 .1" />
+  </visual>
+</mujoco>
