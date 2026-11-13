@@ -1,0 +1,28 @@
+# straight_driver parameters. Launch arguments (max_speed, stop_distance, max_distance,
+# start_delay, drive) override the matching values here.
+straight_driver:
+  ros__parameters:
+    # Motion (clamped in code to the team limits 0.25 m/s, 0.5 rad/s)
+    max_speed: 0.10            # m/s cruising
+    min_speed: 0.05            # m/s just before stopping
+    max_distance: 5.0          # m; stop here even if the way is clear (<= 0: no limit)
+    start_delay: 3.0           # s countdown after sensors are ready
+    k_heading: 1.0             # rad/s per rad heading error
+    k_cross_track: 0.8         # rad heading correction per m off the start line
+    max_turn_rate: 0.3         # rad/s
+
+    # Obstacle box ahead of the robot, in base_link (x fwd, y left, z up)
+    stop_distance: 0.50        # m between front edge and obstacle -> stop
+    slow_distance: 1.20        # m -> start slowing down
+    lookahead: 3.0             # m checked beyond the front edge
+    front_x: 0.32              # m, front edge incl. feet (lite3-maze footprint 0.64 m)
+    half_width: 0.30           # m, half width incl. feet (0.23) + 0.07 margin
+    ground_z: -0.35            # m, floor in base_link when standing
+    min_obstacle_height: 0.10  # m above the floor: lower things are ignored
+    max_obstacle_height: 0.75  # m above the floor: higher things are walked under
+    min_points: 5              # lidar points needed to count as an obstacle
+
+    cloud_topic: /livox/points
+    odom_topic: /odom
+    sensor_timeout: 0.5        # s without cloud/odom while driving -> stop
+    manual_on_finish: true     # send manual mode (0x21010C02) after the final stop

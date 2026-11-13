@@ -44,8 +44,8 @@ against it.
 | Manufacturer perception host | `192.168.1.103` (Jetson Xavier NX in the Pro/LiDAR edition; UDP 43899 for app/AI toggles). By default the motion host reports its state **only** to this host, port 43897 (set in `~/jy_exe/conf/network.toml` on the motion host). We don't use the host directly [doc] |
 | Manufacturer navigation host | `192.168.1.106` (mentioned in the SDK guide) [doc, not seen on our network] |
 | Wide-angle camera stream | `rtsp://192.168.1.120:8554/test`. Only the first client that connects receives it [doc, unverified on our robot] |
-| Camera model | The manufacturer guides describe an Intel RealSense D435i. **Our robot has an Orbbec camera** (`orbbec_camera_msgs` topics) [live], so the guides' RealSense instructions (`realsense-viewer`, `align_depth.enable`) don't apply |
-| `lite3_domain_bridge_4` host | **`192.168.1.50`** (robot network) / **`192.168.10.62`** (lab network). A separate guest (VM/container) on the same Proxmox host as our robot computer (ping ≈ 0.03 ms), not a process on our computer. Found by matching its DDS participant (prefix `01.0f.5c.28.0b.02.23.38.01.00.00.00`) to its locators, 2026-11-13 [live]. No hostname, and we have no login there; the lab operator manages it |
+| Camera model | The manufacturer guides describe an Intel RealSense D435i. **Our robot has an Orbbec Gemini 335** (driver launch file `orbbec_camera gemini_330_series.launch.py`) [lab operator, 2026-11-13], so the guides' RealSense instructions (`realsense-viewer`, `align_depth.enable`) don't apply |
+| `lite3_domain_bridge_4` host | **`192.168.1.50`** (robot network) / **`192.168.10.62`** (lab network). A separate guest (VM/container) on the same Proxmox host as our robot computer (ping ≈ 0.03 ms), not a process on our computer. Found by matching its DDS participant (prefix `01.0f.5c.28.0b.02.23.38.01.00.00.00`) to its locators, 2026-11-13 [live]. No hostname. Per the lab operator (2026-11-13), the camera driver runs on the robot's *system computer* at `192.168.10.<60 + robot number>` (robot number, **not** group number), user `user` (password from the lab operator); its autostart is `~/.config/tmuxinator/lite3.yml`. `.62` suggests this is that machine for robot 2. Unconfirmed |
 | ROS domain | **`ROS_DOMAIN_ID=4`**. Any machine that should see the robot must use it |
 | DDS | Fast DDS (`rmw_fastrtps_cpp`). Use UDP-only transport for Nav2 (see §8) |
 
@@ -53,6 +53,82 @@ against it.
 does this. A second UDP sender would give the robot two conflicting command streams. The UDP
 protocol is documented in §6.4 so you understand what the bridge does, and in case the
 bridge is ever unavailable.
+
+### 1.1 Hardware specifications
+
+Sources: **[doc]** manufacturer guides (above), **[datasheet]** vendor spec pages
+([Mid-360](https://www.livoxtech.com/mid-360/specs),
+[Gemini 335](https://www.orbbec.com/products/stereo-vision-camera/gemini-335/), read
+2026-11-13), **[live]** measured on our robot, **[derived]** computed from the others.
+
+**Robot (Lite3)**
+
+| Item | Value |
+|---|---|
+| Body | 548 × 370 mm; body 11 kg (with battery and HipX joints) + 4 × 1.12 kg legs ≈ 15.5 kg [doc]. More geometry in §7 |
+| Standing height | `base_link` ≈ 0.35 m above the floor; lying down ≈ 0.07–0.11 m [doc][live] |
+| Motion host | Rockchip **RK3588** (ARM), runs the locomotion firmware [doc] |
+| Joints | 12 (3 per leg: HipX, HipY, Knee). High-power DC motor + reducer + absolute encoder each [doc] |
+| Joint limits | HipX −24…24°, 6.48 N·m nominal / 24 N·m max, 26.2 rad/s. HipY −200…20°, 6.48 / 24 N·m, 26.1 rad/s. Knee 34.5…156°, 9.72 / 36 N·m, 17.1 rad/s [doc] |
+| Body IMU | 5 mm ahead of the body origin, on the motion host [doc] |
+| Speed limits | ±1.0 m/s forward, ±0.5 m/s sideways, ±1.5 rad/s turn (§6.2) [doc]; team limit 0.25 m/s, 0.5 rad/s |
+| Protections | Overtemperature → stops and lies down; fall prediction → joints damped, speed to zero (§6.2) [doc] |
+| Power for accessories | 24 V port on the function box (lidar via XT30) [doc] |
+| Perception host (manufacturer) | Jetson Xavier NX in the Pro/LiDAR edition; the kit guide uses an AGX Orin 64 GB. Not used by us [doc] |
+
+**Robot computer (where our code runs)** [live]
+
+| Item | Value |
+|---|---|
+| Type | LXC container on a Proxmox host (the bridge runs in a sibling guest, §1) |
+| CPU | Intel Core i5-13420H, 10 threads visible |
+| RAM | 6 GB |
+| Disk | 30 GB, ~6.7 GB free on 2026-11-13 (a full recording uses ~1.6 GB/min, so ~4 min) |
+| GPU | **None usable** (Intel iGPU only, no CUDA). YOLO and other networks run on the CPU |
+| OS | Ubuntu 22.04.5, ROS 2 Humble |
+| Network | `eth0` 192.168.1.74 (robot), `eth1` 192.168.10.74 (lab) |
+
+**Lidar: Livox Mid-360**
+
+| Item | Value |
+|---|---|
+| Mount | 186.78 mm ahead, 124.98 mm above `base_link`, pitched 15° down (§5) [doc][live]. ≈ 0.475 m above the floor when standing [derived] |
+| Range | 40 m @ 10 % reflectivity, 70 m @ 80 %. Blind zone 0.1 m (0.1–0.2 m recorded but precision not guaranteed) [datasheet] |
+| FOV | 360° horizontal, **−7° to +52°** vertical [datasheet] |
+| Points | 200,000 pts/s, 10 Hz frames (≈ 20,000 points per message), non-repetitive scan [datasheet][live] |
+| Precision | ≤ 2 cm @ 10 m, ≤ 3 cm @ 0.2 m (1σ); angular < 0.15° [datasheet] |
+| Built-in IMU | ICM40609 (`/livox/imu`, acceleration in g) [datasheet][live] |
+| Other | 905 nm, Class 1 eye-safe; 6.5 W average; 9–27 V; 100BASE-TX Ethernet; PTPv2/GPS sync; IP67; −20…55 °C; 265 g [datasheet] |
+
+What the mount means in practice [derived, checked live 2026-11-13]:
+- **Ahead:** the 15° pitch turns the −7…+52° FOV into **−22…+37°**. The lowest ray reaches
+  the floor about 1.2 m ahead of the lidar (≈ 1.36 m from `base_link`); live, the first floor
+  returns were at ≈ 1.25 m. Low objects closer than that are not seen.
+- **Behind:** the FOV is −7+15 = **+8…+67°**, so it never sees the floor behind the robot.
+- **Sides:** about −7…+52°, floor from ≈ 3.9 m out.
+- About 36 hits per scan land on the robot itself (§3.2).
+
+**Camera: Orbbec Gemini 335** (the guides describe a RealSense D435i; see §1)
+
+| Item | Value |
+|---|---|
+| Mount | 252.28 mm ahead, 74.10 mm above `base_link`, pitched 20° down (§5) [doc][live]. ≈ 0.42 m above the floor when standing [derived] |
+| Depth | Active/passive stereo, 850 nm. Range 0.10–20 m+, **optimal 0.26–3 m**. Precision ≤ 1.5 % at 2 m [datasheet] |
+| Depth FOV | 90° × 65° (H × V); up to 1280×800 @ 30 fps [datasheet] |
+| Colour | Up to 1920×1080 @ 30 fps; FOV 86° × 55° [datasheet] |
+| **Our streams** | Colour 640×480 `rgb8` and depth 640×480 `16UC1` (mm), both 30 Hz, not aligned (§3.1) [live] |
+| IMU | Supported by the camera [datasheet]; not published on our robot (no camera IMU topic seen) [live] |
+| Other | USB 3.0 Type-C (data and power); < 3.0 W; −10…45 °C, indoor/outdoor; IP5X; 90 × 25 × 30 mm, 97 g [datasheet] |
+
+What the mount means [derived]: the depth image covers 52.5° down to 12.5° up from
+horizontal, so the floor shows from ≈ 0.3 m ahead of the camera. Colour covers 47.5° down to
+7.5° up, so the floor shows from ≈ 0.4 m. The top edge of the depth image is at about
+0.42 + 0.22 × d m above the floor at distance d (≈ 0.64 m at 1 m, ≈ 0.86 m at 2 m), so a
+table top (~0.75 m) only comes into view beyond ≈ 1.5 m. Unlike the lidar, the camera sees
+low objects close in front, but only forward.
+
+**Other sensors** [live]: joint encoders (`/joint_states`), leg odometry (`/leg_odom*`), rear
+ultrasound (`/us_publisher/ultrasound_distance`), body IMU (`/imu/data`). See §3.3.
 
 ---
 
@@ -144,7 +220,7 @@ are nominal: from the drivers' configuration and earlier measurements, not guara
 **Depth alignment:** depth and colour use different intrinsics (fx 373 vs 462) and are
 about 14 mm apart (`camera_depth_frame → camera_color_frame` in §5). To get the depth of a
 colour pixel, either reproject through TF and both `camera_info`s, or have the camera driver
-turn on depth-to-colour registration (not done yet; there is no `/camera/aligned_depth_to_color/*` topic).
+turn on depth-to-colour registration (`depth_registration:=true` in the camera launch inside `~/.config/tmuxinator/lite3.yml` on the system computer; not done yet; there is no `/camera/aligned_depth_to_color/*` topic).
 
 ### 3.2 Lidar (Livox Mid-360)
 
@@ -156,6 +232,18 @@ turn on depth-to-colour registration (not done yet; there is no `/camera/aligned
 
 The lidar is mounted pitched **15° nose-down** (see TF in §5). Points within about 0.4–0.5 m
 are mostly the robot's own body and legs; filter them.
+
+Measured 2026-11-13 [live]:
+- **Floor height in `base_link`** (from `/livox/points` through the static mount): about
+  **−0.35 m when standing**, about −0.07 to −0.11 m when lying down. A quick way to tell
+  whether the robot is standing, since the bridge doesn't publish the basic state. The floor
+  appears to drop ~3 cm per metre ahead (≈2° tilt of the robot or mount).
+- About 36 self-hits per scan near x ≈ 0, ~0.2 m above `base_link`. No floor returns closer
+  than ~1.25 m ahead (blind zone).
+- **Latency** (arrival time minus header stamp): `/livox/points` ≈ 0.14 s median (stamp is
+  the scan start), `/livox/imu` ≈ 2 ms. While `ros2 bag record` of
+  `/camera/depth/image_raw` ran, `/livox/points` arrived ≈ 1.2 s late, enough to make Nav2's
+  collision_monitor (0.5 s timeout) ignore it.
 
 ### 3.3 Body state from the motion host
 
@@ -366,11 +454,17 @@ Type `transfer_interfaces/msg/MotionSimpleCMD`. Set `cmd_code`, `size: 0`, `type
 as `/cmd_vel` (reliable + transient local, depth 1, short lifespan). The bridge sends the
 three fields as a 12-byte UDP packet. Send each command **once**; these aren't streams.
 
-Shell aliases on the robot (from `~/.bashrc`):
+Shell aliases on the robot (from `~/.bashrc`, the block marked `#DO NOT CHANGE`, which is the one in effect):
 ```bash
 alias lite3_auto='ros2 topic pub /simple_cmd transfer_interfaces/msg/MotionSimpleCMD "{cmd_code: 0x21010C03, type: 0}" --once'
 alias lite3_manual='ros2 topic pub /simple_cmd transfer_interfaces/msg/MotionSimpleCMD "{cmd_code: 0x21010C02, type: 0}" --once'
 ```
+**Why it prints `Waiting for at least 1 matching subscription(s)...`:** `--once` waits for a subscriber
+so the single message isn't lost. `lite3_domain_bridge_4` creates its `/simple_cmd` (and `/cmd_vel`)
+subscription **only after it sees a publisher** (RELIABLE + VOLATILE, so default-QoS `ros2 topic pub` matches).
+With no recent publisher, `/simple_cmd` doesn't exist at all ("Unknown topic") and the first
+`lite3_auto` waits until the bridge reacts; once the subscription exists, later publishers match at once
+[live, 2026-11-13]. Don't use `-w 0`: the command would be sent before anyone listens and be lost.
 
 Codes relevant to us [doc]:
 
@@ -537,7 +631,7 @@ Still open:
    documented for speed commands (§6.2). Test it in the open: send 0.1 m/s once, then stop
    publishing.
 3. Why the robot became unsteady after the H-Step request on 2026-11-12.
-4. Whether depth-to-colour alignment can be turned on in the shared Orbbec driver.
+4. Turn on depth-to-colour alignment in the Orbbec driver (allowed by the lab operator; see §3.1).
 5. A way to read gait, mode and battery state. They're in the UDP state packet but the bridge
    doesn't publish them.
 6. Current motion-host AI options (`0x21012109`: auto-stop / tracking). Is auto-stop on?

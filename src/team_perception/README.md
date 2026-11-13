@@ -55,7 +55,7 @@ This repo is the workspace's `src/` folder. It holds one ROS 2 package, `team_pe
 | `launch/robot.launch.py` | Starts all three detector nodes on the robot: `ros2 launch team_perception robot.launch.py` (`--show-args` lists the topic arguments). |
 | `scripts/` | `perception.sh` (command wrapper), `eval_qr_video.py` (QR decoder benchmark), `bag_to_video.py` (bag camera topic to `.mp4`) and `qr_bag_video.py` (QR scanner over a bag, annotated `.mp4` + CSV). |
 | [INTEGRATION.md](INTEGRATION.md) | For integrating on the robot: required inputs, every output topic and its JSON fields. |
-| [ROSBAG_VIDEO_GUIDE.md](ROSBAG_VIDEO_GUIDE.md) | Turning recorded bags into videos. |
+| [ROSBAG_GUIDE.md](ROSBAG_GUIDE.md) | Recording camera, depth and lidar bags; turning them into videos. |
 | `test/` | Unit tests. Sample media is in `test/testing_data/`: the clip `QR.mp4` and the photos in `test_images/`. |
 | [QR_test_guide.md](QR_test_guide.md) | The QR scanner in depth: how it works, its parameters, video testing and troubleshooting. |
 

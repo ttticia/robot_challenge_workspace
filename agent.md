@@ -62,6 +62,7 @@ challenge_ws/
 ├── agent.md                  ← this file
 ├── src/
 │   ├── navigation/           SLAM + Nav2 mapping, automatic map saving      (active)
+│   ├── nav_straight/         walk straight, stop before the first obstacle  (active; see its README)
 │   ├── team_perception/      QR scanner, people detector, webcam bridge     (active)
 │   ├── archive/              old mission stack + its design notes          (reference only)
 │   │   └── lite3_mission/    frontier exploration, velocity gate, maze session
@@ -103,7 +104,7 @@ Config: `src/navigation/config/nav2_params.yaml` (speeds, footprint, inflation),
 Scripts in `src/team_perception/scripts/`: `bag_to_video.py` (rosbag → mp4),
 `qr_bag_video.py`, `eval_qr_video.py`, `webcam_qr_test.py`, `webcam_sender_windows.py`.
 Full guide: `src/team_perception/QR_test_guide.md`. Recording guide:
-`src/team_perception/ROSBAG_VIDEO_GUIDE.md`.
+`src/team_perception/ROSBAG_GUIDE.md`.
 
 ### `archive/lite3_mission` (reference only)
 
@@ -285,6 +286,10 @@ python3 src/team_perception/scripts/bag_to_video.py ~/challenge_ws/ROS_bags/<run
 This uses about 1.6 GB per minute; the robot disk had about 11 GB free (check `df -h`). `/tf`
 is only recorded when Fast-LIO is running. Bags are git-ignored. Copy them off the robot.
 
+**Not while Nav2 drives:** recording `/camera/depth/image_raw` delayed `/livox/points` by
+~1.2 s and collision_monitor held the robot at zero (2026-11-13). Leave raw depth out during
+autonomous runs (see `src/team_perception/ROSBAG_GUIDE.md`).
+
 ## 11. Git workflow
 
 - Team remote: `https://github.com/ttticia/robot_challenge_workspace.git` (`main`).
@@ -307,3 +312,7 @@ is only recorded when Fast-LIO is running. Bags are git-ignored. Copy them off t
   walls look doubled.
 - `lite3_launcher` isn't version-controlled (section 4).
 - `src/ROS_bags/` inside `src` is leftover test data. Recordings now go to `~/challenge_ws/ROS_bags/`.
+- `nav_straight`: the robot must be **standing before launch** (the floor height is fixed at
+  launch). Launched lying down, it stops at once with `Travelled 0.00 m`. Obstacle band is
+  0.10–1.05 m above the floor so table tops count. Not yet tested on the robot: low box,
+  full 5 m run.

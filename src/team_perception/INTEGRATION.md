@@ -37,7 +37,7 @@ was found and *where*, read `/qr/detections` and `/posters/detections` (JSON in 
 intrinsics in its `camera_info`. In the 2026-11-12 teleop bag, `/camera/depth/image_raw` is **not**
 aligned (depth fx = 373, colour fx = 462). Pointing `poster_detector` at it gave about a quarter as many poster
 labels and confirmed the poster 21 s later than aligned depth did. Turn on depth-to-colour alignment in the
-camera driver (for the Orbbec ROS 2 driver this is normally the `depth_registration` setting).
+camera driver with its `depth_registration` setting. The steps are in [CAMERA_ALIGNMENT.md](CAMERA_ALIGNMENT.md).
 To check it: the depth topic's `camera_info` should then match `/camera/color/camera_info`.
 
 > **Open question: the depth topic.** `robot.launch.py` still uses `/camera/depth/image_raw` by default.

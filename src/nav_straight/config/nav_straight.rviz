@@ -1,0 +1,116 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Reference Frame: <Fixed Frame>
+      Cell Size: 0.5
+      Plane Cell Count: 20
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: true
+      Marker Scale: 0.4
+    - Class: rviz_default_plugins/Map
+      Name: Local costmap
+      Enabled: true
+      Topic:
+        Value: /local_costmap/costmap
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Color Scheme: costmap
+      Alpha: 0.6
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Lidar (live)
+      Enabled: true
+      Topic:
+        Value: /livox/points
+        Reliability Policy: Best Effort
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: AxisColor
+      Axis: Z
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Costmap voxels (remembered obstacles)
+      Enabled: true
+      Topic:
+        Value: /local_costmap/voxel_marked_cloud
+        Reliability Policy: Best Effort
+      Style: Boxes
+      Size (m): 0.05
+      Color Transformer: FlatColor
+      Color: 255; 0; 255
+    - Class: rviz_default_plugins/Polygon
+      Name: Footprint
+      Enabled: true
+      Topic:
+        Value: /local_costmap/published_footprint
+      Color: 0; 255; 0
+    - Class: rviz_default_plugins/Polygon
+      Name: Slow zone (collision_monitor)
+      Enabled: true
+      Topic:
+        Value: /polygon_slowdown
+      Color: 255; 200; 0
+    - Class: rviz_default_plugins/Polygon
+      Name: Stop zone (collision_monitor)
+      Enabled: true
+      Topic:
+        Value: /polygon_stop
+      Color: 255; 0; 0
+    - Class: rviz_default_plugins/Path
+      Name: Straight path
+      Enabled: true
+      Topic:
+        Value: /received_global_plan
+      Color: 0; 170; 255
+      Line Width: 0.03
+      Line Style: Billboards
+    - Class: rviz_default_plugins/Path
+      Name: RPP collision check
+      Enabled: true
+      Topic:
+        Value: /lookahead_collision_arc
+      Color: 255; 85; 0
+      Line Width: 0.03
+      Line Style: Billboards
+    - Class: rviz_default_plugins/PointStamped
+      Name: Lookahead point
+      Enabled: true
+      Topic:
+        Value: /lookahead_point
+      Color: 255; 255; 0
+      Radius: 0.06
+    - Class: rviz_default_plugins/Odometry
+      Name: Odometry
+      Enabled: true
+      Topic:
+        Value: /odom
+      Keep: 50
+      Shape:
+        Value: Arrow
+        Shaft Length: 0.2
+        Head Length: 0.08
+  Global Options:
+    Fixed Frame: odom
+    Background Color: 48; 48; 48
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 7
+      Focal Point:
+        X: 2
+        Y: 0
+        Z: 0
+      Pitch: 0.7
+      Yaw: 3.14
+      Target Frame: <Fixed Frame>
