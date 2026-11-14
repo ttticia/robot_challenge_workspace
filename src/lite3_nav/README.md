@@ -89,6 +89,24 @@ curtain's bottom gap (real curtains most likely do not reach the floor) and conf
 it. A fan that makes curtains move is an alternative. Then: Nav2 to a staging pose in front of the
 curtain, a slow straight push through, and resume exploration.
 
+Viewing distance (**estimate**, to check on the robot): camera at base_link → camera_link ≈
+(0.252, 0, 0.074) m, pitched 20° down (earlier lab notes); base_link assumed ≈ 0.30 m above the floor
+when standing (unverified), so camera height h ≈ 0.37 m. A ray that just clears a gap of height g at
+distance d lands on the floor d·g/(h−g) behind the curtain, so to see floor at least s behind it the
+camera must be at least d ≥ s·(h−g)/g in front. For the cases below the needed rays are 11–45° below
+horizontal, inside the view of a camera pitched 20° down (sim camera: ±27° vertical, i.e. 7° above
+to 47° below horizontal).
+
+| Gap g | See 0.2 m behind | See 0.5 m behind |
+|---|---|---|
+| 0.10 m | d ≥ 0.54 m | d ≥ 1.35 m |
+| 0.15 m | d ≥ 0.29 m | d ≥ 0.73 m |
+| 0.20 m | d ≥ 0.17 m (camera minimum range applies) | d ≥ 0.43 m |
+
+So a staging pose about 0.6–1.4 m in front of the curtain should show floor under a 10 cm gap.
+Depth noise at the floor edge, the real base height and the real camera's vertical field of view are
+not yet verified.
+
 Groundwork already in place: the velocity gate's push input (`push_input_enabled`,
 `/mission/push_cmd_vel`, `/mission/push_lease`, straight only, at most `max_push_linear_m_s` = 0.1,
 never mixed with Nav2 commands; see the header of `lite3_nav/velocity_gate.py`). It stays
