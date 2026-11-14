@@ -9,12 +9,11 @@ install/
 log/
 
 # Large local data: keep on the robot, never in git
-ROS_bags/
+ROS_bags/*
+!ROS_bags/ROSBAG_GUIDE.md
+!ROS_bags/record.sh
+!ROS_bags/aliases.sh
 recordings/
 runs/
 maps/
 models/*.onnx
-
-# team_perception: annotate results and downloaded YOLO weights
-**/test_runs/
-*.pt
