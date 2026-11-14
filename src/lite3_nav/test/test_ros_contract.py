@@ -1,6 +1,6 @@
-"""ROS contract tests for the lite3_nav forks on isolated loopback domain 89; no robot access.
+"""ROS contract tests for the lite3_nav forks on isolated loopback domain 88 (not the sim's 89); no robot access.
 
-Run with test/run_tests.sh (sets LITE3_ROS_TESTS=1, Cyclone DDS loopback profile, domain 89).
+Run with test/run_tests.sh (sets LITE3_ROS_TESTS=1, Cyclone DDS loopback profile, domain 88).
 The action server is a test double, not Nav2.
 """
 import json
@@ -17,8 +17,8 @@ pytestmark = pytest.mark.skipif(os.getenv('LITE3_ROS_TESTS') != '1',
 
 @pytest.fixture
 def context():
-    if os.getenv('ROS_DOMAIN_ID') != '89' or 'cyclonedds-local.xml' not in os.getenv('CYCLONEDDS_URI', ''):
-        raise RuntimeError('ROS tests require isolated loopback domain 89; use test/run_tests.sh')
+    if os.getenv('ROS_DOMAIN_ID') != '88' or 'cyclonedds-local.xml' not in os.getenv('CYCLONEDDS_URI', ''):
+        raise RuntimeError('ROS tests require isolated loopback domain 88; use test/run_tests.sh')
     import rclpy
     from rclpy.signals import SignalHandlerOptions
     rclpy.init(args=['--ros-args', '--disable-external-lib-logs', '--disable-rosout-logs'],
@@ -211,3 +211,118 @@ def test_gate_transient_local_output_limits_and_times_out(context):
     assert outputs[-1][2] == pytest.approx(.25, abs=.002)
     spin(context, .65, lambda: publish(command=False))
     assert np.linalg.norm(outputs[-1]) == 0.
+
+
+class PushRig:
+    """Gate with push input enabled plus the publishers the mission would own."""
+
+    def __init__(self, context, **overrides):
+        import rclpy
+        from geometry_msgs.msg import Twist
+        from rclpy.parameter import Parameter
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        from std_msgs.msg import Bool, String
+        from lite3_nav.velocity_gate import VelocityGate
+        self.node = rclpy.create_node('gate_test_push')
+        context.append(self.node)
+        params = dict(drive_output_enabled=True, push_input_enabled=True, input_topic='/test/nav_cmd',
+                      output_topic='/test/final_cmd', push_input_topic='/test/push_cmd',
+                      push_lease_topic='/test/push_lease')
+        params.update(overrides)
+        self.gate = VelocityGate(parameter_overrides=[Parameter(k, value=v) for k, v in params.items()])
+        context.append(self.gate)
+        self.context = context
+        self.nav = self.node.create_publisher(Twist, '/test/nav_cmd', 1)
+        self.push = self.node.create_publisher(Twist, '/test/push_cmd', 1)
+        self.lease = self.node.create_publisher(Bool, '/mission/drive_lease', 1)
+        self.push_lease = self.node.create_publisher(Bool, '/test/push_lease', 1)
+        self.outputs, self.statuses = [], []
+        self.node.create_subscription(
+            Twist, '/test/final_cmd', lambda m: self.outputs.append([m.linear.x, m.linear.y, m.angular.z]),
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.node.create_subscription(String, '/mission/gate_status',
+                                      lambda m: self.statuses.append(json.loads(m.data)), 10)
+        self.last = 0.
+
+    def run(self, seconds, push=None, nav=None, push_lease=False, lease=False):
+        from geometry_msgs.msg import Twist
+        from std_msgs.msg import Bool
+
+        def step():
+            if time.monotonic() - self.last > .04:
+                self.last = time.monotonic()
+                if push is not None:
+                    msg = Twist()
+                    msg.linear.x, msg.linear.y, msg.angular.z = push
+                    self.push.publish(msg)
+                if nav is not None:
+                    msg = Twist()
+                    msg.linear.x, msg.linear.y, msg.angular.z = nav
+                    self.nav.publish(msg)
+                self.lease.publish(Bool(data=lease))
+                self.push_lease.publish(Bool(data=push_lease))
+            self.gate.tick()
+        spin(self.context, seconds, step)
+        return np.array(self.outputs[-1]) if self.outputs else None
+
+
+def test_push_clamped_straight_and_stops_when_stale(context):
+    rig = PushRig(context)
+    out = rig.run(2., push=(1., 1., 2.), push_lease=True)
+    assert out is not None and out[0] == pytest.approx(.1, abs=.002) and out[1] == 0. and out[2] == 0., rig.statuses[-1]
+    assert rig.statuses[-1]['input'] == 'push' and rig.statuses[-1]['push'] == 'PUSH'
+    out = rig.run(.65, push_lease=True)  # push commands stop arriving
+    assert not out.any() and rig.statuses[-1]['push'] == 'PUSH_COMMAND_STALE'
+
+
+def test_push_respects_lower_push_limit_and_reverse(context):
+    rig = PushRig(context, max_push_linear_m_s=.05)
+    out = rig.run(1.5, push=(-1., 0., 0.), push_lease=True)
+    assert out[0] == pytest.approx(-.05, abs=.002) and not out[1:].any()
+
+
+def test_push_rejected_without_push_lease(context):
+    rig = PushRig(context)
+    out = rig.run(1.5, push=(.1, 0., 0.))
+    assert out is None or not out.any()
+    assert rig.statuses[-1]['push'] == 'NO_PUSH_LEASE' and rig.statuses[-1]['input'] == 'none'
+    # The ordinary drive lease never authorises the push input.
+    out = rig.run(1., push=(.1, 0., 0.), lease=True)
+    assert out is None or not out.any()
+
+
+def test_push_rejected_while_nav2_commanding(context):
+    rig = PushRig(context)
+    out = rig.run(1.5, push=(.1, 0., 0.), nav=(.1, 0., 0.), push_lease=True)
+    assert out is None or not out.any()
+    assert rig.statuses[-1]['push'] == 'NAV2_COMMANDING'
+
+
+def test_push_lease_blocks_nav2_input_and_both_leases_stop(context):
+    rig = PushRig(context)
+    out = rig.run(1.5, nav=(.1, 0., 0.), lease=True)
+    assert out[0] == pytest.approx(.1, abs=.002) and rig.statuses[-1]['input'] == 'nav2'
+    out = rig.run(.5, nav=(.1, 0., 0.), lease=True, push_lease=True)
+    assert not out.any() and rig.statuses[-1]['input'] == 'none'
+    assert rig.statuses[-1]['push'] == 'BOTH_LEASES_HELD'
+
+
+def test_push_rejected_with_second_push_publisher(context):
+    import rclpy
+    from geometry_msgs.msg import Twist
+    rig = PushRig(context)
+    rogue = rclpy.create_node('rogue_pusher')
+    context.append(rogue)
+    rogue.create_publisher(Twist, '/test/push_cmd', 1)
+    out = rig.run(1.5, push=(.1, 0., 0.), push_lease=True)
+    assert out is None or not out.any()
+    assert rig.statuses[-1]['push'] == 'MULTIPLE_PUSH_PUBLISHERS'
+
+
+def test_push_disabled_by_default(context):
+    from rclpy.parameter import Parameter
+    from lite3_nav.velocity_gate import VelocityGate
+    gate = VelocityGate(parameter_overrides=[Parameter('drive_output_enabled', value=True)])
+    context.append(gate)
+    assert not gate.push_enabled
+    assert gate.push_permitted(time.monotonic(), True, False, False) == (False, '')

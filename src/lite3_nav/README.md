@@ -81,5 +81,5 @@ Follow the team's supervised execution procedure in `src/lite3_mission/README.md
 ## Tests
 
 ```bash
-bash src/lite3_nav/test/run_tests.sh   # static checks + ROS contract tests on loopback domain 89
+bash src/lite3_nav/test/run_tests.sh   # static checks + ROS contract tests on loopback domain 88 (safe while a sim runs on 89)
 ```

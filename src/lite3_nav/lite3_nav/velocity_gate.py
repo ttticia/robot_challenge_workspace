@@ -5,6 +5,8 @@
 #    counted per node, not per endpoint (Nav2 behavior_server opens several on one topic).
 #  - Gate status reason renamed: EXPECTED_ONE_NAV2_INPUT_PUBLISHER_GOT_<n>
 #    -> EXPECTED_<k>_NAV2_INPUT_PUBLISHERS_GOT_<n>.
+#  - Optional curtain push input (push_input_enabled, default false): a second command topic used
+#    only by the mission's curtain crossing, gated by its own push lease. See push_permitted().
 #  - core and runtime helpers are imported from the team's lite3_mission package unchanged
 #    (absolute imports instead of relative ones).
 """Independent wall-clock command timeout and limiter; hardware output is opt-in."""
@@ -28,14 +30,22 @@ class VelocityGate(Node):
         defaults=dict(drive_output_enabled=False,input_topic='/mission/nav_cmd_vel',output_topic='/cmd_vel',
                       command_timeout_sec=.25,lease_timeout_sec=.3,max_linear_m_s=.1,max_angular_rad_s=.25,
                       acceleration_m_s2=.2,angular_acceleration_rad_s2=.5,
-                      output_transient_local=True,expected_input_publishers=1)
-        read_only=('drive_output_enabled','input_topic','output_topic','output_transient_local','expected_input_publishers')
+                      output_transient_local=True,expected_input_publishers=1,
+                      push_input_enabled=False,push_input_topic='/mission/push_cmd_vel',
+                      push_lease_topic='/mission/push_lease',max_push_linear_m_s=.1)
+        read_only=('drive_output_enabled','input_topic','output_topic','output_transient_local','expected_input_publishers',
+                   'push_input_enabled','push_input_topic','push_lease_topic')
         for key,value in defaults.items():
             self.declare_parameter(key,value,ParameterDescriptor(read_only=key in read_only))
         result=self.validate([])
         if not result.successful:raise ValueError(result.reason)
         if self.value('input_topic')==self.value('output_topic'):
             raise ValueError('Gate input and final output must be different topics')
+        self.push_enabled=self.value('push_input_enabled')
+        if self.push_enabled and len({self.value('input_topic'),self.value('output_topic'),
+                                      self.value('push_input_topic'),self.value('push_lease_topic'),
+                                      '/mission/drive_lease'})!=5:
+            raise ValueError('Push input and push lease topics must differ from every other gate topic')
         self.add_on_set_parameters_callback(self.validate)
         self.drive=self.value('drive_output_enabled')
         self.name=self.get_name()
@@ -52,9 +62,19 @@ class VelocityGate(Node):
         self.status=self.create_publisher(String,'/mission/gate_status',10)
         self.create_subscription(Twist,self.value('input_topic'),self.command,QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT))
         self.create_subscription(Bool,'/mission/drive_lease',self.lease,1)
+        if self.push_enabled:
+            self.create_subscription(Twist,self.value('push_input_topic'),self.push_command,
+                                     QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT))
+            self.create_subscription(Bool,self.value('push_lease_topic'),self.push_lease,1)
         self.target=np.zeros(3)
         self.command_time=self.lease_time=-math.inf
         self.lease_value=False
+        self.push_target=0.
+        self.push_time=self.push_lease_time=-math.inf
+        self.push_lease_value=False
+        self.push_sources=self.push_lease_sources=0
+        self.input=self.previous_input='none'
+        self.push_reason=''
         self.last_tick=time.monotonic()
         self.last_graph=self.last_status=0.
         self.conflicts=[]
@@ -70,7 +90,8 @@ class VelocityGate(Node):
         values={p.name:p.value for p in parameters}
         for key,low,high in [('max_linear_m_s',.01,.3),('max_angular_rad_s',.02,.8),
                              ('acceleration_m_s2',.02,1.),('angular_acceleration_rad_s2',.05,2.),
-                             ('command_timeout_sec',.05,.5),('lease_timeout_sec',.1,.5)]:
+                             ('command_timeout_sec',.05,.5),('lease_timeout_sec',.1,.5),
+                             ('max_push_linear_m_s',.01,.15)]:
             value=values.get(key,self.value(key))
             if not isinstance(value,(float,int)) or not math.isfinite(value) or not low<=value<=high:
                 return SetParametersResult(successful=False,reason=key+' outside supported bounds')
@@ -89,6 +110,33 @@ class VelocityGate(Node):
         self.lease_value=bool(msg.data)
         self.lease_time=time.monotonic()
 
+    def push_command(self,msg):
+        # Straight pushes only: lateral and angular components are discarded, never limited.
+        if math.isfinite(msg.linear.x):
+            self.push_target=float(msg.linear.x)
+            self.push_time=time.monotonic()
+        else:
+            self.push_target=0.
+            self.push_time=-math.inf
+
+    def push_lease(self,msg):
+        self.push_lease_value=bool(msg.data)
+        self.push_lease_time=time.monotonic()
+
+    def push_permitted(self,now,ready,nav_lease_ok,nav_command_ok):
+        """The push input drives only when all hold: push input enabled and the gate READY; a fresh
+        push lease; the Nav2 drive lease NOT held; no Nav2 command within command_timeout_sec; a
+        fresh push command; at most one push and push-lease publisher. The two inputs never mix."""
+        if not self.push_enabled:return False,''
+        lease_ok=self.push_lease_value and now-self.push_lease_time<=self.value('lease_timeout_sec')
+        if not lease_ok:return False,'NO_PUSH_LEASE'
+        if not ready:return False,'GATE_NOT_READY'
+        if self.push_sources>1 or self.push_lease_sources>1:return False,'MULTIPLE_PUSH_PUBLISHERS'
+        if nav_lease_ok:return False,'BOTH_LEASES_HELD'
+        if nav_command_ok:return False,'NAV2_COMMANDING'
+        if now-self.push_time>self.value('command_timeout_sec'):return False,'PUSH_COMMAND_STALE'
+        return True,'PUSH'
+
     def refresh_graph(self):
         conflicts=[]
         for topic in (self.value('output_topic'),'/cmd_vel_corrected','/simple_cmd','/complex_cmd'):
@@ -101,6 +149,10 @@ class VelocityGate(Node):
         # behavior plugin on the same topic.
         self.sources=len({(e.node_namespace,e.node_name) for e in self.get_publishers_info_by_topic(self.value('input_topic'))})
         self.lease_sources=self.count_publishers('/mission/drive_lease')
+        if self.push_enabled:
+            self.push_sources=len({(e.node_namespace,e.node_name)
+                                   for e in self.get_publishers_info_by_topic(self.value('push_input_topic'))})
+            self.push_lease_sources=self.count_publishers(self.value('push_lease_topic'))
 
     def tick(self):
         now=time.monotonic()
@@ -116,12 +168,26 @@ class VelocityGate(Node):
         ready=reason=='READY'
         lease_ok=self.lease_value and now-self.lease_time<=self.value('lease_timeout_sec')
         command_ok=now-self.command_time<=self.value('command_timeout_sec')
-        permitted=ready and lease_ok and command_ok
-        self.limiter.linear=self.value('max_linear_m_s')
+        push_ok,self.push_reason=self.push_permitted(now,ready,lease_ok,command_ok)
+        # A held push lease blocks the Nav2 input as well: the inputs never mix.
+        push_lease_held=self.push_enabled and self.push_lease_value and now-self.push_lease_time<=self.value('lease_timeout_sec')
+        nav_ok=ready and lease_ok and command_ok and not push_lease_held
+        permitted=nav_ok or push_ok
+        self.input='push' if push_ok else 'nav2' if nav_ok else 'none'
+        if push_ok:
+            limit=min(self.value('max_push_linear_m_s'),self.value('max_linear_m_s'))
+            target=np.array([float(np.clip(self.push_target,-limit,limit)),0.,0.])
+        else:
+            limit=self.value('max_linear_m_s')
+            target=self.target
+        self.limiter.linear=limit
         self.limiter.angular=self.value('max_angular_rad_s')
         self.limiter.acceleration=self.value('acceleration_m_s2')
         self.limiter.angular_acceleration=self.value('angular_acceleration_rad_s2')
-        output=self.limiter.apply(self.target,now-self.last_tick,permitted)
+        if self.input!=self.previous_input and 'none' not in (self.input,self.previous_input):
+            self.limiter.previous[:]=0.  # switching sources starts from rest, never carries motion over
+        self.previous_input=self.input
+        output=self.limiter.apply(target,now-self.last_tick,permitted)
         self.last_tick=now
         msg=Twist()
         msg.linear.x,msg.linear.y,msg.angular.z=map(float,output)
@@ -135,7 +201,8 @@ class VelocityGate(Node):
             self.last_status=now
             self.status.publish(String(data=json.dumps(dict(ready_to_arm=ready,reason=reason,
                 drive_output_enabled=self.drive,lease_fresh=lease_ok,command_fresh=command_ok,
-                output=output.tolist(),input_publishers=self.sources))))
+                output=output.tolist(),input_publishers=self.sources,input=self.input,
+                push_enabled=self.push_enabled,push=self.push_reason))))
 
     def stop(self):
         if self.drive and self.last_active:
