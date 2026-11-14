@@ -1,0 +1,28 @@
+# Overrides for the lite3_sim Gazebo simulator (launch/sim_navigation.launch.py, profile:=sim).
+# Loaded after robot.yaml; robot defaults are unchanged. Gazebo on WSL averages ~0.9 real-time
+# factor but stalls to ~0.04 for seconds, so wall-clock freshness limits are relaxed here only.
+mission:
+  ros__parameters:
+    use_sim_time: true
+    imu_timeout_sec: 5.0
+    pose_timeout_sec: 3.0
+    nav2_active_timeout_sec: 10.0
+    # Not action_server alone: Nav2 Humble creates navigate_to_pose in on_configure, so it
+    # cannot distinguish configured from active (see robot.yaml).
+    nav2_health_check: either
+    # Slower goals at the 0.25 m/s sim cap plus stalls.
+    goal_timeout_sec: 90.0
+velocity_gate:
+  ros__parameters:
+    # Stock Nav2 (navigation_launch.py): velocity_smoother and behavior_server (spin/backup)
+    # both publish onto /mission/nav_cmd_vel; the controller feeds the smoother.
+    expected_input_publishers: 2
+    # Match lite3_sim's Nav2 caps (nav2_params_lite3.yaml). The robot stays at 0.1 / 0.25.
+    max_linear_m_s: 0.25
+    max_angular_rad_s: 0.5
+    # Validator maxima; a stall longer than this still stops the robot.
+    command_timeout_sec: 0.5
+    lease_timeout_sec: 0.5
+observations:
+  ros__parameters:
+    use_sim_time: true

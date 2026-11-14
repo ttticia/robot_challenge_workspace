@@ -1,0 +1,8 @@
+# Mission/gate override for launch/robot_navigation.launch.py (our own SLAM + Nav2 on the robot).
+# Loaded after robot.yaml:
+#   ros2 launch lite3_nav mission.launch.py config_file:=$(ros2 pkg prefix lite3_nav)/share/lite3_nav/config/robot_own_nav2.yaml
+# Our Nav2 sends velocity_smoother (driving) and behavior_server (spin/backup) output onto
+# /mission/nav_cmd_vel: two producing nodes. The lab stack's twist_mux gives one (robot.yaml).
+velocity_gate:
+  ros__parameters:
+    expected_input_publishers: 2
