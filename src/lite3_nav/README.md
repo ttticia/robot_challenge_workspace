@@ -28,6 +28,7 @@ mission launch at one time, never both.
 | Freshness clocks | wall clock | sim time under `use_sim_time`, wall clock otherwise (unchanged on the robot) |
 | Mission tick / drive lease | node clock | steady clock (a slow simulator cannot starve the lease) |
 | Launch profiles | `robot`, `mujoco` | `robot`, `mujoco` (team's mujoco.yaml), `sim` (config/sim.yaml) |
+| Robot SLAM + Nav2 | lab launcher only | also `launch/robot_navigation.launch.py`: own slam_toolbox + Nav2 on the live map (below) |
 
 `config/robot.yaml` is the team's `robot.yaml` with only the four new parameters added
 (`test/test_package.py` checks this). `config/sim.yaml` holds the Gazebo overrides
@@ -77,6 +78,55 @@ ros2 service call /mission/set_armed std_srvs/srv/SetBool '{data: false}'
 ```
 
 Follow the team's supervised execution procedure in `src/lite3_mission/README.md`.
+
+### Live mapping + Nav2 on the robot: robot_navigation.launch.py
+
+The Quickstart Guide reports that the lab launcher **does not accept Nav2 goals while mapping**
+(`slam:=True`), and exploration needs both (its stage N1). `launch/robot_navigation.launch.py`
+starts our own Nav2 on the live map instead. It follows the team's earlier hardware work on
+`origin/navigation` (`src/archive`: conservative Nav2 profile, UDP-only Fast DDS, Fast-LIO's
+`config_file` scope isolated, no voxel layer):
+
+- `slam:=toolbox` (default): lite3_launcher's sensor bringup (`launch/include/lite3_bringup.launch.py`:
+  Fast-LIO → `/odom` + `odom → base_link`, `/livox/points` → `/scan`; skip with `bringup:=false`
+  if it already runs) + slam_toolbox online async (`config/slam_robot.yaml`) → `/map` + `map → odom`.
+- `slam:=launcher`: something else already provides `/map` and `map → odom`; only Nav2 is added.
+- Nav2 (`config/nav2_robot.yaml`): no AMCL or map server; global costmap on the live `/map`,
+  rolling local costmap on `/scan`; frames `map`/`odom`/`base_link`; footprint 0.62 × 0.38 m;
+  0.1 m/s and 0.25 rad/s caps; planning through unknown space. Its output goes to
+  `/mission/nav_cmd_vel` through node-scoped remaps (velocity_smoother + behavior_server), never `/cmd_vel`.
+- Safety guards: `robot:=true` (default) refuses to start unless `ROS_DOMAIN_ID=4`; `robot:=false`
+  refuses domain 4; domain 89 (the simulator) is always refused. It also refuses to start while
+  another SLAM/Nav2 stack is running on the domain (`check_graph:=false` skips that check).
+- The mission must expect **two** Nav2 input publishers: pass `config/robot_own_nav2.yaml`.
+
+In the lab (instead of `lab_navigation.launch.py`; stop any running lab stack first):
+
+```bash
+source ~/challenge_ws/install/lite3_nav/share/lite3_nav/scripts/robot_env.sh   # every terminal: domain 4, UDP-only
+ros2 launch lite3_nav robot_navigation.launch.py                               # terminal 1: Fast-LIO + /scan + SLAM + Nav2
+ros2 launch lite3_nav mission.launch.py mode:=explore \
+  config_file:=$(ros2 pkg prefix lite3_nav)/share/lite3_nav/config/robot_own_nav2.yaml      # terminal 2: shadow first
+ros2 launch lite3_nav mission.launch.py mode:=explore execution:=true drive:=true \
+  config_file:=$(ros2 pkg prefix lite3_nav)/share/lite3_nav/config/robot_own_nav2.yaml      # then supervised
+```
+
+Verified offline only (2026-11-14, WSL, loopback domain 77, `robot:=false bringup:=false` with
+`test/fake_robot_world.py` standing in for the sensors): Nav2 lifecycle active after ~10 s,
+slam_toolbox publishes `/map`, a NavigateToPose goal is accepted and Nav2 streams commands capped at
+0.1 m/s on `/mission/nav_cmd_vel` only, nothing publishes `/cmd_vel` until the gate runs, and the
+lite3_nav gate with `robot_own_nav2.yaml` reports `READY` with the gate as the only
+(TRANSIENT_LOCAL) `/cmd_vel` publisher. **Not verified:** lite3_launcher's bringup include path and
+arguments on the robot, Fast-LIO + slam_toolbox map quality, Nav2 timing over the robot network,
+and real driving.
+
+Offline dry run (any machine, never on domains 4 or 89):
+
+```bash
+export ROS_DOMAIN_ID=77 ROS_LOCALHOST_ONLY=1
+python3 src/lite3_nav/test/fake_robot_world.py &
+ros2 launch lite3_nav robot_navigation.launch.py robot:=false bringup:=false
+```
 
 ## Curtains (planned)
 
