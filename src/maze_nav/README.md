@@ -3,7 +3,7 @@
 The robot starts inside the maze, maps it with `slam_toolbox` while Nav2 drives it to
 the nearest unexplored opening, and stops when it is out (open floor next to it, away from
 the start). Nothing about the layout is hard-coded. The example maze
-(`src/team_perception/nav/example maze.step`) is used for the simulator and the tests.
+(`src/maze_nav/tools/example maze.step`) is used for the simulator and the tests.
 
 ```bash
 colcon build --symlink-install --packages-select maze_nav && source install/setup.bash
