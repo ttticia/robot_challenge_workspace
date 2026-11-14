@@ -35,7 +35,7 @@ sudo apt install ros-humble-desktop ros-humble-navigation2 ros-humble-nav2-bring
     ros-humble-slam-toolbox ros-humble-pointcloud-to-laserscan ros-humble-twist-mux \
     ros-humble-cv-bridge ros-humble-tf2-geometry-msgs ros-humble-image-transport-plugins \
     python3-colcon-common-extensions python3-pyzbar python3-pip
-pip3 install --user -r src/team_perception/requirements.txt   # zxing-cpp, onnxruntime
+bash src/team_perception/install_deps.sh --no-apt   # zxing-cpp from pip, checks imports
 
 # 2. Underlays this workspace depends on (see section 4), in this order:
 source /opt/ros/humble/setup.bash
@@ -44,16 +44,16 @@ source ~/ros2_ws/install/local_setup.bash      # lite3_launcher, fast_lio
 
 # 3. Build and source this workspace
 cd ~/challenge_ws
-colcon build --symlink-install --packages-select navigation team_perception
+colcon build --symlink-install --packages-select maze_nav team_perception
 source install/setup.bash
 ```
 
 On the robot computer, `~/.bashrc` already sources all of these and sets
 `ROS_DOMAIN_ID=4`. It also defines the `lite3_auto` and `lite3_manual` aliases (section 7).
 
-People detection needs a model that is not in git:
-`python3 src/team_perception/scripts/download_people_model.py` (writes
-`models/yolov5n.onnx`).
+This workspace holds only the **onboard** half of perception. YOLO person detection
+(`human_detector`) runs on a separate external computer from the `team_perception_external`
+package (Robot-Dog-Grp4 repo, `challenge_files/external/`), which is not in this workspace.
 
 ## 3. Packages in this repository
 
@@ -61,59 +61,46 @@ People detection needs a model that is not in git:
 challenge_ws/
 ├── agent.md                  ← this file
 ├── src/
-│   ├── navigation/           SLAM + Nav2 mapping, automatic map saving      (active)
-│   ├── nav_straight/         walk straight, stop before the first obstacle  (active; see its README)
-│   ├── team_perception/      QR scanner, people detector, webcam bridge     (active)
-│   ├── archive/              old mission stack + its design notes          (reference only)
-│   │   └── lite3_mission/    frontier exploration, velocity gate, maze session
-│   └── ROS_bags/             COLCON_IGNORE; old test clips (to be removed)
-├── ROS_bags/                 rosbag recordings      (git-ignored *.db3, never commit)
-├── maps/                     saved maps from navigation (created on first run)
-├── models/                   ONNX models            (download, don't commit)
+│   ├── maze_nav/             maze traversal: wall scan + SLAM + Nav2 + frontier explorer
+│   └── team_perception/      onboard perception: QR scanner, poster detector, image throttle
+├── maps/                     maps saved by maze_nav (created on first run, git-ignored)
+├── ROS_bags/                 rosbag recordings + ROSBAG_GUIDE.md (bags git-ignored, never commit)
 ├── hardware_testing/, recordings/, runs/   logs from earlier hardware sessions
 ├── build/ install/ log/      colcon output          (should not be in git; see section 11)
 ```
 
-### `navigation`: build and save a map
+### `maze_nav`: get through the maze
 
 ```bash
-ros2 launch navigation mapping.launch.py               # SLAM + Nav2 + map saving
-ros2 launch navigation mapping.launch.py nav2:=false   # SLAM only, drive by teleop
-ros2 launch navigation mapping.launch.py drive:=false  # Nav2 plans, nothing reaches /cmd_vel
+ros2 launch maze_nav maze_nav.launch.py            # robot standing on the start cell
+ros2 launch maze_nav maze_nav.launch.py go:=false  # goals on /maze/goal only, robot doesn't move
 ```
 
-| Node | Does |
-|---|---|
-| `lite3_bringup` include (from `lite3_launcher`) | Fast-LIO → `/odom` + `odom→base_link`; `/livox/points` → `/scan`. Skip with `bringup:=false` |
-| `slam_toolbox` (online async) | `/scan` + odometry → `/map`, `map→odom` |
-| Nav2: `planner_server`, `controller_server` (Regulated Pure Pursuit), `behavior_server`, `bt_navigator`, `velocity_smoother`, `lifecycle_manager_navigation` | Goals on `/navigate_to_pose` (RViz *2D Goal Pose*) → `/nav_cmd_vel`. Plans through unknown space |
-| `cmd_vel_bridge` | `/nav_cmd_vel` → `/cmd_vel` with the QoS the robot bridge needs; clamps to 0.25 m/s, 0.5 rad/s; one stop when Nav2 goes quiet |
-| `map_autosaver` | Saves `/map` every 30 s and on Ctrl+C to `~/challenge_ws/maps/map_<date>_<time>.{pgm,yaml}`; `maps/latest.yaml` points to the newest |
+Explores with `slam_toolbox` + Nav2 until there is open floor next to the robot, then stops.
+`/maze/status` ends as `EXITED`, `NO_EXIT` or `STOPPED`, and the map is saved to `maps/`. It uses its own
+`/wall_scan`, which keeps points 0.30–0.43 m above the floor (measured in `odom`). Maze walls are only
+0.45 m tall, and the lab `/scan` starts at ~0.45 m. A simulator of the example maze is in
+`src/maze_nav/test/fake_maze_lite3.py`. Details: `src/maze_nav/README.md`.
 
-Config: `src/navigation/config/nav2_params.yaml` (speeds, footprint, inflation),
-`slam_toolbox.yaml`, `fastdds_udp.xml`. More detail: `src/navigation/README.md`.
+### `team_perception`: perception (onboard build)
 
-### `team_perception`: perception
+```bash
+ros2 launch team_perception robot.launch.py                 # all three nodes
+ros2 launch team_perception robot.launch.py posters:=false  # QR scanner only
+ros2 launch team_perception robot.launch.py --show-args     # every topic name is an argument
+```
 
 | Executable | Subscribes | Publishes |
 |---|---|---|
-| `qr_scanner` | `image_topic` (default `/camera/color/image_raw`, or `/compressed` with `image_transport:=compressed`), `/camera/color/camera_info`, `depth_topic` (default `/camera/aligned_depth_to_color/image_raw`, **which the robot doesn't publish**; see section 12) | `/qr/detections` (String JSON, once per new code), `/qr/debug_image[/compressed]` |
-| `yolo_node` (people) | `/camera/color/image_raw/compressed` | `/people/detections` (String JSON), `/mission/observations`, `/people/debug_image/compressed` |
-| `webcam_bridge` | UDP port 5005 (laptop webcam sender) | `/camera/color/image_raw[/compressed]` for testing without the robot |
+| `qr_scanner` | `/camera/color/image_raw/compressed`, `/camera/color/camera_info`, `/camera/depth/image_raw` + `/camera/depth/camera_info` (unaligned depth, mapped in software) | `/qr/detections` (String JSON, once per new code), `/found` (`QR found`) |
+| `image_throttle` | `/camera/color/image_raw/compressed` | `/camera/color/image_offboard/compressed` (10 Hz, for the external computer) |
+| `poster_detector` | `/humans/detections` (from the external computer), depth + camera_info, `/map`, TF | `/posters/detections` (String JSON), `/found` (`Human found`) |
 
-Scripts in `src/team_perception/scripts/`: `bag_to_video.py` (rosbag → mp4),
-`qr_bag_video.py`, `eval_qr_video.py`, `webcam_qr_test.py`, `webcam_sender_windows.py`.
-Full guide: `src/team_perception/QR_test_guide.md`. Recording guide:
-`src/team_perception/ROSBAG_GUIDE.md`.
-
-### `archive/lite3_mission` (reference only)
-
-The earlier autonomy stack: frontier exploration, a velocity gate, a maze session
-coordinator, and QR/scene adapters. Its notes are `src/archive/*.md`. It is kept so you
-can reuse its ideas and tests (`test/nav2_fixture.py` and `test/test_ros_contract.py` are
-good examples). **colcon still builds it** because it has a `package.xml`. Add an empty
-`src/archive/COLCON_IGNORE` file if you want it out of the build. Don't run it alongside
-`navigation`: both start SLAM and Nav2.
+Person boxes come from `human_detector` on the external computer; without it there are no
+poster detections, but QR scanning still works (setup: `external_computer_checklist.md`).
+Only the throttled JPEG stream and `/humans/detections` cross the network. Inputs, requirements and what works with less data:
+`src/team_perception/data_required.md`. Snapshots and CSV logs go to `~/qr_logs/` and
+`~/poster_logs/`. Recording guide: `ROS_bags/ROSBAG_GUIDE.md`.
 
 ## 4. Dependencies that are NOT in this repository
 
@@ -125,8 +112,6 @@ good examples). **colcon still builds it** because it has a `package.xml`. Add a
 | `transfer_interfaces` (`MotionSimpleCMD`, `MotionComplexCMD`) | `~/lite3_ws/src/transfer_interfaces` | DEEP Robotics Lite3_ROS |
 | `transfer` (manufacturer motion bridge, for reference) | `~/hardware_support/Lite3_ROS/src/transfer` | github.com/DeepRoboticsLab/Lite3_ROS (branch `ros2-foxy`) |
 | Sensor drivers + `lite3_domain_bridge_4` | Already running (driver container) | Shared lab setup; don't modify |
-
-To develop off-robot without these, use `bringup:=false` and the simulator in section 9.
 
 ## 5. Topics (domain 4, as seen live on the robot)
 
@@ -153,33 +138,29 @@ To develop off-robot without these, use `bringup:=false` and the simulator in se
 | `/sensor_status/*_isalive` | `std_msgs/Bool` | | Driver health |
 | `/tf_static` | | | `base_link → livox_frame` and camera frames |
 
-### Localization and navigation (from our launch files)
+### Localization (from `lite3_bringup` in `lite3_launcher`)
 
 | Topic | Type | Publisher |
 |---|---|---|
 | `/odom`, TF `odom → base_link` | `nav_msgs/Odometry` | Fast-LIO + `odom_relay` (`lite3_bringup`) |
 | `/scan` | `sensor_msgs/LaserScan` | `pointcloud_to_laserscan` (0.1–0.5 m above `base_link`, 0.4–20 m) |
-| `/map`, TF `map → odom` | `nav_msgs/OccupancyGrid` (reliable, transient local) | `slam_toolbox` |
-| `/navigate_to_pose` | `nav2_msgs/action/NavigateToPose` | Send goals here (`frame_id: map`) |
-| `/cmd_vel_nav` → `/nav_cmd_vel` | `Twist` | Nav2 controller → velocity smoother/behaviors |
-| `/cmd_vel` | `Twist` | `cmd_vel_bridge` (only while Nav2 is driving), or teleop |
 
 ### Perception
 
-`/qr/detections`, `/qr/debug_image[/compressed]`, `/people/detections`,
-`/people/debug_image/compressed`, `/mission/observations` (all detections are JSON in
-`std_msgs/String`).
+`/qr/detections`, `/posters/detections` (JSON in `std_msgs/String`), `/found` (plain
+`QR found` / `Human found`), `/camera/color/image_offboard/compressed` (to the external
+computer), `/humans/detections` (from the external computer). The onboard nodes publish no
+debug images.
 
 ### TF tree
 
 ```
-map ──(slam_toolbox)──> odom ──(Fast-LIO/odom_relay)──> base_link ──(static)──> livox_frame
-                                                                    └─(static)──> camera frames
+odom ──(Fast-LIO/odom_relay)──> base_link ──(static)──> livox_frame
+                                          └─(static)──> camera frames
 ```
 
 `base_link → livox_frame`: translation (0.187, 0, 0.125) m, pitched about 15° down. `/tf` is
-**empty unless Fast-LIO is running** (`lite3_bringup`, or the `navigation` launch with
-`bringup:=true`). Leg odometry is published as topics only, not as TF.
+**empty unless Fast-LIO is running** (`lite3_bringup`). Leg odometry is published as topics only, not as TF.
 
 ## 6. Motion control: velocity
 
@@ -202,8 +183,8 @@ ideally with a short `lifespan` (~0.5 s). The group bridge has been seen asking 
 TRANSIENT_LOCAL, and a default (VOLATILE) publisher never connects to a TRANSIENT_LOCAL
 subscriber. TRANSIENT_LOCAL publishers work with every subscriber type, including the
 manufacturer bridge's BEST_EFFORT one. Check what the bridge currently wants with
-`ros2 topic info -v /cmd_vel`. For an example, see `src/navigation/navigation/cmd_vel_bridge.py`.
-Nav2 and `twist_mux` publish VOLATILE, so put a bridge like that in front of them.
+`ros2 topic info -v /cmd_vel`.
+Nav2 and `twist_mux` publish VOLATILE, so put a QoS-converting relay in front of them.
 
 ```bash
 ros2 topic pub --once --qos-reliability reliable --qos-durability transient_local \
@@ -228,7 +209,7 @@ ros2 topic pub --once --qos-reliability reliable --qos-durability transient_loca
 | `0x21010C03` | **Auto mode**: the robot follows `/cmd_vel` | Alias `lite3_auto`. A human operator sends it. Our code should not |
 | `0x21010C02` | **Manual mode**: the handheld controller drives, `/cmd_vel` is ignored | Alias `lite3_manual`. Safe fallback; send it on shutdown if you entered auto |
 | `0x21010407` | H-Step (high-stepping RUG gait, gait state 13) | For rough ground. See [DEEP Robotics docs](https://developer.deeprobotics.cn/docs/lite3/interfaces/control/state/) |
-| `0x21020C0E` | Treated as a software STOP by `archive/lite3_mission` | Check it against the manufacturer docs before relying on it |
+| `0x21020C0E` | Possibly a software STOP | Check it against the manufacturer docs before relying on it |
 
 Usual sequence: robot standing (handheld controller) → `lite3_auto` → drive with
 `/cmd_vel` → `lite3_manual` when done. There is no gait or mode feedback topic through the
@@ -236,10 +217,10 @@ bridge, so watch the robot or the handheld controller to confirm a mode change.
 
 ## 8. DDS and launching
 
-- Fast DDS with **UDP-only transport** (`src/navigation/config/fastdds_udp.xml`). Nav2's
+- Fast DDS with **UDP-only transport** (`src/maze_nav/config/fastdds_udp.xml`). Nav2's
   lifecycle startup stalled on this robot with the default shared-memory transport. The
-  `navigation` launch sets it for its own nodes (`udp_only:=true`). For manual runs:
-  `export FASTRTPS_DEFAULT_PROFILES_FILE=~/challenge_ws/src/navigation/config/fastdds_udp.xml`.
+  `maze_nav` launch sets it for its own nodes (`udp_only:=true`). For manual runs:
+  `export FASTRTPS_DEFAULT_PROFILES_FILE=~/challenge_ws/src/maze_nav/config/fastdds_udp.xml`.
 - **Before you launch, check that nothing else owns SLAM, Nav2 or `/cmd_vel`:** run
   `ros2 node list`. Two `slam_toolbox` or Nav2 stacks on domain 4 corrupt `/map` and TF and
   can both drive the robot. Stop the old one first.
@@ -250,45 +231,31 @@ bridge, so watch the robot or the handheld controller to confirm a mode change.
 
 ```bash
 cd ~/challenge_ws && source install/setup.bash
-python3 -m pytest -q src/navigation/test          # map file writer
-(cd src/team_perception && python3 -m pytest -q test)   # QR utils, people detector
-bash src/archive/lite3_mission/test/run_team_tests.sh    # old stack incl. ROS contract tests
+(cd src/team_perception && python3 -m pytest -q test)   # QR utils, depth alignment, poster tests
+(cd src/maze_nav && python3 -m pytest -q test)          # wall scan, frontiers, exit, example maze
 ```
 
-**Full stack without the robot** (simulated room, real SLAM + Nav2 + map saving):
-
-```bash
-export ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1
-python3 src/navigation/test/fake_lite3.py &
-ros2 launch navigation mapping.launch.py bringup:=false map_dir:=/tmp/sim_maps save_interval:=5
-# another terminal (same exports):
-ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
-  "{pose: {header: {frame_id: map}, pose: {position: {x: 3.5, y: 1.2}, orientation: {w: 1.0}}}}"
-```
-
-The goal should finish `SUCCEEDED`, and `/tmp/sim_maps/` should contain the room with a box.
-
-Known lint state: `team_perception`'s `test_flake8` and `test_pep257` fail on the
-compact code style in `yolo_node.py` and `people.py`. These are style issues only.
+`team_perception` has no ament lint tests (flake8/pep257/copyright).
 
 ## 10. Recording data
 
+Use the `rec_*` aliases from `ROS_bags/aliases.sh` (loaded by `~/.bashrc` on the robot). Each
+runs a preset in `ROS_bags/record.sh`. Full guide: `ROS_bags/ROSBAG_GUIDE.md`.
+
 ```bash
-mkdir -p ~/challenge_ws/ROS_bags
-ros2 bag record -o ~/challenge_ws/ROS_bags/<run_name> \
-  /camera/color/image_raw/compressed /camera/color/camera_info \
-  /camera/depth/image_raw /camera/depth/camera_info \
-  /livox/lidar /livox/points /livox/imu /imu/data /leg_odom2 /tf /tf_static
-ros2 bag info ~/challenge_ws/ROS_bags/<run_name>
-python3 src/team_perception/scripts/bag_to_video.py ~/challenge_ws/ROS_bags/<run_name>
+rec_full <run_name>      # teleop, everything incl. depth (Ctrl+C to stop)
+rec_nav                  # autonomous run, no depth; name defaults to nav_<date>_<time>
+rec_list                 # all presets: perception, detections, navdebug, lidar, video
+rec_last                 # ros2 bag info for the newest bag
+python3 ~/bag_to_video.py ~/challenge_ws/ROS_bags/<run_name>   # bag -> mp4, see ROSBAG_GUIDE §4
 ```
 
-This uses about 1.6 GB per minute; the robot disk had about 11 GB free (check `df -h`). `/tf`
+`rec_full` uses about 1.6 GB per minute; the robot disk had about 11 GB free (check `df -h`). `/tf`
 is only recorded when Fast-LIO is running. Bags are git-ignored. Copy them off the robot.
 
 **Not while Nav2 drives:** recording `/camera/depth/image_raw` delayed `/livox/points` by
-~1.2 s and collision_monitor held the robot at zero (2026-11-13). Leave raw depth out during
-autonomous runs (see `src/team_perception/ROSBAG_GUIDE.md`).
+~1.2 s and collision_monitor held the robot at zero (2026-11-13). Use `rec_nav` for autonomous
+runs; `rec_full` and `rec_perception` refuse to start while Nav2 is running.
 
 ## 11. Git workflow
 
@@ -297,22 +264,15 @@ autonomous runs (see `src/team_perception/ROSBAG_GUIDE.md`).
 - The robot's local repo currently has **no remote** and a separate one-commit history.
   Before pushing from the robot, add the remote, run `git fetch`, and rebase or cherry-pick
   onto `origin/main`.
-- Never commit `build/`, `install/`, `log/`, `ROS_bags/`, `maps/`, `models/*.onnx`, or other
-  files over 100 MB. `install/` and `log/` are tracked by mistake right now
-  (`git rm -r --cached build install log` and add them to `.gitignore`).
+- Never commit `build/`, `install/`, `log/`, bags in `ROS_bags/`, `maps/`, or other
+  files over 100 MB.
 
 ## 12. Known issues and TODO
 
-- `qr_scanner`'s default `depth_topic` (`/camera/aligned_depth_to_color/image_raw`) doesn't
-  exist on the robot, so QR map positions are missing unless depth alignment is turned on
-  in the camera driver or the parameter is changed.
+- The robot's depth image is not aligned to colour. `qr_scanner` and `poster_detector` map
+  colour pixels into it in software (`DepthAlign` in `qr_utils.py`), a temporary fix. If
+  the camera driver's depth registration is turned on, set `depth_topic` to the aligned
+  topic and `depth_camera_info_topic:=''`.
 - `lite3_launcher/config/pointcloud_to_scan.yaml`: `min_height` is still marked TODO. If the
   floor shows up as obstacles in `/scan` or the map, tune it.
-- slam_toolbox runs with `use_scan_matching: false` (trusts Fast-LIO odometry). Turn it on if
-  walls look doubled.
 - `lite3_launcher` isn't version-controlled (section 4).
-- `src/ROS_bags/` inside `src` is leftover test data. Recordings now go to `~/challenge_ws/ROS_bags/`.
-- `nav_straight`: the robot must be **standing before launch** (the floor height is fixed at
-  launch). Launched lying down, it stops at once with `Travelled 0.00 m`. Obstacle band is
-  0.10–1.05 m above the floor so table tops count. Not yet tested on the robot: low box,
-  full 5 m run.

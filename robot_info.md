@@ -6,8 +6,7 @@ commands reach the robot (down to the UDP packets), and what software you need t
 against it.
 
 - **Sources:** live inspection of the robot on 2026-11-13 (`ros2 topic`, `ros2 node info`,
-  sampled messages), the manufacturer guides (local copies in
-  `src/navigation/lite3-maze/docs/lite3_development/`: Motion Host Communication Interface
+  sampled messages), the manufacturer guides (Motion Host Communication Interface
   V1.1.0, Motion Development Guide V2.2.1, Perception Development Guide V2.2.3, SDK Mode V1.0.0,
   Kit Installation V0.0.1), the manufacturer bridge
   source (`DeepRoboticsLab/Lite3_ROS`, branch `ros2-foxy`, commit `e4ab5dc`), the lab launcher
@@ -15,8 +14,8 @@ against it.
 - **How sure each fact is:** **[live]** means seen on the robot. **[doc]** means from the
   manufacturer documents or source. **[unverified]** means believed but not yet tested on
   our robot.
-- **Related:** `agent.md` (workspace and build guide), `src/team_perception/INTEGRATION.md`
-  (perception outputs), `src/navigation/lite3-maze/README.md` (maze autonomy).
+- **Related:** `agent.md` (workspace and build guide), `src/team_perception/data_required.md`
+  (perception inputs and outputs).
 
 ---
 
@@ -84,7 +83,7 @@ Sources: **[doc]** manufacturer guides (above), **[datasheet]** vendor spec page
 | CPU | Intel Core i5-13420H, 10 threads visible |
 | RAM | 6 GB |
 | Disk | 30 GB, ~6.7 GB free on 2026-11-13 (a full recording uses ~1.6 GB/min, so ~4 min) |
-| GPU | **None usable** (Intel iGPU only, no CUDA). YOLO and other networks run on the CPU |
+| GPU | **None usable** (Intel iGPU only, no CUDA). This is why YOLO person detection runs on the external computer, not here |
 | OS | Ubuntu 22.04.5, ROS 2 Humble |
 | Network | `eth0` 192.168.1.74 (robot), `eth1` 192.168.10.74 (lab) |
 
@@ -297,7 +296,7 @@ connects. Subscribe to `/tf_static` with TRANSIENT_LOCAL (the `tf2_ros` listener
 
 ## 4. Topics from the localisation/navigation stack (only when it's running)
 
-These exist only when someone has started `lite3_launcher` / `navigation` / `lite3-maze`.
+These exist only when someone has started `lite3_launcher`.
 Check `ros2 node list` first.
 
 | Topic | Type | Publisher | Notes |
@@ -310,8 +309,8 @@ Check `ros2 node list` first.
 | `/navigate_to_pose` | `nav2_msgs/action/NavigateToPose` | Nav2 `bt_navigator` | Send goals with `frame_id: map` |
 | `/cmd_vel_nav` → `/nav_cmd_vel` | `geometry_msgs/Twist` | Nav2 controller → velocity smoother | Must still be forwarded to `/cmd_vel` (§6.2) |
 | `/joy_cmd_vel` | `Twist` | `teleop_twist_joy` (USB gamepad on the robot computer; LB = enable, RB = turbo) | Lab launcher only |
-| `/robot_mode`, `/maze/*`, `/n_humans` | | `lite3-maze` | See `src/navigation/lite3-maze/README.md` |
-| `/qr/detections`, `/humans/detections`, `/posters/detections`, `/found` | `std_msgs/String` | `team_perception` | See `src/team_perception/INTEGRATION.md` |
+| `/qr/detections`, `/posters/detections`, `/found` | `std_msgs/String` | `team_perception` (onboard) | See `src/team_perception/data_required.md` |
+| `/humans/detections` | `std_msgs/String` | `human_detector` on the external computer | Person boxes for `poster_detector`; absent without the external computer |
 
 Lab `twist_mux` (`lite3_launcher/config/twist_mux_topics.yaml`): `joy_cmd_vel` (priority
 100, timeout 0.5 s) beats `nav_cmd_vel` (priority 10, timeout 0.5 s), output `/cmd_vel`.
@@ -371,7 +370,7 @@ Type `geometry_msgs/msg/Twist`. Use ROS-standard signs; the bridge converts them
   (a different, raw interface) use "positive = right". Nobody has driven sideways on our robot
   yet, so do one 0.05 m/s check before relying on it.
 - **Rate:** publish continuously while moving. The manufacturer's own example uses 10 Hz
-  (`ros2 topic pub -r 10`); we use 20–50 Hz (`lite3-maze` uses 50 Hz).
+  (`ros2 topic pub -r 10`); we use 20–50 Hz.
 - **Timeout: none is documented for velocity commands.** The 250 ms "stop if nothing
   arrives" rule in the interface document applies to joystick *axis* commands only. No timeout
   is documented for the speed commands the bridge sends, and the manufacturer bridge adds
@@ -385,7 +384,6 @@ Type `geometry_msgs/msg/Twist`. Use ROS-standard signs; the bridge converts them
     default QoS) does **not** connect to a TRANSIENT_LOCAL subscriber.
   - The lifespan stops an old latched command from being replayed to a subscriber that joins late.
   - Check what the bridge currently asks for: `ros2 topic info -v /cmd_vel`.
-  - Reference implementation: `src/archive/navigation/cmd_vel_bridge.py` (Nav2 `/nav_cmd_vel` → `/cmd_vel` with this QoS and clamping).
 
 **Safety rules for any node that publishes `/cmd_vel`:**
 1. Only one publisher at a time. Check `ros2 topic info -v /cmd_vel` before you drive.
@@ -474,7 +472,7 @@ Codes relevant to us [doc]:
 | `0x21010C02` | **Manual mode**: handheld controller drives | | `lite3_manual`; safe fallback, send on shutdown |
 | `0x21020C0E` | **Software emergency STOP** | Any | Used in the 2026-11-12 trial; delivery confirmed. Robot needs operator recovery afterwards |
 | `0x21010202` | Stand / sit toggle | | **Don't send from code**; the operator handles it |
-| `0x21010D06` | Move mode (needed before gait changes) | Not in AI state | `lite3-maze` sends it before gait requests |
+| `0x21010D06` | Move mode (needed before gait changes) | Not in AI state | Send it before gait requests |
 | `0x21010D05` | Pose mode (body posture via joystick axes) | Not in AI state | Not used |
 | `0x21010401` | RUG gait, General gear (state 2) | Move mode, not AI | Normal rough-ground gait |
 | `0x21010407` | RUG gait, **H-Step** (high stepping, state 13) | Move mode, not AI | For stairs/obstacles. **On 2026-11-12 the robot became unsteady after this was sent; cause not found.** Only with the operator's agreement |
@@ -572,8 +570,6 @@ alignment padding, so both layouts are 220 bytes and every other offset is the s
 |---|---|---|
 | Body length × width | 0.548 × 0.370 m | manufacturer [doc] |
 | Lab Nav2 footprint | rectangle ±0.305 × ±0.185 m (0.61 × 0.37) | `lite3_launcher/config/nav2_params.yaml` |
-| `lite3-maze` footprint (allows for moving feet) | 0.64 × 0.46 m | `lite3-maze/src/lite3_maze/config/robot.yaml` |
-| Max traversable step used by `lite3-maze` | 0.16 m | same file [unverified on hardware] |
 | `base_link` height | about 0.35 m | manufacturer source |
 | Body origin | geometric centre of the body (= `base_link`). Top of body +0.074 m, bottom −0.044 m | Motion guide [doc] |
 | Body IMU | (0.005, 0, 0) m from the body origin | Motion guide [doc] |
@@ -593,7 +589,7 @@ body). The swing envelope during RUG / H-Step gaits has **not been measured**, s
   `ROS_DOMAIN_ID=89` (or anything other than 4) and `ROS_LOCALHOST_ONLY=1`.
 - Fast DDS with **UDP-only transport** is needed for Nav2 on the robot (with shared memory its
   lifecycle startup stalled):
-  `export FASTRTPS_DEFAULT_PROFILES_FILE=~/challenge_ws/src/archive/config/fastdds_udp.xml`
+  `export FASTRTPS_DEFAULT_PROFILES_FILE=~/challenge_ws/src/maze_nav/config/fastdds_udp.xml`
 - The robot computer has no screen. Run RViz/rqt on a laptop on the lab network
   (192.168.10.x) with the same domain ID.
 - Don't start the manufacturer `transfer` launch (`ros2 launch transfer transfer_launch.py`)
@@ -607,10 +603,7 @@ body). The swing envelope during RUG / H-Step gaits has **not been measured**, s
 
 | Resource | What it gives you |
 |---|---|
-| `ROS_bags/teleop_run1` (1.5 GB, 2026-11-12, about 52 s) | Real camera (compressed colour + depth + infos), Livox, IMUs, leg odometry, `/tf_static`. No dynamic `/tf`. Play it with `ros2 bag play --clock` and run Fast-LIO yourself |
 | `recordings/maze_*`, `recordings/integrated_maze_*` | Logs, saved maps (`maze_map.pgm/.yaml`), QR evidence from the 2026-11-12 trials |
-| `src/archive/test/fake_lite3.py` | Simulated room: publishes `/scan`, `/odom`, TF and accepts `/cmd_vel`. Use on domain 89 |
-| `src/navigation/lite3-maze` MuJoCo simulator (`./scripts/run_sim.sh`) | Full maze simulation with RViz on domain 31. Accepts `/cmd_vel` and `/robot_mode` |
 | §2.2 message definitions | Recreate `transfer_interfaces` / `livox_ros_driver2` messages so your code builds |
 
 To test command code offline, run a stand-in subscriber on another domain that logs `/cmd_vel`
