@@ -1,4 +1,4 @@
-> Updated hardware findings and commands: [HARDWARE_NAVIGATION.md](/home/user/challenge_ws/HARDWARE_NAVIGATION.md). The earlier missing-bridge diagnosis below was superseded by lazy discovery and QoS findings.
+> The earlier missing-bridge diagnosis below was superseded by lazy discovery and QoS findings.
 
 # Hardware preflight — 12 November 2026
 
@@ -54,7 +54,8 @@ commands or navigation action goals were sent during these checks.
 - `nav2_preflight.json`: lifecycle states and robot-cell map clearance.
 - `map_preview.png`: partial map snapshot, white free / black occupied / gray unknown.
 - `base.log`, `slam.log`, `preview.log`, `nav2.log`: process output.
-- `nav2_trial.yaml`: separate conservative profile generated from the lab config;
+- `nav2_trial.yaml` (removed 2026-11-14; it loaded a behaviour tree from the deleted
+  `lite3_mission` package): separate conservative profile generated from the lab config;
   the installed lab config was not overwritten.
 
 All test launchers started in this session were sent SIGINT for shutdown.
