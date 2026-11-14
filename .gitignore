@@ -16,4 +16,3 @@ ROS_bags/*
 recordings/
 runs/
 maps/
-models/*.onnx
