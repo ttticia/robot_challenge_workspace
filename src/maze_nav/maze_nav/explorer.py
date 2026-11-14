@@ -1,7 +1,10 @@
 """Explore the maze on the SLAM map with Nav2 until the robot is out.
 
-Start: once /map, TF and Nav2 are up, the robot holds still for `start_pause` s (status
-PAUSED, countdown in the log) so the operator can start a rosbag recording. Then a scan (`start_scan`) turns the robot
+Start: once /map, TF and Nav2 are up, the robot holds still (status PAUSED) until the
+operator publishes on /maze/start (std_msgs/Empty):
+    ros2 topic pub --once /maze/start std_msgs/msg/Empty
+so there is time to start a rosbag recording. Messages sent before PAUSED are ignored.
+wait_for_start:=false skips the wait (simulator). Then a scan (`start_scan`) turns the robot
 `scan_angle` left, back through to `scan_angle` right, then back to the start heading using
 Nav2's /spin behavior, so SLAM sees the start area before the first frontier is picked. A
 failed spin is logged and the scan moves on; it never blocks exploring. Skipped when go:=false.
@@ -36,10 +39,12 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
-from std_msgs.msg import String
+from std_msgs.msg import Empty, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from maze_nav.core import ExitDetector, Grid, choose_frontier, find_frontiers
+
+START_CMD = 'ros2 topic pub --once /maze/start std_msgs/msg/Empty'
 
 LATCHED = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -52,13 +57,14 @@ class Explorer(Node):
         p = self.declare_parameter
         p('go', True)
         p('start_delay', 5.0)          # s after the first map before moving
-        p('start_pause', 30.0)         # s to hold still once ready (start rosbag recording)
+        p('wait_for_start', True)      # hold still until /maze/start (start rosbag recording)
         p('replan_period', 1.0)
         p('robot_radius', 0.25)        # half width incl. feet + a little
         p('goal_clearance', 0.33)      # goals at least this far from walls
         p('min_frontier_size', 5)      # cells
         p('goal_timeout', 90.0)        # s per goal before giving up on it
         p('max_failures', 3)           # failed goals in a row before NO_EXIT
+        p('done_confirm', 5)           # replans in a row with no frontier before NO_EXIT
         p('exit_open_radius', 1.1)     # m of seen-free floor around a point = outside
         p('exit_near_radius', 0.8)     # that point within this distance of the robot
         p('exit_min_displacement', 1.5)
@@ -68,8 +74,8 @@ class Explorer(Node):
         p('scan_angle', math.pi / 2)   # rad each way
         p('map_dir', os.path.expanduser('~/challenge_ws/maps'))
         g = lambda n: self.get_parameter(n).value  # noqa: E731
-        self.cfg = {n: g(n) for n in ('go', 'start_delay', 'start_pause', 'robot_radius', 'goal_clearance',
-                                      'min_frontier_size', 'goal_timeout', 'max_failures',
+        self.cfg = {n: g(n) for n in ('go', 'start_delay', 'wait_for_start', 'robot_radius', 'goal_clearance',
+                                      'min_frontier_size', 'goal_timeout', 'max_failures', 'done_confirm',
                                       'max_runtime', 'map_dir', 'start_scan', 'scan_angle')}
         self.exit = ExitDetector(open_radius=g('exit_open_radius'),
                                  near_radius=g('exit_near_radius'),
@@ -86,13 +92,14 @@ class Explorer(Node):
         # cmd_vel_bridge (clamps, drive:=false preview) like any other command.
         self.cmd_pub = self.create_publisher(Twist, 'nav_cmd_vel', 10)
         self.create_subscription(OccupancyGrid, '/map', self.on_map, LATCHED)
+        # Volatile on purpose: a start sent before this run is never replayed.
+        self.create_subscription(Empty, '/maze/start', self.on_start, 10)
         self.create_timer(g('replan_period'), self.step)
 
         self.map = None
         self.first_map = None
         self.started = None
-        self.pause_until = None
-        self.next_countdown = None
+        self.start_requested = False
         self.state = None
         self.current = None          # Frontier being driven to
         self.goal_handle = None
@@ -100,6 +107,7 @@ class Explorer(Node):
         self.goal_result = None      # None while running, else GoalStatus code
         self.blacklist = []
         self.failures = 0
+        self.empty_replans = 0       # replans in a row that found no frontier
         a = abs(self.cfg['scan_angle'])
         self.scan_turns = [a, -2 * a, a]   # left, right, back to the start heading
         self.spin_busy = False
@@ -117,6 +125,13 @@ class Explorer(Node):
         self.map = msg
         if self.first_map is None:
             self.first_map = time.monotonic()
+
+    def on_start(self, _msg):
+        if self.state == 'PAUSED':
+            self.start_requested = True
+            self.get_logger().info('start received')
+        elif self.state == 'STARTING':
+            self.get_logger().warn('start ignored: not ready yet (wait for PAUSED)')
 
     def robot_pose(self):
         try:
@@ -141,19 +156,13 @@ class Explorer(Node):
                 return
             if time.monotonic() - self.first_map < self.cfg['start_delay']:
                 return
-            pause = max(0.0, self.cfg['start_pause'])
-            self.pause_until = time.monotonic() + pause
-            self.next_countdown = math.ceil(pause)   # last countdown second logged
-            if pause > 0:
-                self.set_state('PAUSED', f'ready; holding still {pause:.0f} s - start the '
-                               'rosbag recording now')
-        if self.state in ('STARTING', 'PAUSED'):
-            left = self.pause_until - time.monotonic()
-            if left > 0:
-                secs = math.ceil(left)
-                if secs < self.next_countdown and (secs % 5 == 0 or secs <= 3):
-                    self.next_countdown = secs
-                    self.get_logger().info(f'moving in {secs} s')
+            if self.cfg['wait_for_start']:
+                self.set_state('PAUSED', 'ready; holding still - start the rosbag recording, '
+                               f'then: {START_CMD}')
+        if self.state in ('STARTING', 'PAUSED'):        # STARTING here = ready, no wait
+            if self.state == 'PAUSED' and not self.start_requested:
+                self.get_logger().info(f'waiting for start: {START_CMD}',
+                                       throttle_duration_sec=15.0)
                 return
             self.started = time.monotonic()
             if self.cfg['go'] and self.cfg['start_scan']:
@@ -214,11 +223,19 @@ class Explorer(Node):
         frontiers = find_frontiers(grid, xy, self.cfg['robot_radius'], self.cfg['goal_clearance'],
                                    self.cfg['min_frontier_size'], self.blacklist)
         if not frontiers:
+            # One empty result can be a map still filling in (start-up, SLAM update);
+            # only a few in a row mean everything is mapped.
+            self.empty_replans += 1
+            if self.empty_replans < self.cfg['done_confirm']:
+                self.get_logger().info(f'no frontier ({self.empty_replans}/'
+                                       f'{self.cfg["done_confirm"]}); checking again')
+                return
             # Everything mapped: stop now, even mid-goal (finish cancels it).
             self.finish('NO_EXIT', 'all frontiers mapped, no open space found')
             self.stop_robot()
             print('nav stopped', flush=True)
             return
+        self.empty_replans = 0
         nxt = choose_frontier(frontiers, self.current, yaw, xy)
         if self.current is not None and self.goal_handle is not None and \
                 math.hypot(nxt.goal[0] - self.current.goal[0],

@@ -20,7 +20,7 @@ python3 -W ignore "$WS/src/maze_nav/test/fake_maze_lite3.py" > "$LOG/sim.log" 2>
 SIM=$!
 sleep 3
 ros2 launch maze_nav maze_nav.launch.py bringup:=false udp_only:=false \
-    map_dir:="$LOG/maps" start_pause:=0 > "$LOG/launch.log" 2>&1 &
+    map_dir:="$LOG/maps" wait_for_start:=false > "$LOG/launch.log" 2>&1 &
 LAUNCH=$!
 
 end=$((SECONDS + TIMEOUT))

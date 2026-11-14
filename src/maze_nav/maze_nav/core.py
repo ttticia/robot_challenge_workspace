@@ -199,11 +199,10 @@ def find_frontiers(grid, robot_xy, robot_radius=0.25, goal_clearance=0.33, min_s
     clear = clearance_map(grid)
     passable = free & (clear >= robot_radius)
     start = grid.cell(robot_xy)
-    if not grid.contains(start):
-        return []
-    if not passable[start[1], start[0]]:
-        # Robot drawn inside an inflated wall (or on unknown cells under itself at startup):
-        # start from the nearest passable cell.
+    if not grid.contains(start) or not passable[start[1], start[0]]:
+        # Robot drawn inside an inflated wall, on unknown cells under itself, or just off
+        # the map edge (the lidar's blind sector behind it at startup leaves nothing mapped
+        # there): start from the nearest passable cell.
         idx = np.argwhere(passable)
         if len(idx) == 0:
             return []

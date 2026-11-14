@@ -15,7 +15,9 @@ ros2 launch maze_nav maze_nav.launch.py drive:=false    # Nav2 drives, nothing r
 **Before a real run:** robot **standing on the start cell** (the floor height is measured
 at launch), area clear, operator holding the handheld controller, `lite3_auto` sent by the
 operator, nothing else running SLAM/Nav2 or publishing `/cmd_vel` (`ros2 node list`). Watch
-`/maze/status`. The run ends with `EXITED`, `NO_EXIT` or `STOPPED`, and the map is saved to
+`/maze/status`. Once it reads `PAUSED`, start the recording (`rec_nav`), then send
+`ros2 topic pub --once /maze/start std_msgs/msg/Empty`; the robot waits for this
+(`wait_for_start:=false` skips it). The run ends with `EXITED`, `NO_EXIT` or `STOPPED`, and the map is saved to
 `~/challenge_ws/maps/maze_<date>_<time>.{pgm,yaml}` (`latest.yaml` points to the newest).
 
 ## The example maze

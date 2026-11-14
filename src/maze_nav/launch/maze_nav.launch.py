@@ -13,13 +13,15 @@ Pipeline:
 
 Before launching: robot STANDING on the start cell (wall_scan measures the floor height at
 startup), operator holding the handheld controller, `lite3_auto` sent by the operator,
-nothing else publishing /cmd_vel or running SLAM/Nav2 (`ros2 node list`).
+nothing else publishing /cmd_vel or running SLAM/Nav2 (`ros2 node list`). The launch checks
+the last part itself first (maze_nav/preflight.py) and warns if anything clashes.
 
 Arguments:
   bringup:=false   Fast-LIO / odom already running (or a simulator)
   go:=false        explorer picks goals but doesn't send them (watch /maze/goal in RViz)
   drive:=false     Nav2 runs but nothing reaches /cmd_vel (cmd_vel_bridge preview topic)
-  start_pause:=30  s the robot holds still once everything is up (start rosbag recording)
+  wait_for_start:=true  hold still once everything is up until
+                   `ros2 topic pub --once /maze/start std_msgs/msg/Empty`
   start_scan:=true turn 90 deg left and right on the start cell before exploring
   max_speed:=0.15  band_low:=0.30  band_high:=0.43  floor_z:=nan (measure)
   map_dir:=~/challenge_ws/maps   udp_only:=true   use_sim_time:=false
@@ -28,7 +30,8 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
+from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction,
+                            SetEnvironmentVariable)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -39,6 +42,16 @@ from nav2_common.launch import RewrittenYaml
 
 NAV2_NODES = ['planner_server', 'controller_server', 'behavior_server', 'bt_navigator',
               'velocity_smoother']
+
+
+def preflight(context):
+    # Runs before any node below starts, so none of ours are in the way yet.
+    import launch.logging
+    from maze_nav.preflight import run
+    flag = lambda n: LaunchConfiguration(n).perform(context).lower() in ('true', '1')  # noqa: E731
+    run(context, flag('bringup'), flag('wait_for_start'),
+        launch.logging.get_logger('maze_nav.preflight'))
+    return []
 
 
 def generate_launch_description():
@@ -71,8 +84,8 @@ def generate_launch_description():
                               description='false = explorer only publishes /maze/goal'),
         DeclareLaunchArgument('drive', default_value='true',
                               description='false = nothing is sent to /cmd_vel'),
-        DeclareLaunchArgument('start_pause', default_value='30.0',
-                              description='s to hold still once ready (start rosbag recording)'),
+        DeclareLaunchArgument('wait_for_start', default_value='true',
+                              description='hold still once ready until /maze/start (std_msgs/Empty)'),
         DeclareLaunchArgument('start_scan', default_value='true',
                               description='turn 90 deg left and right before exploring'),
         DeclareLaunchArgument('max_speed', default_value='0.15',
@@ -91,6 +104,7 @@ def generate_launch_description():
         SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE',
                                os.path.join(config, 'fastdds_udp.xml'),
                                condition=IfCondition(arg('udp_only'))),
+        OpaqueFunction(function=preflight),
 
         # Fast-LIO + odom_relay only; lite3_bringup would also start a /scan we don't use.
         IncludeLaunchDescription(
@@ -132,7 +146,7 @@ def generate_launch_description():
              output='screen',
              parameters=[sim_time, {
                  'go': ParameterValue(arg('go'), value_type=bool),
-                 'start_pause': ParameterValue(arg('start_pause'), value_type=float),
+                 'wait_for_start': ParameterValue(arg('wait_for_start'), value_type=bool),
                  'start_scan': ParameterValue(arg('start_scan'), value_type=bool),
                  'map_dir': arg('map_dir'),
              }]),

@@ -76,6 +76,9 @@ ros2 launch maze_nav maze_nav.launch.py            # robot standing on the start
 ros2 launch maze_nav maze_nav.launch.py go:=false  # goals on /maze/goal only, robot doesn't move
 ```
 
+The robot holds still (`/maze/status` = `PAUSED`) until
+`ros2 topic pub --once /maze/start std_msgs/msg/Empty`. Start `rec_nav` before sending it.
+
 Explores with `slam_toolbox` + Nav2 until there is open floor next to the robot, then stops.
 `/maze/status` ends as `EXITED`, `NO_EXIT` or `STOPPED`, and the map is saved to `maps/`. It uses its own
 `/wall_scan`, which keeps points 0.30–0.43 m above the floor (measured in `odom`). Maze walls are only

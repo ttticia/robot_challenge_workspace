@@ -10,10 +10,10 @@
 # stairs are below that band on purpose: the robot walks over them.
 #
 # Maze geometry (example maze.step): 1 m cells, 0.05 m walls -> ~0.90-0.95 m clear corridor,
-# 0.87 m between the stair hand rails. Footprint 0.64 x 0.46 m (Lite3 incl. moving feet,
-# robot_info.md), set 5 cm behind base_link (x -0.37..0.27) -> 0.22 m each side in a corridor;
-# farthest corner 0.44 m from base_link, just under the 0.45 m half width, so turning on the
-# spot in a cell centre still fits, with ~1 cm to spare.
+# 0.87 m between the stair hand rails. Footprint 0.69 x 0.46 m (Lite3 0.64 m incl. moving
+# feet, robot_info.md, plus 5 cm margin at the back; x -0.37..0.32) -> 0.22 m each side in a
+# corridor. The rear corners are 0.44 m from base_link, just under the 0.45 m half width, so
+# turning on the spot in a corridor cell centre fits with only ~1.5 cm to spare.
 
 bt_navigator:
   ros__parameters:
@@ -101,7 +101,7 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      footprint: "[[0.27, 0.23], [0.27, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # 5 cm back of base_link centre
+      footprint: "[[0.32, 0.23], [0.32, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # 5 cm extra at the back
       footprint_padding: 0.0
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -135,7 +135,7 @@ global_costmap:
       transform_tolerance: 0.3
       resolution: 0.05
       track_unknown_space: true
-      footprint: "[[0.27, 0.23], [0.27, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # 5 cm back of base_link centre
+      footprint: "[[0.32, 0.23], [0.32, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # 5 cm extra at the back
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"

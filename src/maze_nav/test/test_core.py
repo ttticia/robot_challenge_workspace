@@ -109,6 +109,16 @@ def test_frontier_at_end_of_corridor():
     assert f.path_length == pytest.approx(f.goal[0] - 0.3, abs=0.15)
 
 
+def test_frontier_found_when_robot_just_off_map_edge():
+    # At startup SLAM maps nothing behind the robot (lidar blind sector), so the map can
+    # start a few cm in front of base_link. That must not read as "nothing to explore".
+    g = corridor_grid()
+    cropped = Grid(g.data[:, 20:], g.resolution, (0.0, -1.0))
+    assert not cropped.contains(cropped.cell((-0.07, 0.0)))
+    fs = find_frontiers(cropped, (-0.07, 0.0))
+    assert len(fs) == 1 and 2.4 < fs[0].goal[0] < 3.0
+
+
 def test_blacklisted_frontier_is_skipped():
     g = corridor_grid()
     goal = find_frontiers(g, (0.3, 0.0))[0].goal

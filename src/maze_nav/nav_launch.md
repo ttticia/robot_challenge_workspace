@@ -41,9 +41,21 @@ source install/setup.bash
 ros2 launch maze_nav maze_nav.launch.py
 ```
 
-After launch, once SLAM, TF and Nav2 are up, the robot holds still for `start_pause` s
-(`/maze/status` = `PAUSED`, countdown in the log). Start the rosbag recording then
-(`rec_nav`, see `ROS_bags/ROSBAG_GUIDE.md`). Next it turns 90° left, 180° right and 90° back
+First the launch checks for anything that would clash: another SLAM, Nav2 or maze_nav on
+this computer (also Fast-LIO / the simulator with `bringup:=true`), teleop or `twist_mux`,
+and on the whole `ROS_DOMAIN_ID` any `/cmd_vel` publisher or node using one of our names.
+If it finds any, it prints a `!!!` banner listing them (with PIDs) and pauses 3 s, then
+launches anyway. Ctrl+C, stop them, and relaunch.
+
+After launch, once SLAM, TF and Nav2 are up, the robot holds still (`/maze/status` =
+`PAUSED`) until you tell it to go. Start the rosbag recording first (`rec_nav`, see
+`ROS_bags/ROSBAG_GUIDE.md`), then in another terminal:
+
+```bash
+ros2 topic pub --once /maze/start std_msgs/msg/Empty
+```
+
+A start sent before `PAUSED` is ignored (the log says so); send it again. Next it turns 90° left, 180° right and 90° back
 to its start heading so SLAM sees the start area, then starts exploring.
 
 Recommended first run on a new maze: `go:=false`, check the map and goals in RViz, then
@@ -54,7 +66,7 @@ relaunch without it.
 | `bringup` | `true` | Start Fast-LIO + `odom_relay`. `false` if they already run (or for the simulator) |
 | `go` | `true` | `false`: explorer picks goals and publishes them on `/maze/goal` but never sends them. The robot stays still |
 | `drive` | `true` | `false`: Nav2 drives, but commands go to `/cmd_vel_bridge/cmd_vel_preview`, not `/cmd_vel` |
-| `start_pause` | `30` | s to hold still once everything is up, for starting the rosbag recording. `0` = no pause |
+| `wait_for_start` | `true` | Hold still once everything is up until `/maze/start` is published. `false` = start right away (simulator) |
 | `start_scan` | `true` | Turn 90° left and right on the start cell before exploring. Skipped with `go:=false` |
 | `max_speed` | `0.15` | m/s for the path follower (the bridge clamps to 0.25 m/s, 0.5 rad/s anyway) |
 | `band_low` / `band_high` | `0.30` / `0.43` | Wall slice, metres above the floor. Below `band_low` = walkable (ramps, mats, stairs). `band_high` must stay below the wall top (0.45 m) |
@@ -115,10 +127,11 @@ pointing to the newest.
 | Layers | `/wall_scan` obstacles + inflation | `/map` (static) + `/wall_scan` obstacles + inflation |
 | Resolution | 0.05 m | 0.05 m |
 
-- **Footprint:** 0.64 × 0.46 m rectangle (Lite3 including moving feet), offset 5 cm behind
-  `base_link`: x from −0.37 to +0.27 m, y ±0.23 m. In a 0.9 m maze corridor that leaves 0.22 m
-  each side. The farthest corner is 0.44 m from `base_link`, so turning on the spot in a cell
-  centre leaves only about 1 cm to spare.
+- **Footprint:** 0.69 × 0.46 m rectangle: the Lite3 (0.64 m including moving feet) plus
+  5 cm extra at the back. x from −0.37 to +0.32 m, y ±0.23 m. In a 0.9 m maze corridor that
+  leaves 0.22 m each side. The rear corners are 0.44 m from `base_link`, just under the
+  corridor's 0.45 m half width, so turning on the spot in a cell centre leaves only about
+  1.5 cm to spare.
 - **Inflation:** radius 0.45 m, cost scaling 6. This keeps paths in the middle of the corridor.
 - **No-return beams** (`inf`) are ignored, because the lidar can't see behind the robot. They
   never clear walls.

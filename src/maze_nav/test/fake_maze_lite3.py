@@ -15,11 +15,15 @@ Always run it on a spare domain so it cannot meet the real robot:
     python3 test/fake_maze_lite3.py &
     ros2 launch maze_nav maze_nav.launch.py bringup:=false
 """
+import array
 import json
 import math
 import os
 
-import numpy as np
+# Before numpy loads: OpenBLAS threads busy-wait after every matmul (see maze_nav/__init__.py).
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+
+import numpy as np  # noqa: E402
 import rclpy
 from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
@@ -220,7 +224,9 @@ class FakeMazeLite3(Node):
         msg.fields = [PointField(name=n, offset=o, datatype=t, count=1) for n, o, t in LIVOX_FIELDS]
         msg.point_step, msg.row_step = LIVOX_DTYPE.itemsize, LIVOX_DTYPE.itemsize * len(out)
         msg.is_dense = True
-        msg.data = out.tobytes()
+        # array.array, not bytes: rclpy (Humble) checks a bytes value element by element
+        # (~65 ms for this cloud, most of the sim's CPU); an array('B') is taken as is (~0.3 ms).
+        msg.data = array.array('B', out.tobytes())
         self.cloud_pub.publish(msg)
 
 
