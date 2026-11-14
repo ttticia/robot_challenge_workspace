@@ -78,6 +78,23 @@ ros2 service call /mission/set_armed std_srvs/srv/SetBool '{data: false}'
 
 Follow the team's supervised execution procedure in `src/lite3_mission/README.md`.
 
+## Curtains (planned)
+
+Exploration currently stops at curtains: the lidar and SLAM see a curtain as a wall, so rooms behind
+one never become frontiers (in arena_1 the mission explored 4 of 12 cells, then reported
+`NO_REACHABLE_FRONTIER`). The occupancy map alone cannot tell a curtain from a wall.
+
+Plan, to be developed during real-robot testing: use the robot's depth camera to look under the
+curtain's bottom gap (real curtains most likely do not reach the floor) and confirm open floor behind
+it. A fan that makes curtains move is an alternative. Then: Nav2 to a staging pose in front of the
+curtain, a slow straight push through, and resume exploration.
+
+Groundwork already in place: the velocity gate's push input (`push_input_enabled`,
+`/mission/push_cmd_vel`, `/mission/push_lease`, straight only, at most `max_push_linear_m_s` = 0.1,
+never mixed with Nav2 commands; see the header of `lite3_nav/velocity_gate.py`). It stays
+**`push_input_enabled: false`** (the default; set in neither robot.yaml nor sim.yaml) until the
+detection and push behaviour exist and have been tested.
+
 ## Tests
 
 ```bash
