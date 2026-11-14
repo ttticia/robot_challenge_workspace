@@ -3,8 +3,8 @@
 <package format="3">
   <name>team_perception</name>
   <version>0.0.0</version>
-  <description>QR code scanner, YOLO person detector and poster detector nodes, a robot
-    launch file, and an offline tool that annotates photos and videos into test_runs/.</description>
+  <description>Onboard robot build of team_perception: QR scanner, poster detector and the
+    image throttle feeding the external YOLO computer.</description>
   <maintainer email="ng.tricia2005@gmail.com">ngtri</maintainer>
   <license>Apache-2.0</license>
 
@@ -18,18 +18,13 @@
   <depend>tf2_geometry_msgs</depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
-  <!-- Humble's OpenCV is built without QUIRC and cannot decode QR codes -->
-  <exec_depend>python3-pyzbar</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
-  <!-- Only for the offline bag tools in scripts/ -->
-  <exec_depend>rosbag2_py</exec_depend>
-  <!-- Also needs zxing-cpp, ultralytics and CPU torch from pip (no rosdep keys):
-       see requirements.txt -->
+  <!-- Humble's OpenCV is built without QUIRC and cannot decode QR codes -->
+  <exec_depend>python3-pyzbar</exec_depend>
+  <!-- Also needs zxing-cpp from pip (no rosdep key): run install_deps.sh -->
 
-  <test_depend>ament_copyright</test_depend>
-  <test_depend>ament_flake8</test_depend>
-  <test_depend>ament_pep257</test_depend>
+  <!-- test/: pytest test -->
   <test_depend>python3-pytest</test_depend>
   <test_depend>python3-qrcode</test_depend>
 

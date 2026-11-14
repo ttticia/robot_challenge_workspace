@@ -1,5 +1,5 @@
 """
-Poster detector node: reports pictures of people, ignores real people.
+Poster detector node: reports pictures of people, ignores real people (robot build).
 
 Takes person boxes from human_detector and decides, for each one, whether it is a poster
 using two tests from poster_utils:
@@ -14,11 +14,8 @@ Topics (all names are parameters - VERIFY on the robot with `ros2 topic list`):
   in : depth_topic          sensor_msgs/Image  depth ALIGNED to the colour image
   in : camera_info_topic    sensor_msgs/CameraInfo  (intrinsics of that depth image)
   in : map_topic            nav_msgs/OccupancyGrid  static map (transient local)
-  in : image_topic          colour image, only for the debug view and snapshots
   out: /posters/detections        std_msgs/String  JSON, one per newly confirmed poster
-  out: /posters/classifications   std_msgs/String  JSON, every person box with the numbers
-                                  behind its label (for tuning thresholds)
-  out: /posters/debug_image[/compressed]  colour image with boxes coloured by label
+  out: /found                     std_msgs/String  "Human found", once per new poster position
 """
 import bisect
 import csv
@@ -27,7 +24,6 @@ import json
 import os
 import time
 
-import cv2
 import numpy as np
 import rclpy
 from rclpy.duration import Duration
@@ -39,18 +35,15 @@ from rclpy.time import Time
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped
 from nav_msgs.msg import OccupancyGrid
-from sensor_msgs.msg import CameraInfo, CompressedImage, Image
+from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 import tf2_ros
 import tf2_geometry_msgs  # noqa: F401  (registers PointStamped with tf2)
 
-from team_perception.poster_utils import (MAP_MODES, POSTER, REAL, MapParams, PosterTracker,
-                                          RingParams, StaticMap, combine, edge_ring_test,
-                                          scale_box, static_map_test, to_metres,
-                                          torso_pixel_and_depth)
-from team_perception.qr_utils import _text_block
-
-COLOURS = {POSTER: (255, 0, 255), REAL: (255, 160, 0), 'unknown': (160, 160, 160)}
+from team_perception.poster_utils import (MAP_MODES, MapParams, PosterTracker, RingParams,
+                                          StaticMap, combine, edge_ring_test, static_map_test,
+                                          to_metres, torso_pixel_and_depth)
+from team_perception.qr_utils import DepthAlignState
 
 
 def _stamp(msg_header):
@@ -86,10 +79,10 @@ class PosterDetector(Node):
         super().__init__('poster_detector')
         p = self.declare_parameter
         p('detections_topic', '/humans/detections')
-        p('depth_topic', '/camera/aligned_depth_to_color/image_raw')
+        p('depth_topic', '/camera/depth/image_raw')
+        p('depth_camera_info_topic', '/camera/depth/camera_info')  # '' = depth is
+        #                                already aligned to colour
         p('camera_info_topic', '/camera/color/camera_info')
-        p('image_topic', '/camera/color/image_raw')   # debug view / snapshots only
-        p('image_transport', 'raw')                    # 'raw' or 'compressed'
         p('map_topic', '/map')
         p('map_frame', 'map')
         p('use_map', True)
@@ -111,8 +104,6 @@ class PosterDetector(Node):
         p('vote_window', 8)
         p('vote_need', 5)
         p('repeat_after_s', 60.0)
-        p('publish_debug', False)      # debugging: subscribe to colour for the debug view
-        #                                and snapshots (costs a full colour stream)
         p('log_dir', os.path.expanduser('~/poster_logs'))
 
         def g(name):
@@ -133,12 +124,11 @@ class PosterDetector(Node):
                                occupied=g('map_occupied'))
         self.tracker = PosterTracker(g('merge_radius_m'), g('vote_window'), g('vote_need'),
                                      repeat_after_s=g('repeat_after_s'))
-        self.publish_debug = g('publish_debug')
 
         self.bridge = CvBridge()
         self.depth_buf = StampBuffer()
-        self.image_buf = StampBuffer()
         self.K = None
+        self.align_state = DepthAlignState(bool(g('depth_camera_info_topic')))
         self.static_map = None
 
         self.create_subscription(String, g('detections_topic'), self.on_detections, 10)
@@ -147,15 +137,9 @@ class PosterDetector(Node):
                                  qos_profile_sensor_data)
         self.create_subscription(CameraInfo, g('camera_info_topic'), self.on_info,
                                  qos_profile_sensor_data)
-        if self.publish_debug:
-            if g('image_transport') == 'compressed':
-                self.create_subscription(
-                    CompressedImage, g('image_topic').rstrip('/') + '/compressed',
-                    lambda m: self.image_buf.add(_stamp(m.header), m), qos_profile_sensor_data)
-            else:
-                self.create_subscription(Image, g('image_topic'),
-                                         lambda m: self.image_buf.add(_stamp(m.header), m),
-                                         qos_profile_sensor_data)
+        if g('depth_camera_info_topic'):
+            self.create_subscription(CameraInfo, g('depth_camera_info_topic'),
+                                     self.on_depth_info, qos_profile_sensor_data)
         if self.use_map:
             latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                                  reliability=ReliabilityPolicy.RELIABLE)
@@ -164,34 +148,28 @@ class PosterDetector(Node):
         self.pub = self.create_publisher(String, '/posters/detections', 10)
         self.found_pub = self.create_publisher(String, '/found', 10)   # "Human found", once each
         self.announced = []            # positions of posters already announced
-        self.class_pub = self.create_publisher(String, '/posters/classifications', 10)
-        self.debug_pub = self.create_publisher(Image, '/posters/debug_image', 1)
-        self.debug_jpeg_pub = self.create_publisher(
-            CompressedImage, '/posters/debug_image/compressed', 1)
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.log_dir = g('log_dir')
-        # created on the first confirmed poster, not at startup
+        # record of confirmed posters; created on the first one, not at startup
         self.csv_path = os.path.join(self.log_dir, time.strftime('posters_%Y%m%d_%H%M%S.csv'))
         self.get_logger().info(
             f'Poster detector: {g("detections_topic")} + {g("depth_topic")}, map_mode='
-            f'{self.map_mode}{" (" + g("map_topic") + ")" if self.use_map else ""}'
-            + (', debug view on' if self.publish_debug else ''))
+            f'{self.map_mode}{" (" + g("map_topic") + ")" if self.use_map else ""}')
 
     # --- inputs ------------------------------------------------------------------
     def on_info(self, msg):
         self.K = (msg.k[0], msg.k[4], msg.k[2], msg.k[5], msg.width, msg.height)
+        self.align_state.set_colour(self.K[:4], (msg.width, msg.height),
+                                    msg.header.frame_id)
+
+    def on_depth_info(self, msg):
+        self.align_state.set_depth((msg.k[0], msg.k[4], msg.k[2], msg.k[5]),
+                                   msg.header.frame_id)
 
     def on_map(self, msg):
-        # SLAM can publish an empty or inconsistent grid (e.g. on reset); keep the last good one.
-        if msg.info.width * msg.info.height == 0 or \
-                len(msg.data) != msg.info.width * msg.info.height:
-            self.get_logger().warn(
-                f'Ignoring malformed map: {msg.info.width}x{msg.info.height} '
-                f'with {len(msg.data)} cells', throttle_duration_sec=10.0)
-            return
         q = msg.info.origin.orientation
         yaw = np.arctan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         self.static_map = StaticMap(msg.data, msg.info.width, msg.info.height,
@@ -217,28 +195,29 @@ class PosterDetector(Node):
                 throttle_duration_sec=5.0)
             return
         depth = to_metres(self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough'))
+        align = self.depth_align(depth.shape)
+        if align is None:
+            return
 
-        results = []
         for person in det.get('people', []):
-            results.append(self.classify(person, det, depth, depth_msg.header))
-
-        if self.class_pub.get_subscription_count() > 0:    # tuning aid: only when listened to
-            self.class_pub.publish(String(data=json.dumps(
-                {'stamp': stamp, 'people': [{k: v for k, v in r.items() if k != 'report'}
-                                            for r in results]})))
-        img = self.debug_frame(stamp, det, results)
-        for r in results:
+            r = self.classify(person, det, depth, depth_msg.header, align)
             if r['report']:
-                self.report(r, stamp, img)
+                self.report(r, stamp)
 
-    def classify(self, person, det, depth, depth_header):
-        box = scale_box(person['box'], det.get('image_size'), depth.shape)
+    def classify(self, person, det, depth, depth_header, align):
+        # Colour box -> depth-image box: first without parallax to get the torso depth,
+        # then again corrected for the offset between the two sensors at that depth.
+        size = det.get('image_size')
+        box = align.box(person['box'], image_size=size)
+        tp = torso_pixel_and_depth(depth, box, self.ring_p)
+        if tp is not None:
+            box = align.box(person['box'], z=tp[2], image_size=size)
         ring, ring_m = edge_ring_test(depth, box, self.ring_p)
         out = {'box': person['box'], 'conf': person.get('conf'), 'ring': ring,
                'ring_metrics': ring_m, 'map': 'unknown', 'map_metrics': {},
                'position': None, 'frame': None, 'report': False}
 
-        point = self.locate(depth, box, depth_header)
+        point = self.locate(depth, box, depth_header, align)
         if point is not None:
             out['frame'] = point.header.frame_id
             out['position'] = [round(point.point.x, 3), round(point.point.y, 3),
@@ -258,19 +237,13 @@ class PosterDetector(Node):
             out['confirmed_poster'] = self.tracker.is_poster(track)
         return out
 
-    def locate(self, depth, box, header):
-        """Torso point as PointStamped in the map frame (camera frame if no tf), or None."""
-        if self.K is None:
-            self.get_logger().warn('no camera_info yet', throttle_duration_sec=5.0)
-            return None
+    def locate(self, depth, box, header, align):
+        """Torso point as PointStamped in the map frame (depth frame if no tf), or None."""
         tp = torso_pixel_and_depth(depth, box, self.ring_p)
         if tp is None:
             return None
         u, v, z = tp
-        fx, fy, cx, cy, w, h = self.K
-        if w and h and (w != depth.shape[1] or h != depth.shape[0]):   # intrinsics for
-            sx, sy = depth.shape[1] / w, depth.shape[0] / h            # another resolution
-            fx, cx, fy, cy = fx * sx, cx * sx, fy * sy, cy * sy
+        fx, fy, cx, cy = align.depth_k         # box is in depth-image pixels
         pt = PointStamped()
         pt.header = header
         pt.point.x, pt.point.y, pt.point.z = (u - cx) * z / fx, (v - cy) * z / fy, z
@@ -281,8 +254,24 @@ class PosterDetector(Node):
                                    'frame, map test skipped', throttle_duration_sec=5.0)
             return pt
 
+    def depth_align(self, depth_shape):
+        """Return the DepthAlign for this depth image, or None (looks up the sensor TF once)."""
+        need = self.align_state.needs_tf()
+        if need is not None:
+            try:
+                tr = self.tf_buffer.lookup_transform(need[0], need[1], Time()).transform
+                self.align_state.t = (tr.translation.x, tr.translation.y, tr.translation.z)
+            except Exception as e:
+                self.get_logger().warn(f'No TF {need[1]} -> {need[0]} ({e}); mapping colour '
+                                       'to depth without the sensor offset',
+                                       throttle_duration_sec=10.0)
+        align, why = self.align_state.get(depth_shape)
+        if align is None:
+            self.get_logger().warn(f'depth not used: {why}', throttle_duration_sec=5.0)
+        return align
+
     # --- outputs -----------------------------------------------------------------
-    def report(self, r, stamp, img):
+    def report(self, r, stamp):
         # Announce each poster once. Checked by position, not track id, because a track
         # that is out of view for forget_s is dropped and comes back with a new id.
         merge = self.tracker.merge
@@ -291,58 +280,20 @@ class PosterDetector(Node):
             self.announced.append(r['position'])
             self.get_logger().info('Human found')
             self.found_pub.publish(String(data='Human found'))
-        snap = ''
         os.makedirs(self.log_dir, exist_ok=True)
-        if img is not None:     # only with publish_debug (needs the colour stream)
-            snap = os.path.join(self.log_dir, f'poster_{r["track"]}_{int(time.time() * 1000)}.jpg')
-            cv2.imwrite(snap, img)
         msg = {'stamp': stamp, 'id': r['track'], 'frame': r['frame'], 'position': r['position'],
                'votes': r['votes'], 'conf': r['conf'], 'box': r['box'],
-               'ring': r['ring_metrics'].get('reason'), 'map': r['map_metrics'].get('reason'),
-               'snapshot': snap or None}
+               'ring': r['ring_metrics'].get('reason'), 'map': r['map_metrics'].get('reason')}
         self.pub.publish(String(data=json.dumps(msg)))
         new_file = not os.path.exists(self.csv_path)
         with open(self.csv_path, 'a', newline='') as f:
             if new_file:
                 csv.writer(f).writerow(['wall_time', 'poster_id', 'frame', 'x', 'y', 'z',
-                                        'votes', 'conf', 'ring', 'map', 'snapshot'])
+                                        'votes', 'conf', 'ring', 'map'])
             csv.writer(f).writerow([time.time(), r['track'], r['frame'], *r['position'],
-                                    r['votes'], r['conf'], msg['ring'], msg['map'], snap])
+                                    r['votes'], r['conf'], msg['ring'], msg['map']])
         self.get_logger().info(f'POSTER #{r["track"]} at {r["frame"]} {r["position"]} '
                                f'(votes {r["votes"]})')
-
-    def debug_frame(self, stamp, det, results):
-        if not self.publish_debug:
-            return None
-        msg, _ = self.image_buf.closest(stamp, self.max_dt)
-        if msg is None:
-            return None
-        if isinstance(msg, CompressedImage):
-            img = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
-        else:
-            img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8').copy()
-        if img is None:
-            return None
-        scale = max(0.5, img.shape[0] / 1000.0)
-        size = det.get('image_size')
-        for r in results:
-            x1, y1, x2, y2 = scale_box(r['box'], size, img.shape[:2])
-            col = COLOURS.get(r['label'], COLOURS['unknown'])
-            cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), col,
-                          max(2, int(3 * scale)))
-            lines = [f'{r["label"].upper()}  ring:{r["ring"]} map:{r["map"]}']
-            if 'votes' in r:
-                lines.append(f'track {r["track"]} poster votes {r["votes"]}'
-                             + ('  CONFIRMED' if r.get('confirmed_poster') else ''))
-            lines.append(r['ring_metrics'].get('reason', '')[:45])
-            _text_block(img, lines, x1, y2 + 2, scale * 0.8, (255, 255, 255), (60, 60, 60))
-        if self.debug_pub.get_subscription_count() > 0:
-            self.debug_pub.publish(self.bridge.cv2_to_imgmsg(img, encoding='bgr8'))
-        if self.debug_jpeg_pub.get_subscription_count() > 0:
-            jpg = CompressedImage(format='jpeg')
-            jpg.data = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes()
-            self.debug_jpeg_pub.publish(jpg)
-        return img
 
 
 def main():

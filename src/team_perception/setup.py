@@ -18,20 +18,14 @@ setup(
     zip_safe=True,
     maintainer='ngtri',
     maintainer_email='ng.tricia2005@gmail.com',
-    description='QR code scanner and YOLO person detector for the robot-dog challenge, '
-                '+ an offline annotation tool.',
+    description='Onboard robot build of team_perception: QR scanner, poster detector and '
+                'the image throttle feeding the external YOLO computer.',
     license='Apache-2.0',
-    extras_require={
-        'test': [
-            'pytest',
-        ],
-    },
     entry_points={
         'console_scripts': [
             'qr_scanner = team_perception.qr_scanner_node:main',
-            'human_detector = team_perception.human_detector_node:main',
+            'image_throttle = team_perception.image_throttle_node:main',
             'poster_detector = team_perception.poster_detector_node:main',
-            'annotate = team_perception.annotate:main',
         ],
     },
 )
