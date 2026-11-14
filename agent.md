@@ -261,9 +261,11 @@ runs; `rec_full` and `rec_perception` refuse to start while Nav2 is running.
 
 - Team remote: `https://github.com/ttticia/robot_challenge_workspace.git` (`main`).
   Work on a feature branch and open a pull request; don't push to `main`.
-- The robot's local repo currently has **no remote** and a separate one-commit history.
-  Before pushing from the robot, add the remote, run `git fetch`, and rebase or cherry-pick
-  onto `origin/main`.
+- The robot's repo has `origin` set to the team remote. Pushes are done by hand
+  (no GitHub credentials are stored on the robot computer).
+- `ttticia/Robot-Dog-Grp4` is for building away from the robot. `src/team_perception` is
+  copied from its `challenge_files/onboard/team_perception`; fix perception there first,
+  then copy it over.
 - Never commit `build/`, `install/`, `log/`, bags in `ROS_bags/`, `maps/`, or other
   files over 100 MB.
 
