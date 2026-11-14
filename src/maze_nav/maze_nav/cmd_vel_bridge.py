@@ -10,6 +10,11 @@ Nav2 can't talk to the robot directly, so this glue stays:
   sends one zero Twist and blocks all further commands until restart. Nav2 Humble keeps
   driving on a stale costmap, so this is the only place that catches it.
 - drive:=false: publishes to ~/cmd_vel_preview instead of /cmd_vel (dry run).
+- Gait: at startup, once the robot bridge subscribes /simple_cmd, sends Move mode
+  (0x21010D06, needed before gait requests) and then the `gait` (default `rug` = RUG gait,
+  General gear, 0x21010401; robot_info.md §6.3), each once. `none` or drive:=false: nothing
+  is sent. The operator sends lite3_auto AFTER this ("gait sent" in the log): the documented
+  order is gait request, then auto mode. There is no gait feedback; watch the robot.
 """
 import signal
 import threading
@@ -27,6 +32,9 @@ from sensor_msgs.msg import PointCloud2
 
 HARD_MAX_V = 0.25   # m/s, team limit
 HARD_MAX_W = 0.5    # rad/s, team limit
+
+MOVE_MODE = 0x21010D06
+GAITS = {'rug': 0x21010401, 'none': None}   # robot_info.md §6.3; H-Step left out on purpose
 
 
 def clamp(value, limit):
@@ -46,6 +54,8 @@ class CmdVelBridge(Node):
         p('sensor_timeout', 0.5)        # s without cloud or odom while driving -> stop, latch
         p('cloud_topic', '/livox/points')
         p('odom_topic', '/odom')
+        p('gait', 'rug')                # sent once at startup; 'none' = leave the gait alone
+        p('gait_wait', 20.0)            # s to wait for a /simple_cmd subscriber before giving up
         get = lambda name: self.get_parameter(name).value  # noqa: E731
         self.max_v = min(abs(get('max_linear')), HARD_MAX_V)
         self.max_w = min(abs(get('max_angular')), HARD_MAX_W)
@@ -63,6 +73,8 @@ class CmdVelBridge(Node):
                                  lambda _: self.mark('cloud'), qos_profile_sensor_data)
         self.create_subscription(Odometry, get('odom_topic'), lambda _: self.mark('odom'), 10)
         self.create_timer(0.1, self.watchdog)
+        self.gait_steps = []
+        self.setup_gait(get('gait'), get('drive'), get('gait_wait'))
 
         self.seen = {'cloud': None, 'odom': None}
         self.last_cmd = 0.0
@@ -72,6 +84,57 @@ class CmdVelBridge(Node):
             f"{get('input_topic')} -> {out_topic} "
             f"({'DRIVING' if get('drive') else 'DRY RUN'}), "
             f'limits {self.max_v} m/s, {self.max_w} rad/s')
+
+    def setup_gait(self, gait, drive, wait):
+        if gait not in GAITS:
+            self.get_logger().error(f'gait {gait!r} unknown (one of {sorted(GAITS)}); not sent')
+            return
+        if GAITS[gait] is None:
+            return
+        if not drive:
+            self.get_logger().info(f'DRY RUN: gait {gait} not sent')
+            return
+        try:
+            from transfer_interfaces.msg import MotionSimpleCMD
+        except ImportError:
+            self.get_logger().warn('transfer_interfaces not found (source ~/lite3_ws); '
+                                   f'gait {gait} not sent')
+            return
+        self.simple_cmd = MotionSimpleCMD
+        qos = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
+                         reliability=ReliabilityPolicy.RELIABLE,
+                         durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                         lifespan=Duration(seconds=1.0))
+        self.simple_pub = self.create_publisher(MotionSimpleCMD, '/simple_cmd', qos)
+        self.gait_name = gait
+        self.gait_steps = [('Move mode', MOVE_MODE), (f'gait {gait}', GAITS[gait])]
+        self.gait_deadline = time.monotonic() + wait
+        self.gait_next = 0.0
+        self.gait_timer = self.create_timer(0.2, self.gait_tick)
+        self.get_logger().info(f'gait {gait}: waiting for the robot bridge on /simple_cmd')
+
+    def gait_tick(self):
+        now = time.monotonic()
+        if not self.gait_steps:
+            return
+        if self.simple_pub.get_subscription_count() == 0:
+            # lite3_domain_bridge_4 subscribes only after it sees a publisher (robot_info §6.3)
+            if now > self.gait_deadline:
+                self.get_logger().warn(f'no subscriber on /simple_cmd; gait {self.gait_name} '
+                                       'NOT sent (set it on the handheld controller)')
+                self.gait_steps = []
+                self.gait_timer.cancel()
+            return
+        if now < self.gait_next:
+            return
+        name, code = self.gait_steps.pop(0)
+        self.simple_pub.publish(self.simple_cmd(cmd_code=code, size=0, type=0))
+        self.get_logger().info(f'sent {name} (0x{code:08X}) on /simple_cmd')
+        self.gait_next = now + 1.0                  # one command at a time
+        if not self.gait_steps:
+            self.get_logger().info(f'gait sent ({self.gait_name}); the operator can now send '
+                                   'lite3_auto')
+            self.gait_timer.cancel()
 
     def mark(self, name):
         self.seen[name] = time.monotonic()

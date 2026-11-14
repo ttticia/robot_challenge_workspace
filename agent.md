@@ -78,6 +78,7 @@ ros2 launch maze_nav maze_nav.launch.py go:=false  # goals on /maze/goal only, r
 
 The robot holds still (`/maze/status` = `PAUSED`) until
 `ros2 topic pub --once /maze/start std_msgs/msg/Empty`. Start `rec_nav` before sending it.
+Then it drives 10 cm towards the open frontier (`CREEPING`) and turns 45° left, 90° right, 45° left (`SCANNING`) before the first Nav2 goal.
 
 Explores with `slam_toolbox` + Nav2 until there is open floor next to the robot, then stops.
 `/maze/status` ends as `EXITED`, `NO_EXIT` or `STOPPED`, and the map is saved to `maps/`. It uses its own
@@ -211,10 +212,13 @@ ros2 topic pub --once --qos-reliability reliable --qos-durability transient_loca
 |---|---|---|
 | `0x21010C03` | **Auto mode**: the robot follows `/cmd_vel` | Alias `lite3_auto`. A human operator sends it. Our code should not |
 | `0x21010C02` | **Manual mode**: the handheld controller drives, `/cmd_vel` is ignored | Alias `lite3_manual`. Safe fallback; send it on shutdown if you entered auto |
+| `0x21010D06` | Move mode (needed before gait requests) | `maze_nav`'s `cmd_vel_bridge` sends it once at launch, before the gait |
+| `0x21010401` | RUG gait, General gear (gait state 2) | **Default gait for `maze_nav`**: `cmd_vel_bridge` sends it once at launch (`gait:=rug`; `gait:=none` = don't) |
 | `0x21010407` | H-Step (high-stepping RUG gait, gait state 13) | For rough ground. See [DEEP Robotics docs](https://developer.deeprobotics.cn/docs/lite3/interfaces/control/state/) |
 | `0x21020C0E` | Possibly a software STOP | Check it against the manufacturer docs before relying on it |
 
-Usual sequence: robot standing (handheld controller) → `lite3_auto` → drive with
+Usual sequence: robot standing (handheld controller) → gait (maze_nav: sent at launch, log
+`gait sent`) → `lite3_auto` → drive with
 `/cmd_vel` → `lite3_manual` when done. There is no gait or mode feedback topic through the
 bridge, so watch the robot or the handheld controller to confirm a mode change.
 
@@ -229,6 +233,9 @@ bridge, so watch the robot or the handheld controller to confirm a mode change.
   can both drive the robot. Stop the old one first.
 - Use another domain (`export ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1`) for any test that
   must not reach the robot.
+- `maze_nav.launch.py` puts real runs (`bringup:=true`, the default) on domain 4 with
+  `ROS_LOCALHOST_ONLY=0` even if the terminal is on another domain (`domain_id:=auto`). The
+  simulator (`bringup:=false`) keeps the terminal's domain. `domain_id:=N` forces one.
 
 ## 9. Testing
 

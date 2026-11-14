@@ -474,7 +474,7 @@ Codes relevant to us [doc]:
 | `0x21010202` | Stand / sit toggle | | **Don't send from code**; the operator handles it |
 | `0x21010D06` | Move mode (needed before gait changes) | Not in AI state | Send it before gait requests |
 | `0x21010D05` | Pose mode (body posture via joystick axes) | Not in AI state | Not used |
-| `0x21010401` | RUG gait, General gear (state 2) | Move mode, not AI | Normal rough-ground gait |
+| `0x21010401` | RUG gait, General gear (state 2) | Move mode, not AI | Normal rough-ground gait. **maze_nav default**: `cmd_vel_bridge` sends Move mode + this once at launch (`gait:=rug`) |
 | `0x21010407` | RUG gait, **H-Step** (high stepping, state 13) | Move mode, not AI | For stairs/obstacles. **On 2026-11-12 the robot became unsteady after this was sent; cause not found.** Only with the operator's agreement |
 | `0x21010402` | RUG gait, Grip gear (state 6) | Move mode, not AI | Not tested |
 | `0x21010300` / `0x21010307` / `0x21010303` | Flat gait slow / medium / fast (states 0 / 4 / 5) | Move mode, not AI | Not tested |

@@ -10,10 +10,10 @@
 # stairs are below that band on purpose: the robot walks over them.
 #
 # Maze geometry (example maze.step): 1 m cells, 0.05 m walls -> ~0.90-0.95 m clear corridor,
-# 0.87 m between the stair hand rails. Footprint 0.69 x 0.46 m (Lite3 0.64 m incl. moving
-# feet, robot_info.md, plus 5 cm margin at the back; x -0.37..0.32) -> 0.22 m each side in a
-# corridor. The rear corners are 0.44 m from base_link, just under the 0.45 m half width, so
-# turning on the spot in a corridor cell centre fits with only ~1.5 cm to spare.
+# 0.87 m between the stair hand rails. Footprint 0.64 x 0.46 m (Lite3 incl. moving feet,
+# robot_info.md), set 5 cm behind base_link (x -0.37..0.27) -> 0.22 m each side in a corridor;
+# farthest corner 0.44 m from base_link, just under the 0.45 m half width, so turning on the
+# spot in a cell centre still fits, with ~1 cm to spare.
 
 bt_navigator:
   ros__parameters:
@@ -68,9 +68,9 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.15
-      lookahead_dist: 0.45
-      min_lookahead_dist: 0.30
-      max_lookahead_dist: 0.60
+      lookahead_dist: 0.35           # short: pure pursuit cuts corners by about this much
+      min_lookahead_dist: 0.25
+      max_lookahead_dist: 0.45
       use_velocity_scaled_lookahead_dist: false
       lookahead_time: 1.5
       transform_tolerance: 0.3
@@ -101,7 +101,7 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      footprint: "[[0.32, 0.23], [0.32, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # 5 cm extra at the back
+      footprint: "[[0.27, 0.23], [0.27, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # 5 cm back of base_link centre
       footprint_padding: 0.0
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -121,8 +121,8 @@ local_costmap:
           expected_update_rate: 0.5
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.45
-        cost_scaling_factor: 6.0
+        inflation_radius: 0.4
+        cost_scaling_factor: 8.0
       always_send_full_costmap: true
 
 global_costmap:
@@ -133,9 +133,18 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       transform_tolerance: 0.3
+      # Rolling, not sized by /map: the SLAM map ends at about the start pose (the lidar is
+      # blind behind the robot), and Humble's Smac planner doesn't check that the start lies
+      # in the costmap - planning from just off the map edge segfaulted planner_server (seen
+      # live, run 2026-11-14 08:52) and the lifecycle manager then took all of Nav2 down.
+      # A rolling window is always centred on the robot. The static layer still copies /map
+      # in. The explorer only sends goals inside this window (goal_max_offset).
+      rolling_window: true
+      width: 16
+      height: 16
       resolution: 0.05
       track_unknown_space: true
-      footprint: "[[0.32, 0.23], [0.32, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # 5 cm extra at the back
+      footprint: "[[0.27, 0.23], [0.27, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # 5 cm back of base_link centre
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -156,8 +165,12 @@ global_costmap:
           expected_update_rate: 0.5
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.45
-        cost_scaling_factor: 6.0
+        # Wide and gentle, so the planner keeps to the corridor centre and swings wide of the
+        # inner wall in turns: cost still ~100 (of 252) in the middle of a 0.9 m corridor,
+        # rising towards the walls. With 0.4 / 8.0 the cost was 0 from 0.4 m off a wall,
+        # and paths hugged the inside of corners.
+        inflation_radius: 0.6
+        cost_scaling_factor: 4.0
       always_send_full_costmap: true
 
 behavior_server:

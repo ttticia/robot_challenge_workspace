@@ -43,6 +43,7 @@ R_LIDAR = np.array([[math.cos(PITCH), 0, math.sin(PITCH)],   # livox -> base (pi
 START = (0.0, 0.0, math.pi / 2)    # maze frame: start cell centre, facing +y (its opening)
 ROOM = (-7.0, 3.0, -3.5, 4.5)      # lab walls x0, x1, y0, y1 (maze frame), 1 m tall
 EXIT_X = -3.55                     # past the stair block
+FOOTPRINT = (-0.37, 0.27, -0.23, 0.23)   # base_link x min/max, y min/max (nav2_params.yaml)
 # /livox/points layout as published on the robot (checked live 2026-11-14)
 LIVOX_FIELDS = [('x', 0, PointField.FLOAT32), ('y', 4, PointField.FLOAT32),
                 ('z', 8, PointField.FLOAT32), ('t', 12, PointField.UINT32),
@@ -72,6 +73,11 @@ class Maze:
 
     def __init__(self, path):
         self.solids = json.load(open(path))['solids']
+
+    def wall_boxes(self):
+        """(N, 4) x0, y0, x1, y1 of everything the body can hit (walls, stair rails)."""
+        return np.array([[s['min'][0], s['min'][1], s['max'][0], s['max'][1]]
+                         for s in self.solids if s['kind'] in ('wall', 'rail')])
 
     def height(self, x, y):
         h = 0.0                                  # lab floor
@@ -133,6 +139,7 @@ class FakeMazeLite3(Node):
         super().__init__('fake_maze_lite3')
         self.declare_parameter('maze', os.path.join(HERE, 'example_maze.json'))
         self.declare_parameter('yaw_drift', 0.02)   # rad/s uncommanded turn while walking
+        self.declare_parameter('track_csv', '')     # write t, x, y, yaw, clearance per step
         self.maze = Maze(self.get_parameter('maze').value)
         self.world = self.maze.points()
         self.drift = self.get_parameter('yaw_drift').value
@@ -160,6 +167,31 @@ class FakeMazeLite3(Node):
         self.create_timer(0.1, self.publish_cloud)
         self.create_timer(2.0, self.report)
         self.get_logger().info(f'{len(self.world)} world points; start {START}')
+        # Wall clearance of the footprint (true pose), to tune how close Nav2 drives to walls.
+        self.boxes = self.maze.wall_boxes()
+        x0, x1, y0, y1 = FOOTPRINT
+        n = 12
+        edge = np.linspace(0, 1, n, endpoint=False)
+        self.foot = np.concatenate([
+            np.c_[x0 + (x1 - x0) * edge, np.full(n, y0)], np.c_[np.full(n, x1), y0 + (y1 - y0) * edge],
+            np.c_[x1 - (x1 - x0) * edge, np.full(n, y1)], np.c_[np.full(n, x0), y1 - (y1 - y0) * edge]])
+        self.clear = self.min_clear = float('inf')
+        self.min_clear_at = None
+        self.left_start = False
+        path = self.get_parameter('track_csv').value
+        self.track = open(path, 'w', buffering=1) if path else None   # line-buffered: survives SIGTERM
+        if self.track:
+            self.track.write('t,x,y,yaw,clearance\n')
+
+    def clearance(self):
+        """Smallest distance (m) from the footprint outline to a wall or rail; 0 = touching."""
+        c, s = math.cos(self.th), math.sin(self.th)
+        px = self.x + c * self.foot[:, 0] - s * self.foot[:, 1]
+        py = self.y + s * self.foot[:, 0] + c * self.foot[:, 1]
+        b = self.boxes
+        dx = np.maximum(np.maximum(b[None, :, 0] - px[:, None], 0), px[:, None] - b[None, :, 2])
+        dy = np.maximum(np.maximum(b[None, :, 1] - py[:, None], 0), py[:, None] - b[None, :, 3])
+        return float(np.hypot(dx, dy).min())
 
     def odom_pose(self):
         """Pose relative to the start pose (what Fast-LIO + odom_relay would report)."""
@@ -192,13 +224,33 @@ class FakeMazeLite3(Node):
         (t.transform.rotation.x, t.transform.rotation.y,
          t.transform.rotation.z, t.transform.rotation.w) = q
         self.tf.sendTransform(t)
+        self.clear = self.clearance()
+        if self.track and (v or w):
+            self.track.write(f'{self.get_clock().now().nanoseconds * 1e-9:.2f},{self.x:.3f},'
+                             f'{self.y:.3f},{self.th:.3f},{self.clear:.3f}\n')
+        # The start cell is a dead end the robot only turns in: score the drive after it.
+        self.left_start = self.left_start or self.y > 0.6
+        if self.left_start and self.clear < self.min_clear:
+            self.min_clear, self.min_clear_at = self.clear, (self.x, self.y)
+            if self.clear < 0.05:
+                self.get_logger().warn(f'{self.clear * 100:.0f} cm from a wall at maze '
+                                       f'({self.x:.2f}, {self.y:.2f})'
+                                       + (' - TOUCHING' if self.clear <= 0 else ''))
         if not self.out and self.x < EXIT_X:
             self.out = True
-            self.get_logger().info(f'OUT OF THE MAZE at maze ({self.x:.2f}, {self.y:.2f})')
+            self.get_logger().info(f'OUT OF THE MAZE at maze ({self.x:.2f}, {self.y:.2f}); '
+                                   + self.clear_summary())
+
+    def clear_summary(self):
+        if self.min_clear_at is None:
+            return 'min wall clearance: not left the start cell yet'
+        return (f'min wall clearance after the start cell {self.min_clear * 100:.1f} cm at maze '
+                f'({self.min_clear_at[0]:.2f}, {self.min_clear_at[1]:.2f})')
 
     def report(self):
         msg = (f'maze x={self.x:+.2f} y={self.y:+.2f} th={math.degrees(self.th):+.0f}deg '
-               f'h={self.maze.height(self.x, self.y):.2f} out={self.out}')
+               f'h={self.maze.height(self.x, self.y):.2f} out={self.out} '
+               f'clear={self.clear * 100:.0f}cm min={self.min_clear * 100:.0f}cm')
         self.truth_pub.publish(String(data=msg))
         self.get_logger().info(msg)
 

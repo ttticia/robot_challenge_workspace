@@ -21,7 +21,7 @@ mkdir -p "$LOG" && rm -rf "$LOG/maps" "$LOG"/*.log
 
 # Each in its own process group (setsid), so cleanup can signal every node, even ones whose
 # ros2 launch parent has already exited.
-setsid python3 -W ignore "$WS/src/maze_nav/test/fake_maze_lite3.py" > "$LOG/sim.log" 2>&1 &
+setsid python3 -W ignore "$WS/src/maze_nav/test/fake_maze_lite3.py" --ros-args -p track_csv:="$LOG/track.csv" > "$LOG/sim.log" 2>&1 &
 SIM=$!
 sleep 3
 setsid ros2 launch maze_nav maze_nav.launch.py bringup:=false udp_only:=true \

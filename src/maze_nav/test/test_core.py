@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from maze_nav.core import (ExitDetector, Grid, choose_frontier, cloud_xyz, estimate_floor,
-                           find_frontiers, geodesic_distance, wall_ranges)
+                           find_frontiers, geodesic_distance, heading_towards, wall_ranges)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INC = math.radians(1.0)
@@ -119,6 +119,19 @@ def test_frontier_found_when_robot_just_off_map_edge():
     assert len(fs) == 1 and 2.4 < fs[0].goal[0] < 3.0
 
 
+def test_heading_towards_follows_free_space_not_the_straight_line():
+    # L-shaped: start cell at the bottom, corridor goes up then right. The goal is up and to
+    # the right, but the straight line to it crosses the wall: head up the corridor instead.
+    res = 0.05
+    data = np.full((60, 60), 100, np.int16)       # 3 m x 3 m, origin (0, 0)
+    data[2:58, 2:14] = 0                          # vertical corridor x 0.1..0.7 (narrow)
+    data[40:58, 2:58] = 0                         # horizontal corridor y 2.0..2.9
+    g = Grid(data, res, (0.0, 0.0))
+    h = heading_towards(g, (0.4, 0.5), (2.5, 2.45))   # straight line: ~44 deg
+    assert abs(h - math.pi / 2) < 0.35           # up, not ~45 deg into the wall
+    assert heading_towards(g, (0.4, 0.5), (0.4, 1.8)) == pytest.approx(math.pi / 2, abs=0.2)
+
+
 def test_blacklisted_frontier_is_skipped():
     g = corridor_grid()
     goal = find_frontiers(g, (0.3, 0.0))[0].goal
@@ -201,3 +214,35 @@ def test_explorer_finds_the_exit_of_the_example_maze():
     # Out means past the stair block (x < -3.475 in the maze frame) into the room.
     assert xy[0] < -3.4, visited
     assert len(visited) <= 15, visited
+
+
+def test_frontier_narrower_than_min_width_is_skipped():
+    # Corridor open at the far end except for a 0.25 m slit: a 0.37 m minimum (80 % of the
+    # 0.46 m robot) drops it; the same corridor fully open keeps its frontier.
+    res = 0.05
+    data = np.full((20, 80), 100, np.int16)            # 4 m x 1 m
+    data[1:19, 1:70] = 0                                # free corridor, x 0.05..3.5
+    data[1:19, 70:] = -1                                # unknown beyond
+    data[1:19, 69] = 100                                # wall across the end ...
+    data[8:13, 69] = 0                                  # ... with a 0.25 m slit
+    g = Grid(data, res, (0.0, 0.0))
+    assert find_frontiers(g, (0.5, 0.5), min_size=1, min_width=0.37) == []
+    data[1:19, 69] = 0                                  # end fully open (0.9 m)
+    fs = find_frontiers(Grid(data, res, (0.0, 0.0)), (0.5, 0.5), min_size=1, min_width=0.37)
+    assert len(fs) == 1 and fs[0].width > 0.8
+
+
+def test_frontier_seen_through_a_slit_is_unreachable_and_skipped():
+    # Wall across the corridor with a 0.15 m slit; the lidar saw free floor beyond it, so the
+    # frontier is out there (wide), but no passable path leads to it.
+    res = 0.05
+    data = np.full((20, 80), 100, np.int16)
+    data[1:19, 1:79] = 0
+    data[1:19, 60:] = -1                                # unknown far end ...
+    data[1:19, 40:60] = 0                               # ... after free floor seen beyond
+    data[1:19, 39] = 100                                # the wall across x 1.95..2.0
+    data[9:12, 39] = 0                                  # 0.15 m slit
+    g = Grid(data, res, (0.0, 0.0))
+    assert find_frontiers(g, (0.5, 0.5), min_size=1) == []
+    data[1:19, 39] = 0                                  # wall gone: reachable again
+    assert len(find_frontiers(Grid(data, res, (0.0, 0.0)), (0.5, 0.5), min_size=1)) == 1

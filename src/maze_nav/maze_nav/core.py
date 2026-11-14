@@ -150,6 +150,18 @@ class Frontier:
     path_length: float      # metres along free space from the robot
     size: int               # frontier cells in the cluster
     centroid: tuple
+    width: float = 0.0      # metres, longest extent of the cluster
+
+
+def cluster_width(cells, res):
+    """Longest extent (m) of a cluster of (row, col) cells.
+
+    Range of the cells along x, y and both diagonals, plus one cell; within ~8 % of the true
+    longest span, and cheap for big clusters.
+    """
+    r, c = cells[:, 0].astype(float), cells[:, 1].astype(float)
+    spans = [np.ptp(c), np.ptp(r), np.ptp(c + r) / math.sqrt(2), np.ptp(c - r) / math.sqrt(2)]
+    return (max(spans) + 1.0) * res
 
 
 def clearance_map(grid):
@@ -186,11 +198,13 @@ def geodesic_distance(passable, start):
 
 
 def find_frontiers(grid, robot_xy, robot_radius=0.25, goal_clearance=0.33, min_size=4,
-                   blacklist=(), blacklist_radius=0.4):
+                   blacklist=(), blacklist_radius=0.4, min_width=0.0):
     """All reachable frontiers, nearest (along free space) first.
 
     A frontier cell is a known-free cell next to unknown space. Clusters smaller than
-    min_size cells are noise (single unknown pixels between scan rays). For each cluster the
+    min_size cells are noise (single unknown pixels between scan rays); clusters narrower than
+    min_width metres (longest extent) are openings the robot can't fit through, and clusters
+    with no cell reachable along passable free space are skipped. For each cluster the
     goal is the reachable cell with at least goal_clearance to the walls that is closest to
     the cluster, so the footprint fits there (corridor half width in the example is 0.45 m).
     """
@@ -227,11 +241,18 @@ def find_frontiers(grid, robot_xy, robot_radius=0.25, goal_clearance=0.33, min_s
         cells = np.argwhere(labels == k)
         if len(cells) < min_size:
             continue
+        width = cluster_width(cells, res)
+        if width < min_width:
+            continue
         centroid_rc = cells.mean(0)
-        # Nearest goal-able cell to any frontier cell of this cluster (cheap: to the closest
-        # frontier cell to the robot along free space if any is reachable, else the centroid).
+        # Unreachable along passable free space = seen through a gap the robot doesn't fit
+        # (a slit in a wall, over a low wall): its goal would land on the near side of the
+        # wall and lead nowhere (live run 2026-11-14 09:09: three goals wasted that way).
         fd = dist[cells[:, 0], cells[:, 1]]
-        anchor = cells[np.argmin(fd)] if np.isfinite(fd).any() else centroid_rc
+        if not np.isfinite(fd).any():
+            continue
+        # Goal: nearest goal-able cell to the cluster's closest cell along free space.
+        anchor = cells[np.argmin(fd)]
         gd = np.hypot(goal_cells[:, 0] - anchor[0], goal_cells[:, 1] - anchor[1]) * res
         j = int(np.argmin(gd))
         if gd[j] > 0.7:                                    # nowhere to stand near it
@@ -247,7 +268,7 @@ def find_frontiers(grid, robot_xy, robot_radius=0.25, goal_clearance=0.33, min_s
         ref, tip = (goal, c) if far else (robot_xy, goal)
         out.append(Frontier(goal=goal, yaw=math.atan2(tip[1] - ref[1], tip[0] - ref[0]),
                             path_length=float(dist[g[0], g[1]]), size=len(cells),
-                            centroid=c))
+                            centroid=c, width=width))
     out.sort(key=lambda f: f.path_length)
     return out
 
@@ -278,6 +299,33 @@ def choose_frontier(frontiers, current=None, robot_yaw=None, robot_xy=None,
         if same and score(same[0]) - switch_margin <= score(best):
             return same[0]
     return best
+
+
+def heading_towards(grid, robot_xy, goal, robot_radius=0.25, lookahead=0.3):
+    """Heading (rad, map frame) to drive off from robot_xy so as to follow free space to goal.
+
+    Not the straight line to the goal, which can cross a wall: the direction to the cell about
+    `lookahead` m away that is closest to the goal along free space. Falls back to the straight
+    line when no such cell is found (goal unreachable, robot off the map).
+    """
+    straight = math.atan2(goal[1] - robot_xy[1], goal[0] - robot_xy[0])
+    res = grid.resolution
+    passable = grid.free & (clearance_map(grid) >= robot_radius)
+    gc = grid.cell(goal)
+    if not grid.contains(gc):
+        return straight
+    d = geodesic_distance(passable, gc)
+    rows, cols = np.nonzero(np.isfinite(d))
+    if len(rows) == 0:
+        return straight
+    xs = grid.origin[0] + (cols + 0.5) * res
+    ys = grid.origin[1] + (rows + 0.5) * res
+    r = np.hypot(xs - robot_xy[0], ys - robot_xy[1])
+    ring = np.abs(r - lookahead) <= 1.5 * res
+    if not ring.any():
+        return straight
+    i = np.flatnonzero(ring)[np.argmin(d[rows[ring], cols[ring]])]
+    return math.atan2(ys[i] - robot_xy[1], xs[i] - robot_xy[0])
 
 
 # --------------------------------------------------------------------------- exit
