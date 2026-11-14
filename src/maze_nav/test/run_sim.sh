@@ -13,13 +13,18 @@ source /opt/ros/humble/setup.bash
 source "$WS/install/setup.bash"
 set -u                                   # after sourcing: ROS setup uses unset vars
 export ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1
-unset FASTRTPS_DEFAULT_PROFILES_FILE
+# Same UDP-only profile as the robot, for the sim too: with Fast DDS defaults (shared memory +
+# UDP, small buffers) only ~3 of the sim's 10 clouds/s arrived and cmd_vel_bridge's sensor
+# watchdog tripped on the first motion command.
+export FASTRTPS_DEFAULT_PROFILES_FILE="$WS/src/maze_nav/config/fastdds_udp.xml"
 mkdir -p "$LOG" && rm -rf "$LOG/maps" "$LOG"/*.log
 
-python3 -W ignore "$WS/src/maze_nav/test/fake_maze_lite3.py" > "$LOG/sim.log" 2>&1 &
+# Each in its own process group (setsid), so cleanup can signal every node, even ones whose
+# ros2 launch parent has already exited.
+setsid python3 -W ignore "$WS/src/maze_nav/test/fake_maze_lite3.py" > "$LOG/sim.log" 2>&1 &
 SIM=$!
 sleep 3
-ros2 launch maze_nav maze_nav.launch.py bringup:=false udp_only:=false \
+setsid ros2 launch maze_nav maze_nav.launch.py bringup:=false udp_only:=true \
     map_dir:="$LOG/maps" wait_for_start:=false > "$LOG/launch.log" 2>&1 &
 LAUNCH=$!
 
@@ -29,11 +34,19 @@ until grep -q -E "\[(EXITED|NO_EXIT|STOPPED)\]|process has died" "$LOG/launch.lo
     sleep 2
 done
 
-# SIGTERM: background jobs of a script ignore SIGINT, so ros2 launch would never stop.
-kill -TERM $LAUNCH $SIM 2>/dev/null
-for _ in $(seq 15); do kill -0 $LAUNCH 2>/dev/null || break; sleep 1; done
-kill -KILL $LAUNCH 2>/dev/null
+# SIGTERM to the whole groups (background jobs of a script ignore SIGINT). Killing only the
+# ros2 launch PID used to leave its nodes running on domain 89 (wall_scan alone ~150% CPU).
+# setsid makes the job its own group leader, so its PID is the group ID.
+kill -TERM -- -$LAUNCH -$SIM 2>/dev/null
+for _ in $(seq 15); do
+    pgrep -g $LAUNCH,$SIM > /dev/null || break
+    sleep 1
+done
+kill -KILL -- -$LAUNCH -$SIM 2>/dev/null
 wait $LAUNCH $SIM 2>/dev/null
+if pgrep -g $LAUNCH,$SIM > /dev/null; then
+    echo "WARNING: sim processes still running:"; pgrep -a -g $LAUNCH,$SIM
+fi
 
 grep -E "floor|\[maze_explorer\]: \[|frontier goal|failed|process has died|Traceback" \
     "$LOG/launch.log" | cut -c1-170

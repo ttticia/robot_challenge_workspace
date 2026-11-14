@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="UTF-8" ?>
+<!-- UDP-only Fast DDS (Nav2's lifecycle startup stalled on this robot with shared memory).
+     4 MB socket buffers: a /livox/points cloud is split into many UDP fragments and losing one
+     drops the whole cloud. With the 208 KB system default the simulator's 1.3 MB clouds arrived
+     at ~9 of 10 Hz; with 4 MB, 10 of 10. 4 MB = this machine's net.core.rmem_max/wmem_max, the
+     most the kernel grants (larger requests are silently capped). -->
 <profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
-<transport_descriptors><transport_descriptor><transport_id>udp_only</transport_id><type>UDPv4</type></transport_descriptor></transport_descriptors>
-<participant profile_name="udp_participant" is_default_profile="true"><rtps><userTransports><transport_id>udp_only</transport_id></userTransports><useBuiltinTransports>false</useBuiltinTransports></rtps></participant>
+<transport_descriptors><transport_descriptor><transport_id>udp_only</transport_id><type>UDPv4</type>
+  <sendBufferSize>4194304</sendBufferSize><receiveBufferSize>4194304</receiveBufferSize>
+</transport_descriptor></transport_descriptors>
+<participant profile_name="udp_participant" is_default_profile="true"><rtps><userTransports><transport_id>udp_only</transport_id></userTransports><useBuiltinTransports>false</useBuiltinTransports>
+  <sendSocketBufferSize>4194304</sendSocketBufferSize><listenSocketBufferSize>4194304</listenSocketBufferSize>
+</rtps></participant>
 </profiles>
