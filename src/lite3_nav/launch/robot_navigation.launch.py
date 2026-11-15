@@ -72,16 +72,22 @@ def slam_overrides(wall_scan):
     return {'use_sim_time': False, **({'scan_topic': '/wall_scan'} if wall_scan else {})}
 
 
-def nav2_params_for_scan(params_file, topic):
-    """params_file unchanged for /scan, else a temporary copy whose obstacle layers read topic."""
+def nav2_params_for_scan(params_file, topic, bt_xml=''):
+    """params_file unchanged for /scan and no bt_xml, else a temporary copy whose obstacle layers
+    read topic and whose bt_navigator uses bt_xml for both of its default trees."""
     import yaml
-    topic = topic.strip()
-    if topic in ('', '/scan'):
+    topic, bt_xml = topic.strip(), bt_xml.strip()
+    if topic in ('', '/scan') and not bt_xml:
         return params_file
     with open(params_file) as f:
         data = yaml.safe_load(f)
-    for name in ('local_costmap', 'global_costmap'):
-        data[name][name]['ros__parameters']['obstacle_layer']['scan']['topic'] = topic
+    if topic not in ('', '/scan'):
+        for name in ('local_costmap', 'global_costmap'):
+            data[name][name]['ros__parameters']['obstacle_layer']['scan']['topic'] = topic
+    if bt_xml:
+        # Humble's bt_navigator loads a through-poses tree too; its default one needs BackUp.
+        bt = data.setdefault('bt_navigator', {}).setdefault('ros__parameters', {})
+        bt['default_nav_to_pose_bt_xml'] = bt['default_nav_through_poses_bt_xml'] = bt_xml
     out = tempfile.NamedTemporaryFile('w', prefix='lite3_nav_nav2_', suffix='.yaml', delete=False)
     with out:
         yaml.safe_dump(data, out, sort_keys=False)
@@ -172,7 +178,8 @@ def _nav2(context):
         launch_arguments={'use_sim_time': 'false', 'autostart': 'true', 'use_composition': 'False',
                           'params_file': nav2_params_for_scan(
                               LaunchConfiguration('params_file').perform(context),
-                              LaunchConfiguration('costmap_scan_topic').perform(context))}.items())
+                              LaunchConfiguration('costmap_scan_topic').perform(context),
+                              LaunchConfiguration('bt_xml').perform(context))}.items())
     # Node-scoped remaps: a global cmd_vel remap would override navigation_launch's own per-node
     # remaps (controller -> cmd_vel_nav -> smoother). Same fix as the simulator.
     return [LogInfo(msg=f'[robot_navigation] Nav2 velocity output -> {topic}'),
@@ -202,6 +209,8 @@ def generate_launch_description():
                               description='laser topic of the Nav2 obstacle layers (/scan or /wall_scan)'),
         DeclareLaunchArgument('nav_cmd_vel_topic', default_value='/mission/nav_cmd_vel'),
         DeclareLaunchArgument('params_file', default_value=str(share / 'config/nav2_robot.yaml')),
+        DeclareLaunchArgument('bt_xml', default_value=str(share / 'config/nav2_bt_no_backup.xml'),
+                              description="Nav2 behaviour tree (no BackUp); '' = params_file's own"),
         DeclareLaunchArgument('slam_params_file', default_value=str(share / 'config/slam_robot.yaml')),
         DeclareLaunchArgument('fastdds_profile', default_value=str(share / 'config/fastdds_udp.xml'),
                               description='UDP-only Fast DDS; Nav2 lifecycle stalled on the robot without it'),

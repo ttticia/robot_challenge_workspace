@@ -102,7 +102,33 @@ def test_wall_scan_feeds_slam_only_when_enabled(monkeypatch):
     args = {a.name: a.default_value[0].text for a in launch.generate_launch_description().entities
             if type(a).__name__ == 'DeclareLaunchArgument'}
     assert args['wall_scan'] == 'true' and args['costmap_scan_topic'] == '/scan'
+    assert args['bt_xml'].endswith('config/nav2_bt_no_backup.xml')
     assert (args['band_low'], args['band_high'], args['floor_z']) == ('0.30', '0.43', 'nan')
+
+
+def test_no_backup_recovery():
+    import xml.etree.ElementTree as ET
+    data = yaml.safe_load((ROOT / 'config' / 'nav2_robot.yaml').read_text())
+    behavior = data['behavior_server']['ros__parameters']
+    assert behavior['behavior_plugins'] == ['spin', 'wait'] and 'backup' not in behavior
+    tree = ET.parse(ROOT / 'config' / 'nav2_bt_no_backup.xml')
+    tags = {element.tag for element in tree.iter()}
+    assert 'BackUp' not in tags and {'Spin', 'Wait', 'ComputePathToPose', 'FollowPath'} <= tags
+
+
+def test_bt_xml_rewrite():
+    launch = load_launch()
+    source = str(ROOT / 'config' / 'nav2_robot.yaml')
+    out = launch.nav2_params_for_scan(source, '/scan', '/x/nav2_bt_no_backup.xml')
+    try:
+        data = yaml.safe_load(Path(out).read_text())
+        original = yaml.safe_load(Path(source).read_text())
+        bt = data['bt_navigator']['ros__parameters']
+        assert bt.pop('default_nav_to_pose_bt_xml') == bt.pop('default_nav_through_poses_bt_xml') \
+            == '/x/nav2_bt_no_backup.xml'
+        assert data == original  # the scan topic stays /scan
+    finally:
+        Path(out).unlink()
 
 
 def test_costmap_scan_topic_rewrite():

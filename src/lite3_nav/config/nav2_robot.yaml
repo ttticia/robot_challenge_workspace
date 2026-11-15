@@ -15,6 +15,8 @@
 # Inflation 0.3 m / cost_scaling 6 (sim finding): lethal within 0.23 m (inscribed) of a wall,
 # zero cost from 0.3 m, so a 0.9 m corridor keeps a 0.44 m wide plannable lane with a 0.3 m
 # zero-cost middle. 0.45-0.55 m inflation blocked that lane.
+# No BackUp recovery (maze_nav): the lidar is blind behind the body. The launch file sets
+# bt_navigator's trees to config/nav2_bt_no_backup.xml (spin and wait only).
 
 bt_navigator:
   ros__parameters:
@@ -233,11 +235,9 @@ behavior_server:
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
-    behavior_plugins: ["spin", "backup", "wait"]
+    behavior_plugins: ["spin", "wait"]   # no backup: see nav2_bt_no_backup.xml
     spin:
       plugin: "nav2_behaviors/Spin"
-    backup:
-      plugin: "nav2_behaviors/BackUp"
     wait:
       plugin: "nav2_behaviors/Wait"
     global_frame: odom
