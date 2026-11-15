@@ -61,8 +61,9 @@ def generate_launch_description():
         cmd_vel_smoothed (its output) and behavior_server's cmd_vel (spin/backup) move; the
         controller -> cmd_vel_nav -> smoother chain is unchanged.
         """
+        chosen = LaunchConfiguration('nav2_params').perform(context).strip() or params
         nav2_include = include(os.path.join(nav2, 'launch', 'navigation_launch.py'),
-                               {'use_sim_time': 'true', 'params_file': params})
+                               {'use_sim_time': 'true', 'params_file': chosen})
         topic = LaunchConfiguration('nav_cmd_vel_topic').perform(context).strip()
         if topic in ('', '/cmd_vel', 'cmd_vel'):
             return [nav2_include]
@@ -94,6 +95,8 @@ def generate_launch_description():
         DeclareLaunchArgument('x_pose', default_value='0.75'),
         DeclareLaunchArgument('y_pose', default_value='0.75'),
         DeclareLaunchArgument('gui', default_value='false'),
+        DeclareLaunchArgument('nav2_params', default_value='',
+                              description="Nav2 params file; '' = config/nav2_params_lite3.yaml"),
         DeclareLaunchArgument('rviz', default_value='true'),
         DeclareLaunchArgument('rviz_gpu', default_value='false'),
         DeclareLaunchArgument('camera_full', default_value='false',

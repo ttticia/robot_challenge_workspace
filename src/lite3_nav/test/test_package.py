@@ -55,6 +55,13 @@ def test_robot_yaml_keeps_every_team_value():
     assert set(ours) - set(team) == {
         'mission.ros__parameters.nav2_active_timeout_sec',
         'mission.ros__parameters.nav2_health_check',
+        'mission.ros__parameters.frontier_ranking',
+        'mission.ros__parameters.frontier_planner_radius_m', 'mission.ros__parameters.minimum_goal_motion_m',
+        'mission.ros__parameters.minimum_goal_hop_m',
+        'mission.ros__parameters.start_routine', 'mission.ros__parameters.start_creep_m',
+        'mission.ros__parameters.start_creep_speed', 'mission.ros__parameters.start_scan_deg',
+        'mission.ros__parameters.auto_stand_up', 'mission.ros__parameters.stand_timeout_sec',
+        'mission.ros__parameters.stand_settle_sec', 'velocity_gate.ros__parameters.simple_cmd_allowed_node',
         'velocity_gate.ros__parameters.output_transient_local',
         'velocity_gate.ros__parameters.expected_input_publishers'} | {
         'mission.ros__parameters.' + k for k in EXIT_KEYS if k != 'final_cell_xy'}

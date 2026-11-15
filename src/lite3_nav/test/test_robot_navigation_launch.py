@@ -37,7 +37,8 @@ def test_nav2_profile_caps_frames_and_footprint():
     for name in ('local_costmap', 'global_costmap'):
         params = data[name][name]['ros__parameters']
         assert params['robot_base_frame'] == 'base_link'
-        assert yaml.safe_load(params['footprint']) == FOOTPRINT
+        if name == 'local_costmap':  # the global one plans with the turning circle (robot_radius)
+            assert yaml.safe_load(params['footprint']) == FOOTPRINT
         assert 'voxel_layer' not in params['plugins']
         assert params['obstacle_layer']['scan']['topic'] == '/scan'
     assert data['global_costmap']['global_costmap']['ros__parameters']['global_frame'] == 'map'
@@ -50,8 +51,8 @@ def test_nav2_profile_caps_frames_and_footprint():
 
 
 CORRIDOR = 0.9
-# Lite3 incl. moving feet, 5 cm behind base_link (maze_nav, origin/navigation 419f205).
-FOOTPRINT = [[0.27, 0.23], [0.27, -0.23], [-0.37, -0.23], [-0.37, 0.23]]
+# Lite3 body 0.548 x 0.370 m: lab Nav2 length 0.61 m, 1.5 cm a side for the feet.
+FOOTPRINT = [[0.305, 0.2], [0.305, -0.2], [-0.305, -0.2], [-0.305, 0.2]]
 
 
 def test_nav2_leaves_a_free_lane_in_a_0p9_m_corridor():
@@ -59,14 +60,24 @@ def test_nav2_leaves_a_free_lane_in_a_0p9_m_corridor():
     data = yaml.safe_load((ROOT / 'config' / 'nav2_robot.yaml').read_text())
     inscribed = min(max(abs(x) for x, _ in FOOTPRINT), max(abs(y) for _, y in FOOTPRINT))
     circumscribed = max(math.hypot(x, y) for x, y in FOOTPRINT)
-    assert circumscribed < CORRIDOR / 2          # turning on the spot in the centre fits
-    for name in ('local_costmap', 'global_costmap'):
-        inflation = data[name][name]['ros__parameters']['inflation_layer']
-        # 0.45-0.55 m inflation blocked 0.9 m corridors; 0.3 m / 6 worked in the sim.
-        assert inscribed < inflation['inflation_radius'] <= 0.35
-        assert inflation['cost_scaling_factor'] >= 5.0
-        assert CORRIDOR - 2 * inscribed >= 0.4                       # plannable (non-lethal) lane
-        assert CORRIDOR - 2 * inflation['inflation_radius'] >= 0.25  # zero-cost middle
+    assert circumscribed < CORRIDOR / 2 - 0.05   # turning on the spot near the centre fits
+    length = max(x for x, _ in FOOTPRINT) - min(x for x, _ in FOOTPRINT)
+    width = max(y for _, y in FOOTPRINT) - min(y for _, y in FOOTPRINT)
+    assert (length + width) / math.sqrt(2) < CORRIDOR - 0.15  # diagonal at a junction leaves room
+    local = data['local_costmap']['local_costmap']['ros__parameters']
+    inflation = local['inflation_layer']
+    # Local (RPP collision check): the real rectangle, 0.3 m / 6 as found in the sim.
+    assert inscribed < inflation['inflation_radius'] <= 0.35
+    assert inflation['cost_scaling_factor'] >= 5.0
+    assert CORRIDOR - 2 * inscribed >= 0.4                       # plannable (non-lethal) lane
+    assert CORRIDOR - 2 * inflation['inflation_radius'] >= 0.25  # zero-cost middle
+    # Global (planner): the turning circle, so plans keep the centre where it can turn on the spot.
+    glob = data['global_costmap']['global_costmap']['ros__parameters']
+    assert 'footprint' not in glob
+    radius = glob['robot_radius']
+    assert circumscribed - 0.02 <= radius <= circumscribed
+    assert CORRIDOR - 2 * radius >= 0.18                         # plannable lane on the centre line
+    assert radius < glob['inflation_layer']['inflation_radius'] <= CORRIDOR / 2
 
 
 def test_nav2_planner_controller_follow_maze_nav():
@@ -102,18 +113,28 @@ def test_wall_scan_feeds_slam_only_when_enabled(monkeypatch):
     args = {a.name: a.default_value[0].text for a in launch.generate_launch_description().entities
             if type(a).__name__ == 'DeclareLaunchArgument'}
     assert args['wall_scan'] == 'true' and args['costmap_scan_topic'] == '/scan'
-    assert args['bt_xml'].endswith('config/nav2_bt_no_backup.xml')
+    assert args['bt_xml'].endswith('config/nav2_bt_short_backup.xml')
     assert (args['band_low'], args['band_high'], args['floor_z']) == ('0.30', '0.43', 'nan')
 
 
-def test_no_backup_recovery():
+def test_backup_is_only_a_short_last_recovery():
     import xml.etree.ElementTree as ET
     data = yaml.safe_load((ROOT / 'config' / 'nav2_robot.yaml').read_text())
     behavior = data['behavior_server']['ros__parameters']
-    assert behavior['behavior_plugins'] == ['spin', 'wait'] and 'backup' not in behavior
-    tree = ET.parse(ROOT / 'config' / 'nav2_bt_no_backup.xml')
+    assert behavior['behavior_plugins'] == ['spin', 'backup', 'drive_on_heading', 'wait']
+    assert behavior['backup']['plugin'] == 'nav2_behaviors/BackUp'
+    assert behavior['drive_on_heading']['plugin'] == 'nav2_behaviors/DriveOnHeading'  # start creep
+    tree = ET.parse(ROOT / 'config' / 'nav2_bt_short_backup.xml')
     tags = {element.tag for element in tree.iter()}
-    assert 'BackUp' not in tags and {'Spin', 'Wait', 'ComputePathToPose', 'FollowPath'} <= tags
+    assert {'Spin', 'Wait', 'BackUp', 'ComputePathToPose', 'FollowPath'} <= tags
+    backups = list(tree.iter('BackUp'))
+    assert len(backups) == 1 and float(backups[0].get('backup_dist')) <= 0.15
+    assert float(backups[0].get('backup_speed')) <= 0.05
+    robin = next(tree.iter('RoundRobin'))
+    assert list(robin)[-1].tag == 'BackUp'  # last resort, after clearing, spin and wait
+    # The old tree stays available (bt_xml:=.../nav2_bt_no_backup.xml) and still has none.
+    old = ET.parse(ROOT / 'config' / 'nav2_bt_no_backup.xml')
+    assert 'BackUp' not in {element.tag for element in old.iter()}
 
 
 def test_bt_xml_rewrite():

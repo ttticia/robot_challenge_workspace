@@ -1,6 +1,7 @@
 # Copy of lite3_mission/config/robot.yaml (main e725625) plus the lite3_nav parameters
 # mission.nav2_active_timeout_sec, mission.nav2_health_check, velocity_gate.output_transient_local
-# and velocity_gate.expected_input_publishers, and the mission exit_* / final_cell_* parameters.
+# and velocity_gate.expected_input_publishers, the mission exit_* / final_cell_* parameters
+# and mission.frontier_ranking / start_* / auto_stand_up / stand_*, velocity_gate.simple_cmd_allowed_node.
 # All other values are the team's (test/team_robot_e725625.yaml).
 mission:
   ros__parameters:
@@ -30,11 +31,39 @@ mission:
     # feedback always count as active.
     nav2_health_check: either
     frontier_clearance_m: 0.25
+    # = global_costmap robot_radius (nav2_robot.yaml): goals no closer to a wall than the planner
+    # can reach (else Nav2 "succeeds" without moving and the same frontier returns).
+    frontier_planner_radius_m: 0.35
+    # A frontier goal that "succeeds" with the robot moving less than this and turning < 0.5 rad
+    # is skipped (with goals within 0.5 m of it) for the rest of the run instead of looping.
+    minimum_goal_motion_m: 0.1
+    # Frontier goals at least this far from the robot: Nav2's xy_goal_tolerance is 0.25 m, so a
+    # nearer goal "succeeds" on the spot (sim 2026-11-15: 0.23 m goals, robot never moved).
+    minimum_goal_hop_m: 0.35
     frontier_standoff_m: 0.32
     minimum_frontier_size_m: 0.12
     blacklist_duration_sec: 30.0
     maximum_consecutive_failures: 3
     frontier_yaw_mode: keep_current
+    # path_length: nearest frontier along free space (finishes the closest branch first, from
+    # maze_nav); score: the team's original ranking (size over straight-line distance).
+    frontier_ranking: path_length
+    # Start routine (maze_nav), first arming in explore mode only; arming is the start signal.
+    # Creep start_creep_m straight ahead at start_creep_speed (Nav2 drive_on_heading), then turn
+    # start_scan_deg left, twice that right and back (Nav2 spin) so SLAM sees the start cell.
+    # A failed step is skipped. 0 turns a step off. The operator still stands the robot up.
+    start_routine: true
+    start_creep_m: 0.1
+    start_creep_speed: 0.05
+    start_scan_deg: 45.0
+    # Auto stand-up on arming (lite3_nav/stand.py): the lidar body height decides. Lying (base_link
+    # <= 0.18 m above the floor): the stand/sit toggle 0x21010202 is sent ONCE on /simple_cmd,
+    # then the robot must read as standing (>= 0.27 m) within stand_timeout_sec. Standing: nothing
+    # is sent. Then the mission arms itself once the usual checks pass, within stand_settle_sec.
+    # Needs transfer_interfaces sourced; without it arming is refused. false = stand it by hand.
+    auto_stand_up: true
+    stand_timeout_sec: 15.0
+    stand_settle_sec: 30.0
     # Exit / final cell (lite3_nav/exit_detect.py, from maze_nav's ExitDetector). The run ends
     # (state EXITED: goal cancelled, lease dropped, disarmed, no more goals) when, in explore
     # mode, a disk of SLAM-seen free floor of radius exit_open_radius lies within
@@ -75,6 +104,8 @@ velocity_gate:
     angular_acceleration_rad_s2: 0.5
     command_timeout_sec: 0.25
     lease_timeout_sec: 0.3
+    # The mission's auto stand-up toggle on /simple_cmd is not a competing command source.
+    simple_cmd_allowed_node: mission
 observations:
   ros__parameters:
     use_sim_time: false

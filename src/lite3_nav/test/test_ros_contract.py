@@ -221,8 +221,54 @@ def test_mission_loads_the_real_params_files(context):
     mission = Mission(cli_args=['--ros-args', '--params-file', str(config / 'robot.yaml'),
                                 '--params-file', str(config / 'sim.yaml')])
     context.append(mission)
-    assert mission.value('goal_timeout_sec') == 90. and mission.value('nav2_health_check') == 'either'
+    assert mission.value('goal_timeout_sec') == 45. and mission.value('nav2_health_check') == 'either'
     assert list(mission.value('final_cell_xy') or []) == [] and mission.check_exit() is False
+    assert mission.value('frontier_ranking') == 'path_length'
+    assert mission.value('auto_stand_up') is False  # robot.yaml true, sim.yaml false
+
+
+def test_auto_stand_up_refuses_without_transfer_interfaces(context):
+    import importlib.util
+    from rclpy.parameter import Parameter
+    from std_srvs.srv import SetBool
+    from lite3_nav.mission import Mission
+    if importlib.util.find_spec('transfer_interfaces'):
+        pytest.skip('transfer_interfaces installed here')
+    mission = Mission(parameter_overrides=[Parameter('execution_enabled', value=True),
+                                           Parameter('auto_stand_up', value=True)])
+    context.append(mission)
+    response = mission.arm(SetBool.Request(data=True), SetBool.Response())
+    assert not response.success and response.message.startswith('AUTO_STAND_UP_UNAVAILABLE')
+    assert mission.stand is None and not mission.armed
+
+
+def test_gate_allows_only_the_named_simple_cmd_publisher(context):
+    import rclpy
+    from rclpy.parameter import Parameter
+    from std_msgs.msg import Bool
+    from lite3_nav.velocity_gate import VelocityGate
+    allowed = rclpy.create_node('mission_stand_test')
+    other = rclpy.create_node('someone_else')
+    context.extend([allowed, other])
+    gate = VelocityGate(parameter_overrides=[
+        Parameter('drive_output_enabled', value=True), Parameter('simple_cmd_allowed_node', value='mission_stand_test'),
+        Parameter('input_topic', value='/test/nav_cmd'), Parameter('output_topic', value='/test/final_cmd')])
+    context.append(gate)
+    allowed.create_publisher(Bool, '/simple_cmd', 1)  # the gate checks publishers, not types
+    spin(context, 1., gate.tick)
+    assert not any(c.startswith('/simple_cmd') for c in gate.conflicts), gate.conflicts
+    other.create_publisher(Bool, '/simple_cmd', 1)
+    spin(context, 1., gate.tick)
+    assert gate.conflicts == ['/simple_cmd:someone_else']
+
+
+def test_frontier_ranking_is_validated(context):
+    from rclpy.parameter import Parameter
+    from lite3_nav.mission import Mission
+    mission = Mission()
+    context.append(mission)
+    assert not mission.set_parameters([Parameter('frontier_ranking', value='bogus')])[0].successful
+    assert mission.set_parameters([Parameter('frontier_ranking', value='score')])[0].successful
 
 
 def test_goal_timeout_blacklists_and_keeps_exploring(context):
@@ -246,6 +292,62 @@ def test_goal_timeout_blacklists_and_keeps_exploring(context):
     assert cancels == [True] and mission.armed
     mission.abandon_goal('GOAL_TIMEOUT')  # third in a row (maximum_consecutive_failures 3)
     assert not mission.armed and mission.note.startswith('CONSECUTIVE_GOAL_FAILURES')
+
+
+def test_start_routine_creeps_then_scans_then_explores(context):
+    import rclpy
+    from nav2_msgs.action import DriveOnHeading, NavigateToPose, Spin
+    from rclpy.action import ActionServer, CancelResponse, GoalResponse
+    from rclpy.callback_groups import ReentrantCallbackGroup
+    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.parameter import Parameter
+    from std_srvs.srv import SetBool
+    from lite3_nav.mission import Mission
+    world, publish = make_world(context)
+    server_node = rclpy.create_node('test_nav2_start_servers')
+    context.append(server_node)
+    calls = []
+
+    def server(kind, action, name):
+        def execute(handle):
+            goal = handle.request
+            calls.append((kind, round(goal.target.x, 3) if kind == 'creep' else
+                          round(goal.target_yaw, 3) if kind == 'scan' else None))
+            handle.succeed()
+            return action.Result()
+        return ActionServer(server_node, action, name, execute_callback=execute,
+                            goal_callback=lambda goal: GoalResponse.ACCEPT,
+                            cancel_callback=lambda goal: CancelResponse.ACCEPT,
+                            callback_group=ReentrantCallbackGroup())
+    servers = [server('nav', NavigateToPose, '/navigate_to_pose'),
+               server('creep', DriveOnHeading, '/drive_on_heading'), server('scan', Spin, '/spin')]
+    # The test map is all seen free floor: no frontier, so exploring ends at once afterwards.
+    mission = Mission(parameter_overrides=[
+        Parameter('execution_enabled', value=True), Parameter('require_velocity_gate', value=False),
+        Parameter('require_imu', value=False), Parameter('nav2_health_check', value='action_server'),
+        Parameter('use_sim_time', value=True), Parameter('mode', value='explore'),
+        Parameter('exit_detection_enabled', value=False)])
+    context.append(mission)
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(server_node)
+    worker = threading.Thread(target=executor.spin, daemon=True)
+    worker.start()
+    try:
+        spin([world, mission], 1.5, publish)
+        assert mission.arm(SetBool.Request(data=True), SetBool.Response()).success
+        spin([world, mission], 3., publish)
+        turn = round(math.pi / 4, 3)
+        assert calls == [('creep', .1), ('scan', turn), ('scan', round(-math.pi / 2, 3)), ('scan', turn)]
+        assert not mission.armed and mission.note == 'NO_REACHABLE_FRONTIER' and not mission.start_steps
+        # Re-arming in the same run does not repeat the start routine.
+        mission.arm(SetBool.Request(data=True), SetBool.Response())
+        spin([world, mission], 1., publish)
+        assert len(calls) == 4
+    finally:
+        executor.shutdown(timeout_sec=4.)
+        worker.join(timeout=4.)
+        for item in servers:
+            item.destroy()
 
 
 def test_gate_status_names_expected_publisher_count(context):

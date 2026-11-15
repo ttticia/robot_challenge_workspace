@@ -7,6 +7,9 @@
 #    -> EXPECTED_<k>_NAV2_INPUT_PUBLISHERS_GOT_<n>.
 #  - Optional curtain push input (push_input_enabled, default false): a second command topic used
 #    only by the mission's curtain crossing, gated by its own push lease. See push_permitted().
+#  - simple_cmd_allowed_node (default '' = none): that one node may publish /simple_cmd without
+#    counting as a competing command source (the mission's auto stand-up toggle). Every other
+#    /simple_cmd publisher still blocks driving.
 #  - core and runtime helpers come from lite3_nav's own unchanged copies (lite3_nav.core, .runtime)
 #    with absolute imports instead of relative ones.
 """Independent wall-clock command timeout and limiter; hardware output is opt-in."""
@@ -32,9 +35,10 @@ class VelocityGate(Node):
                       acceleration_m_s2=.2,angular_acceleration_rad_s2=.5,
                       output_transient_local=True,expected_input_publishers=1,
                       push_input_enabled=False,push_input_topic='/mission/push_cmd_vel',
-                      push_lease_topic='/mission/push_lease',max_push_linear_m_s=.1)
+                      push_lease_topic='/mission/push_lease',max_push_linear_m_s=.1,
+                      simple_cmd_allowed_node='')
         read_only=('drive_output_enabled','input_topic','output_topic','output_transient_local','expected_input_publishers',
-                   'push_input_enabled','push_input_topic','push_lease_topic')
+                   'push_input_enabled','push_input_topic','push_lease_topic','simple_cmd_allowed_node')
         for key,value in defaults.items():
             self.declare_parameter(key,value,ParameterDescriptor(read_only=key in read_only))
         result=self.validate([])
@@ -141,6 +145,8 @@ class VelocityGate(Node):
         conflicts=[]
         for topic in (self.value('output_topic'),'/cmd_vel_corrected','/simple_cmd','/complex_cmd'):
             for endpoint in self.get_publishers_info_by_topic(topic):
+                if topic=='/simple_cmd' and endpoint.node_name==self.value('simple_cmd_allowed_node')!='':
+                    continue  # the mission's stand-up toggle (one command, never a stream)
                 if not (topic==self.value('output_topic') and endpoint.node_name==self.name and endpoint.node_namespace==self.get_namespace()):
                     conflicts.append(topic+':'+endpoint.node_name)
         self.conflicts=conflicts

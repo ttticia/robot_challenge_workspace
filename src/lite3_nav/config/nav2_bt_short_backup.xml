@@ -1,0 +1,41 @@
+<!--
+  nav2_bt_no_backup.xml plus a short BackUp (0.15 m at 0.05 m/s) as the last recovery in the
+  round robin (clear costmaps, spin, wait, back up). Sim 2026-11-15: at a junction the robot
+  stopped where it could neither plan (centre inside the inflated wall) nor turn on the spot
+  (spin: collision ahead), and without a reverse the run ended there. The lidar does not see
+  behind the body, so the reverse is short and slow and only over floor the robot has just walked
+  forward over; behavior_server still checks it against the local costmap's remembered walls.
+  Replans at 1 Hz; few retries on purpose (the mission blacklists a failed frontier).
+  robot_navigation.launch.py and sim_navigation.launch.py point both default_nav_to_pose_bt_xml
+  and default_nav_through_poses_bt_xml here.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="3" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearingActions">
+            <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </Sequence>
+          <Spin spin_dist="1.57"/>
+          <Wait wait_duration="3"/>
+          <BackUp backup_dist="0.15" backup_speed="0.05"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

@@ -12,7 +12,8 @@ This node transforms each cloud into odom (gravity-aligned, Fast-LIO), keeps poi
 band_low and band_high above the maze floor and bins them by bearing around the robot. Terrain
 (ramps, mats <= 0.15 m), stair treads (<= 0.26 m) and the floor stay out; walls (0.45 m) and
 hand rails stay in. The floor height is measured once at startup (robot standing on the
-start cell) unless floor_z is given.
+start cell) unless floor_z is given; while the robot is lying down (auto stand-up pending) it
+waits and publishes nothing.
 
 Published scan frame: base_link. Ranges are horizontal distances, so for SLAM / costmaps the
 small body pitch on ramps (a few degrees) is ignored, which costs < 1 % of range.
@@ -29,6 +30,7 @@ from rclpy.time import Time
 from sensor_msgs.msg import LaserScan, PointCloud2
 from tf2_ros import Buffer, TransformException, TransformListener
 
+from lite3_nav.stand import body_height, posture
 from lite3_nav.wall_band import cloud_xyz, estimate_floor, wall_ranges
 
 
@@ -130,6 +132,14 @@ class WallScan(Node):
         yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
 
         if self.floor is None:
+            # Lying down (auto stand-up pending): measuring now would put the floor 0.25 m too
+            # low and the wall band on the terrain. Wait until it stands.
+            rel = pts - np.array([b.translation.x, b.translation.y, b.translation.z])
+            if posture(body_height(rel)) == 'lying':
+                self.floor_tries = 0
+                self.get_logger().info('robot lying down: floor measured once it stands',
+                                       throttle_duration_sec=5.0)
+                return
             expected = b.translation.z - self.drop
             seen = estimate_floor(pts, bxy, b.translation.z, self.drop)
             self.floor_tries += 1

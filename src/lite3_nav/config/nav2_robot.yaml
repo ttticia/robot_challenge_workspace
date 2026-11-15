@@ -7,16 +7,23 @@
 # Nav2's final output goes to /mission/nav_cmd_vel (remapped in the launch file), never /cmd_vel.
 #
 # Tuned for 0.9 m corridors with ideas from maze_nav (origin/navigation 419f205,
-# config/nav2_params.yaml): Lite3 footprint incl. moving feet 0.64 x 0.46 m set 5 cm behind
-# base_link (0.22 m to each wall in a corridor; farthest corner 0.44 m from base_link, so turning
-# on the spot in a corridor centre just fits); Smac 2D planner keeping to the corridor centre on
+# config/nav2_params.yaml). Footprint 0.61 x 0.40 m centred on base_link: body 0.548 x 0.370 m,
+# the lab Nav2 length (0.61) and 1.5 cm a side for the feet, which stay inside the body outline
+# when standing (robot_info.md 7). It was maze_nav's 0.64 x 0.46 m set 5 cm back: at a 45 deg
+# heading that spans 0.78 m of a 0.9 m corridor, and in the sim (2026-11-15) the robot stopped
+# diagonally at a junction with every move "collision ahead" (RPP) and three goals failed. Now
+# 0.71 m at 45 deg; farthest corner 0.36 m from base_link, so turning on the spot fits anywhere
+# within 9 cm of a corridor centre. Smac 2D planner keeping to the corridor centre on
 # a rolling global costmap (Humble's Smac segfaulted planning from just off a growing /map);
-# RPP with a short lookahead (corners in 0.9 m corridors) and turning on the spot from 0.6 rad.
-# Inflation 0.3 m / cost_scaling 6 (sim finding): lethal within 0.23 m (inscribed) of a wall,
-# zero cost from 0.3 m, so a 0.9 m corridor keeps a 0.44 m wide plannable lane with a 0.3 m
+# RPP with a short lookahead (0.25 m: corners in 0.9 m corridors) and turning on the spot from
+# 0.45 rad. Its collision check stays on (sim 2026-11-15: with it off the robot clipped corners,
+# tilted, and wedged within 0.2 m of a wall where Smac cannot plan and spin is blocked).
+# Inflation 0.3 m / cost_scaling 6 (sim finding): lethal within 0.2 m (inscribed) of a wall,
+# zero cost from 0.3 m, so a 0.9 m corridor keeps a 0.5 m wide plannable lane with a 0.3 m
 # zero-cost middle. 0.45-0.55 m inflation blocked that lane.
-# No BackUp recovery (maze_nav): the lidar is blind behind the body. The launch file sets
-# bt_navigator's trees to config/nav2_bt_no_backup.xml (spin and wait only).
+# BackUp only as the last, short recovery (0.15 m at 0.05 m/s): the lidar is blind behind the
+# body (maze_nav had none), but without it the robot could stall for good at a tight junction
+# (sim 2026-11-15). The launch files set bt_navigator's trees to config/nav2_bt_short_backup.xml.
 
 bt_navigator:
   ros__parameters:
@@ -100,9 +107,9 @@ controller_server:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.1
       # Short (maze_nav): pure pursuit cuts corners by about the lookahead.
-      lookahead_dist: 0.35
-      min_lookahead_dist: 0.25
-      max_lookahead_dist: 0.45
+      lookahead_dist: 0.25
+      min_lookahead_dist: 0.2
+      max_lookahead_dist: 0.3
       lookahead_time: 1.5
       use_velocity_scaled_lookahead_dist: false
       transform_tolerance: 0.3
@@ -116,7 +123,7 @@ controller_server:
       regulated_linear_scaling_min_speed: 0.05
       use_rotate_to_heading: true        # quadruped: turn on the spot, then walk
       rotate_to_heading_angular_vel: 0.25
-      rotate_to_heading_min_angle: 0.6   # maze_nav: turn first rather than swing into a wall
+      rotate_to_heading_min_angle: 0.45  # turn first rather than swing into a wall (maze_nav: 0.6)
       max_angular_accel: 0.5
       allow_reversing: false
       max_robot_pose_search_dist: 10.0
@@ -134,7 +141,7 @@ local_costmap:
       height: 4
       resolution: 0.05
       transform_tolerance: 0.3
-      footprint: "[[0.27, 0.23], [0.27, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # feet incl., 5 cm back
+      footprint: "[[0.305, 0.2], [0.305, -0.2], [-0.305, -0.2], [-0.305, 0.2]]"   # body + 1.5 cm a side
       footprint_padding: 0.0
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -174,7 +181,12 @@ global_costmap:
       resolution: 0.05
       transform_tolerance: 0.3
       track_unknown_space: true
-      footprint: "[[0.27, 0.23], [0.27, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # feet incl., 5 cm back
+      # Planner only: the circle the 0.61 x 0.40 body sweeps turning on the spot (half-diagonal
+      # 0.36, true body 0.33), so plans keep the centre where it can turn (sim 2026-11-15: a
+      # plan hugging a wall end at a junction left RPP no room to turn and the run stalled).
+      # In a 0.9 m corridor that leaves a ~0.2 m lane on the centre line. The local costmap
+      # (RPP's collision check) keeps the real rectangle.
+      robot_radius: 0.35
       footprint_padding: 0.0
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
@@ -194,7 +206,7 @@ global_costmap:
           raytrace_max_range: 4.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.3
+        inflation_radius: 0.45       # just past robot_radius; costs fall to the corridor centre
         cost_scaling_factor: 6.0
       always_send_full_costmap: true
 
@@ -235,9 +247,15 @@ behavior_server:
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
-    behavior_plugins: ["spin", "wait"]   # no backup: see nav2_bt_no_backup.xml
+    # backup: only the tree's last recovery, 0.15 m (see nav2_bt_short_backup.xml). drive_on_heading
+    # is only the mission's start creep (start_creep_m); the behaviour tree never calls it.
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
     spin:
       plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
     wait:
       plugin: "nav2_behaviors/Wait"
     global_frame: odom

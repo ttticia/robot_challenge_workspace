@@ -209,8 +209,9 @@ def generate_launch_description():
                               description='laser topic of the Nav2 obstacle layers (/scan or /wall_scan)'),
         DeclareLaunchArgument('nav_cmd_vel_topic', default_value='/mission/nav_cmd_vel'),
         DeclareLaunchArgument('params_file', default_value=str(share / 'config/nav2_robot.yaml')),
-        DeclareLaunchArgument('bt_xml', default_value=str(share / 'config/nav2_bt_no_backup.xml'),
-                              description="Nav2 behaviour tree (no BackUp); '' = params_file's own"),
+        DeclareLaunchArgument('bt_xml', default_value=str(share / 'config/nav2_bt_short_backup.xml'),
+                              description="Nav2 behaviour tree (BackUp 0.15 m only as the last "
+                                          "recovery; nav2_bt_no_backup.xml = none); '' = params_file's own"),
         DeclareLaunchArgument('slam_params_file', default_value=str(share / 'config/slam_robot.yaml')),
         DeclareLaunchArgument('fastdds_profile', default_value=str(share / 'config/fastdds_udp.xml'),
                               description='UDP-only Fast DDS; Nav2 lifecycle stalled on the robot without it'),
