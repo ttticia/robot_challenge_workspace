@@ -2,7 +2,7 @@
 # mission.nav2_active_timeout_sec, mission.nav2_health_check, velocity_gate.output_transient_local
 # and velocity_gate.expected_input_publishers, the mission exit_* / final_cell_* parameters
 # and mission.frontier_ranking / start_* / auto_stand_up / stand_*, velocity_gate.simple_cmd_allowed_node.
-# All other values are the team's (test/team_robot_e725625.yaml).
+# All other values are the team's (test/team_robot_e725625.yaml), except maximum_tilt_deg (12 -> 22, below).
 mission:
   ros__parameters:
     use_sim_time: false
@@ -19,7 +19,12 @@ mission:
     nav2_lifecycle_node: /bt_navigator
     pose_timeout_sec: 0.75
     imu_timeout_sec: 0.5
-    maximum_tilt_deg: 12.0
+    # Course STL (example maze): sloped pit faces 17.4 deg, 0.12 m platform and 0.12 m stair rises
+    # (short pitch spikes on the climb), rough blocks ~5-8 deg; stairs are ~39 deg (not drivable
+    # with this stop). 22 deg clears the pit; tilt_hold_sec lets climb spikes pass while armed.
+    # Team value was 12.0 (instant).
+    maximum_tilt_deg: 22.0
+    tilt_hold_sec: 0.5
     goal_timeout_sec: 45.0
     # Max age of the last bt_navigator "active" lifecycle reply (or Nav2 goal feedback) before disarming.
     nav2_active_timeout_sec: 3.0

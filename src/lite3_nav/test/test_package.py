@@ -51,13 +51,15 @@ def flatten(data, prefix=''):
 def test_robot_yaml_keeps_every_team_value():
     team = flatten(yaml.safe_load(TEAM_ROBOT_YAML.read_text()))
     ours = flatten(yaml.safe_load((ROOT / 'config' / 'robot.yaml').read_text()))
-    assert {k: ours.get(k) for k in team} == team
+    # Deliberate changes to team values (course terrain, 2026-11-15): tilt stop 12 -> 22 deg.
+    changed = {'mission.ros__parameters.maximum_tilt_deg': 22.0}
+    assert {k: ours.get(k) for k in team} == {**team, **changed}
     assert set(ours) - set(team) == {
         'mission.ros__parameters.nav2_active_timeout_sec',
         'mission.ros__parameters.nav2_health_check',
         'mission.ros__parameters.frontier_ranking',
         'mission.ros__parameters.frontier_planner_radius_m', 'mission.ros__parameters.minimum_goal_motion_m',
-        'mission.ros__parameters.minimum_goal_hop_m',
+        'mission.ros__parameters.minimum_goal_hop_m', 'mission.ros__parameters.tilt_hold_sec',
         'mission.ros__parameters.start_routine', 'mission.ros__parameters.start_creep_m',
         'mission.ros__parameters.start_creep_speed', 'mission.ros__parameters.start_scan_deg',
         'mission.ros__parameters.auto_stand_up', 'mission.ros__parameters.stand_timeout_sec',
