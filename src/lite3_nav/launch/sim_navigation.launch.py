@@ -1,7 +1,7 @@
 """Run the lite3_nav mission layer in the lite3_sim Gazebo simulator.
 
 ros2 launch lite3_nav sim_navigation.launch.py              # explore arena_1, armed manually
-ros2 launch lite3_nav sim_navigation.launch.py rviz:=false world:=$HOME/arena/arena_2.world
+ros2 launch lite3_nav sim_navigation.launch.py rviz:=false world:=$(ros2 pkg prefix lite3_sim)/share/lite3_sim/worlds/arena_2.world
 ros2 launch lite3_nav sim_navigation.launch.py sensors:=nav   # navigation-only, faster Gazebo
                                                    # (no camera: do not combine with team_qr)
 Then: ros2 service call /mission/set_armed std_srvs/srv/SetBool '{data: true}'
@@ -42,7 +42,7 @@ def generate_launch_description():
     arg = LaunchConfiguration
     pass_sim = ('world', 'x_pose', 'y_pose', 'gui', 'rviz', 'domain_id', 'sensors')
     declared = [DeclareLaunchArgument(name, default_value=value) for name, value in [
-        ('world', str(Path.home() / 'arena' / 'arena_1.world')), ('x_pose', '0.75'),
+        ('world', str(Path(get_package_share_directory('lite3_sim')) / 'worlds' / 'arena_1.world')), ('x_pose', '0.75'),
         ('y_pose', '0.75'), ('gui', 'false'), ('rviz', 'true'), ('domain_id', '89'),
         # full, or nav = navigation-only (no camera, lighter lidar) when Gazebo is too slow
         ('sensors', 'full'),
