@@ -4,6 +4,7 @@ Run with test/run_tests.sh (sets LITE3_ROS_TESTS=1, Cyclone DDS loopback profile
 The action server is a test double, not Nav2.
 """
 import json
+import math
 import os
 import threading
 import time
@@ -148,6 +149,64 @@ def test_arms_with_action_server_health_check(context):
         assert mission.armed and (mission.goal_handle or mission.pending)
         mission.disarm('TEST_DONE')
         spin([world, mission], 1., publish)
+    finally:
+        executor.shutdown(timeout_sec=4.)
+        worker.join(timeout=4.)
+        server.destroy()
+
+
+def test_final_cell_ends_the_run_cancels_and_refuses_rearming(context):
+    import rclpy
+    from nav2_msgs.action import NavigateToPose
+    from rclpy.action import ActionServer, CancelResponse, GoalResponse
+    from rclpy.callback_groups import ReentrantCallbackGroup
+    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.parameter import Parameter
+    from std_srvs.srv import SetBool
+    from lite3_nav.mission import Mission
+    world, publish = make_world(context)
+    server_node = rclpy.create_node('test_nav2_exit_server')
+    context.append(server_node)
+    cancelled = []
+
+    def execute(handle):
+        until = time.monotonic() + 5.
+        while time.monotonic() < until and not handle.is_cancel_requested:
+            time.sleep(.01)
+        if handle.is_cancel_requested:
+            cancelled.append(True)
+            handle.canceled()
+        else:
+            handle.succeed()
+        return NavigateToPose.Result()
+    server = ActionServer(server_node, NavigateToPose, '/navigate_to_pose', execute_callback=execute,
+                          goal_callback=lambda goal: GoalResponse.ACCEPT,
+                          cancel_callback=lambda goal: CancelResponse.ACCEPT,
+                          callback_group=ReentrantCallbackGroup())
+    # Waypoint 0.5 m ahead; the final cell is set to "here" only once the goal runs.
+    mission = Mission(parameter_overrides=[
+        Parameter('execution_enabled', value=True), Parameter('require_velocity_gate', value=False),
+        Parameter('require_imu', value=False), Parameter('nav2_health_check', value='action_server'),
+        Parameter('use_sim_time', value=True), Parameter('final_cell_radius', value=.2)])
+    context.append(mission)
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(server_node)
+    worker = threading.Thread(target=executor.spin, daemon=True)
+    worker.start()
+    try:
+        spin([world, mission], 1.5, publish)
+        assert mission.arm(SetBool.Request(data=True), SetBool.Response()).success
+        spin([world, mission], 1., publish)
+        assert mission.armed and mission.goal_handle and not mission.exited
+        bad = mission.set_parameters([Parameter('final_cell_xy', value=[1., float('nan')])])[0]
+        assert not bad.successful
+        assert mission.set_parameters([Parameter('final_cell_xy', value=[0.05, 0.])])[0].successful
+        spin([world, mission], 1.5, publish)
+        assert mission.exited and not mission.armed and mission.note == 'EXITED'
+        assert mission.exit.reason == 'FINAL_CELL' and cancelled and mission.goal_handle is None
+        response = mission.arm(SetBool.Request(data=True), SetBool.Response())
+        assert not response.success and response.message.startswith('EXITED')
+        assert mission.choose_goal() == (None, 'EXITED')
     finally:
         executor.shutdown(timeout_sec=4.)
         worker.join(timeout=4.)
@@ -326,3 +385,68 @@ def test_push_disabled_by_default(context):
     context.append(gate)
     assert not gate.push_enabled
     assert gate.push_permitted(time.monotonic(), True, False, False) == (False, '')
+
+
+@pytest.mark.parametrize('floor_z', [0.0, float('nan')])
+def test_wall_scan_keeps_only_the_wall_band(context, floor_z):
+    """wall_scan (borrowed from maze_nav): wall 1 m ahead in the 0.30-0.43 m band is seen; a
+    0.15 m ramp 1.5 m to the left and the floor are not. Floor given, or measured at startup."""
+    import rclpy
+    from geometry_msgs.msg import TransformStamped
+    from rclpy.parameter import Parameter
+    from sensor_msgs.msg import LaserScan, PointCloud2, PointField
+    from tf2_ros import StaticTransformBroadcaster
+    from lite3_nav.wall_scan import WallScan
+    node = rclpy.create_node('wall_scan_test_world')
+    context.append(node)
+    static = StaticTransformBroadcaster(node)
+    transforms = []
+    for child, z in (('base_link', .35), ('livox_frame', .45)):   # standing robot, lidar on top
+        tf = TransformStamped()
+        tf.header.stamp = node.get_clock().now().to_msg()
+        tf.header.frame_id, tf.child_frame_id = 'odom', child
+        tf.transform.translation.z = z
+        tf.transform.rotation.w = 1.
+        transforms.append(tf)
+    static.sendTransform(transforms)
+    rng = np.random.default_rng(1)
+    ring = rng.uniform(-2.4, 2.4, (6000, 2))
+    ring = ring[np.hypot(ring[:, 0], ring[:, 1]) > .5]
+    floor = np.c_[ring, rng.normal(0., .003, len(ring))]
+    wall = np.c_[np.full(400, 1.), rng.uniform(-.3, .3, 400), rng.uniform(0., .45, 400)]
+    ramp = np.c_[rng.uniform(-.2, .2, 200), np.full(200, 1.5), np.full(200, .15)]
+    points = (np.r_[floor, wall, ramp] - [0., 0., .45]).astype(np.float32)   # in livox_frame
+    cloud = PointCloud2()
+    cloud.header.frame_id = 'livox_frame'
+    cloud.height, cloud.width = 1, len(points)
+    cloud.fields = [PointField(name=n, offset=4 * i, datatype=PointField.FLOAT32, count=1)
+                    for i, n in enumerate('xyz')]
+    cloud.point_step, cloud.row_step, cloud.is_dense = 12, 12 * len(points), True
+    cloud.data = points.tobytes()
+    cloud_pub = node.create_publisher(PointCloud2, '/test/points', 10)
+    scans = []
+    node.create_subscription(LaserScan, '/test/wall_scan', scans.append, 10)
+    scan = WallScan(parameter_overrides=[Parameter('cloud_topic', value='/test/points'),
+                                         Parameter('scan_topic', value='/test/wall_scan'),
+                                         Parameter('floor_z', value=floor_z)])
+    context.append(scan)
+    last = [0.]
+
+    def publish():
+        if time.monotonic() - last[0] > .1:
+            last[0] = time.monotonic()
+            cloud.header.stamp = node.get_clock().now().to_msg()
+            cloud_pub.publish(cloud)
+    spin(context, 2.5, publish)
+    assert scans, 'no /wall_scan'
+    assert scan.floor == pytest.approx(0., abs=.02)
+    msg = scans[-1]
+    assert msg.header.frame_id == 'base_link'
+    ranges = np.asarray(msg.ranges)
+    beam = lambda a: int(round((a - msg.angle_min) / msg.angle_increment)) % len(ranges)  # noqa: E731
+    assert ranges[beam(0.)] == pytest.approx(1., abs=.02)
+    assert np.isinf(ranges[beam(math.pi / 2)])               # ramp below the band
+    hit = np.flatnonzero(np.isfinite(ranges))
+    angles = msg.angle_min + hit * msg.angle_increment
+    assert len(hit) and (np.abs(angles) < math.atan(.3 / 1.) + .02).all()   # only the wall, no floor
+    assert (ranges[hit] < 1.05).all()

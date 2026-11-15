@@ -1,6 +1,7 @@
 # Copy of lite3_mission/config/robot.yaml (main e725625) plus the lite3_nav parameters
 # mission.nav2_active_timeout_sec, mission.nav2_health_check, velocity_gate.output_transient_local
-# and velocity_gate.expected_input_publishers. All other values are the team's.
+# and velocity_gate.expected_input_publishers, and the mission exit_* / final_cell_* parameters.
+# All other values are the team's (test/team_robot_e725625.yaml).
 mission:
   ros__parameters:
     use_sim_time: false
@@ -34,6 +35,24 @@ mission:
     blacklist_duration_sec: 30.0
     maximum_consecutive_failures: 3
     frontier_yaw_mode: keep_current
+    # Exit / final cell (lite3_nav/exit_detect.py, from maze_nav's ExitDetector). The run ends
+    # (state EXITED: goal cancelled, lease dropped, disarmed, no more goals) when, in explore
+    # mode, a disk of SLAM-seen free floor of radius exit_open_radius lies within
+    # exit_near_radius of the robot, >= exit_min_displacement from where it was first armed,
+    # the robot has been in a corridor (clearance <= exit_enclosed_radius) and this holds for
+    # exit_dwell_sec. 0.9 m corridors allow at most ~0.45 m, so 1.1 m only exists outside.
+    exit_detection_enabled: true
+    exit_open_radius: 1.1
+    exit_near_radius: 0.8
+    exit_min_displacement: 1.5
+    exit_enclosed_radius: 0.7
+    exit_dwell_sec: 2.0
+    # Frontiers on that open floor are chosen only when no other frontier is left.
+    exit_frontiers_last: true
+    # Known final cell centre [x, y] in the map frame (any mode): within final_cell_radius ends
+    # the run at once. Empty = unknown.
+    final_cell_xy: []
+    final_cell_radius: 0.4
     # First manually armed trial: 0.5 m relative to the initial body heading.
     # These are development goals, not the competition maze route.
     waypoints: [0.5, 0.0, 0.0]

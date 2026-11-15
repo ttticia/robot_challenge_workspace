@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # lite3_nav tests only: explicit loopback DDS profile on domain 88, isolated from the sim (89) and robot (4).
-# Uses the team's lite3_mission source next to this package (unchanged) for the shared helpers.
 set -eo pipefail
 package_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 source /opt/ros/humble/setup.bash
-export PYTHONPATH="$package_root:$package_root/../lite3_mission${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$package_root${PYTHONPATH:+:$PYTHONPATH}"
 export CYCLONEDDS_URI="file://$package_root/test/cyclonedds-local.xml"
 if [ -e /opt/ros/humble/lib/librmw_cyclonedds_cpp.so ]; then
   export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp

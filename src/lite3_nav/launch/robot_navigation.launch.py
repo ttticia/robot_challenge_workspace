@@ -12,6 +12,16 @@ only, UDP-only Fast DDS, Fast-LIO's config_file launch scope isolated.
   slam:=launcher           something else (e.g. lite3_launcher with slam:=True) already provides
                            /map and map -> odom; we add only Nav2. Refused if a Nav2 is already up.
 
+  wall_scan:=true (default, slam:=toolbox only)  start lite3_nav's wall_scan (borrowed from
+                           maze_nav, origin/navigation 419f205): /livox/points -> /wall_scan, only
+                           points band_low..band_high (0.30..0.43 m) above the floor, which it
+                           measures at startup in odom (the robot must be STANDING at launch, or
+                           pass floor_z). slam_toolbox then maps from /wall_scan instead of /scan,
+                           so ramps, mats and stair treads stay out of the map. wall_scan:=false
+                           maps from lite3_launcher's /scan (0.45..0.85 m above the floor).
+  costmap_scan_topic:=/scan  laser topic of the Nav2 obstacle layers; /wall_scan if the arena
+                           walls are too low for /scan (the global costmap gets walls from /map).
+
 Nav2's final velocity goes to nav_cmd_vel_topic (default /mission/nav_cmd_vel), never /cmd_vel:
 node-scoped remaps move velocity_smoother's output and behavior_server's spin/backup output, so
 the lite3_nav velocity gate stays the only /cmd_vel publisher. Run the mission with
@@ -26,6 +36,7 @@ refused.
 """
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
@@ -54,6 +65,27 @@ def check_domain(domain, robot):
     if not robot and domain == '4':
         return 'robot:=false (dry run) must not use ROS_DOMAIN_ID 4, the real robot'
     return None
+
+
+def slam_overrides(wall_scan):
+    """Parameters given to slam_toolbox after slam_params_file. Pure function for tests."""
+    return {'use_sim_time': False, **({'scan_topic': '/wall_scan'} if wall_scan else {})}
+
+
+def nav2_params_for_scan(params_file, topic):
+    """params_file unchanged for /scan, else a temporary copy whose obstacle layers read topic."""
+    import yaml
+    topic = topic.strip()
+    if topic in ('', '/scan'):
+        return params_file
+    with open(params_file) as f:
+        data = yaml.safe_load(f)
+    for name in ('local_costmap', 'global_costmap'):
+        data[name][name]['ros__parameters']['obstacle_layer']['scan']['topic'] = topic
+    out = tempfile.NamedTemporaryFile('w', prefix='lite3_nav_nav2_', suffix='.yaml', delete=False)
+    with out:
+        yaml.safe_dump(data, out, sort_keys=False)
+    return out.name
 
 
 def _running_nodes(env, timeout=10.):
@@ -112,12 +144,22 @@ def _bringup(context):
 
 
 def _slam(context):
-    if LaunchConfiguration('slam').perform(context) != 'toolbox':
+    arg = lambda name: LaunchConfiguration(name).perform(context)  # noqa: E731
+    if arg('slam') != 'toolbox':
         return [LogInfo(msg='[robot_navigation] slam:=launcher: expecting /map and map -> odom from the lab stack')]
-    return [Node(package='slam_toolbox', executable='async_slam_toolbox_node', name='slam_toolbox',
-                 output='screen',
-                 parameters=[LaunchConfiguration('slam_params_file').perform(context),
-                             {'use_sim_time': False}])]
+    wall = _truthy(arg('wall_scan'))
+    actions = [Node(package='slam_toolbox', executable='async_slam_toolbox_node', name='slam_toolbox',
+                    output='screen',
+                    parameters=[arg('slam_params_file'), slam_overrides(wall)])]
+    if wall:
+        actions += [LogInfo(msg='[robot_navigation] SLAM maps from /wall_scan (robot must be standing now: '
+                                'wall_scan measures the floor at startup)'),
+                    Node(package='lite3_nav', executable='wall_scan', name='wall_scan', output='screen',
+                         parameters=[{'use_sim_time': False,
+                                      'band_low': float(arg('band_low')),
+                                      'band_high': float(arg('band_high')),
+                                      'floor_z': float(arg('floor_z'))}])]
+    return actions
 
 
 def _nav2(context):
@@ -128,7 +170,9 @@ def _nav2(context):
     include = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(str(nav2 / 'launch/navigation_launch.py')),
         launch_arguments={'use_sim_time': 'false', 'autostart': 'true', 'use_composition': 'False',
-                          'params_file': LaunchConfiguration('params_file').perform(context)}.items())
+                          'params_file': nav2_params_for_scan(
+                              LaunchConfiguration('params_file').perform(context),
+                              LaunchConfiguration('costmap_scan_topic').perform(context))}.items())
     # Node-scoped remaps: a global cmd_vel remap would override navigation_launch's own per-node
     # remaps (controller -> cmd_vel_nav -> smoother). Same fix as the simulator.
     return [LogInfo(msg=f'[robot_navigation] Nav2 velocity output -> {topic}'),
@@ -147,6 +191,15 @@ def generate_launch_description():
         DeclareLaunchArgument('slam', default_value='toolbox', description='toolbox | launcher'),
         DeclareLaunchArgument('bringup', default_value='true',
                               description="slam:=toolbox only: start lite3_launcher's Fast-LIO + /scan bringup"),
+        DeclareLaunchArgument('wall_scan', default_value='true',
+                              description='slam:=toolbox: start wall_scan and map from /wall_scan instead of /scan'),
+        DeclareLaunchArgument('band_low', default_value='0.30', description='wall_scan: m above the floor'),
+        DeclareLaunchArgument('band_high', default_value='0.43',
+                              description='wall_scan: m above the floor, below the wall top'),
+        DeclareLaunchArgument('floor_z', default_value='nan',
+                              description='wall_scan: odom z of the floor; nan = measure at startup'),
+        DeclareLaunchArgument('costmap_scan_topic', default_value='/scan',
+                              description='laser topic of the Nav2 obstacle layers (/scan or /wall_scan)'),
         DeclareLaunchArgument('nav_cmd_vel_topic', default_value='/mission/nav_cmd_vel'),
         DeclareLaunchArgument('params_file', default_value=str(share / 'config/nav2_robot.yaml')),
         DeclareLaunchArgument('slam_params_file', default_value=str(share / 'config/slam_robot.yaml')),

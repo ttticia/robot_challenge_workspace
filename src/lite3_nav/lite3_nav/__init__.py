@@ -1,1 +1,1 @@
-"""Rey's navigation workstation package; imports lite3_mission, never modifies it."""
+"""Rey's self-contained Lite3 navigation package (mission, velocity gate and copies of the team helpers)."""

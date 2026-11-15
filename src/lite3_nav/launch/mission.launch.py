@@ -1,8 +1,8 @@
 """Mission nodes only. The lab stack continues to own SLAM/localization/Nav2.
 
-Same arguments as lite3_mission/launch/mission.launch.py, plus profile:=sim. mission and
-velocity_gate run from lite3_nav (same node names, topics and services); observations, qr,
-scene_client and team_qr_adapter run unchanged from the team's lite3_mission package.
+Same arguments as the team's original lite3_mission mission.launch.py, plus profile:=sim. All
+nodes run from lite3_nav (same node names, topics and services): mission and velocity_gate are
+lite3_nav's forks; observations, qr, scene_client and team_qr_adapter are unchanged copies.
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
@@ -15,11 +15,10 @@ from pathlib import Path
 
 def nodes(context):
     root=Path(get_package_share_directory('lite3_nav'))
-    team=Path(get_package_share_directory('lite3_mission'))
     profile=LaunchConfiguration('profile').perform(context)
     if profile not in ('robot','mujoco','sim'):raise ValueError('profile must be robot, mujoco or sim')
     parameters=[str(root/'config/robot.yaml')]
-    if profile=='mujoco':parameters.append(str(team/'config/mujoco.yaml'))
+    if profile=='mujoco':parameters.append(str(root/'config/mujoco.yaml'))
     if profile=='sim':parameters.append(str(root/'config/sim.yaml'))
     override=LaunchConfiguration('config_file').perform(context)
     if override:parameters.append(override)
@@ -33,12 +32,12 @@ def nodes(context):
                  parameters=parameters+[{'execution_enabled':execute,'mode':mode}]),
             Node(package='lite3_nav',executable='velocity_gate',name='velocity_gate',output='screen',
                  parameters=parameters+[{'drive_output_enabled':drive}]),
-            Node(package='lite3_mission',executable='observations',name='observations',output='screen',parameters=parameters),
-            Node(package='lite3_mission',executable='qr',name='qr',output='screen',parameters=parameters,
+            Node(package='lite3_nav',executable='observations',name='observations',output='screen',parameters=parameters),
+            Node(package='lite3_nav',executable='qr',name='qr',output='screen',parameters=parameters,
                  condition=IfCondition(LaunchConfiguration('qr'))),
-            Node(package='lite3_mission',executable='scene_client',name='scene_client',output='screen',parameters=parameters,
+            Node(package='lite3_nav',executable='scene_client',name='scene_client',output='screen',parameters=parameters,
                  condition=IfCondition(LaunchConfiguration('scene'))),
-            Node(package='lite3_mission',executable='team_qr_adapter',name='team_qr_adapter',output='screen',
+            Node(package='lite3_nav',executable='team_qr_adapter',name='team_qr_adapter',output='screen',
                  parameters=parameters,condition=IfCondition(LaunchConfiguration('team_qr')))]
 
 

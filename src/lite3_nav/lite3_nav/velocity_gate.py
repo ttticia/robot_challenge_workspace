@@ -7,8 +7,8 @@
 #    -> EXPECTED_<k>_NAV2_INPUT_PUBLISHERS_GOT_<n>.
 #  - Optional curtain push input (push_input_enabled, default false): a second command topic used
 #    only by the mission's curtain crossing, gated by its own push lease. See push_permitted().
-#  - core and runtime helpers are imported from the team's lite3_mission package unchanged
-#    (absolute imports instead of relative ones).
+#  - core and runtime helpers come from lite3_nav's own unchanged copies (lite3_nav.core, .runtime)
+#    with absolute imports instead of relative ones.
 """Independent wall-clock command timeout and limiter; hardware output is opt-in."""
 import json
 import math
@@ -21,7 +21,7 @@ from rclpy.qos import DurabilityPolicy,QoSProfile,ReliabilityPolicy
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool, String
-from lite3_mission.core import VelocityLimiter
+from lite3_nav.core import VelocityLimiter
 
 
 class VelocityGate(Node):
@@ -210,7 +210,7 @@ class VelocityGate(Node):
 
 
 def main():
-    from lite3_mission.runtime import initialize
+    from lite3_nav.runtime import initialize
     stop=initialize()
     node=VelocityGate()
     deadline=time.monotonic()

@@ -3,8 +3,18 @@
 # lite3_bringup) provides /odom, odom -> base_link and /scan.
 # Based on origin/navigation src/archive/config/nav2_params.yaml (used on the robot): 2D obstacle
 # layers on /scan only (no voxel layer), Regulated Pure Pursuit, planning through unknown space.
-# Speeds capped at 0.1 m/s and 0.25 rad/s (the velocity gate clamps again); footprint 0.62 x 0.38 m.
+# Speeds capped at 0.1 m/s and 0.25 rad/s (the velocity gate clamps again).
 # Nav2's final output goes to /mission/nav_cmd_vel (remapped in the launch file), never /cmd_vel.
+#
+# Tuned for 0.9 m corridors with ideas from maze_nav (origin/navigation 419f205,
+# config/nav2_params.yaml): Lite3 footprint incl. moving feet 0.64 x 0.46 m set 5 cm behind
+# base_link (0.22 m to each wall in a corridor; farthest corner 0.44 m from base_link, so turning
+# on the spot in a corridor centre just fits); Smac 2D planner keeping to the corridor centre on
+# a rolling global costmap (Humble's Smac segfaulted planning from just off a growing /map);
+# RPP with a short lookahead (corners in 0.9 m corridors) and turning on the spot from 0.6 rad.
+# Inflation 0.3 m / cost_scaling 6 (sim finding): lethal within 0.23 m (inscribed) of a wall,
+# zero cost from 0.3 m, so a 0.9 m corridor keeps a 0.44 m wide plannable lane with a 0.3 m
+# zero-cost middle. 0.45-0.55 m inflation blocked that lane.
 
 bt_navigator:
   ros__parameters:
@@ -76,8 +86,9 @@ controller_server:
     controller_plugins: ["FollowPath"]
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.2
-      movement_time_allowance: 20.0      # slow robot: 0.1 m/s
+      required_movement_radius: 0.15     # maze_nav
+      # Slow robot: a 180 deg turn on the spot at 0.25 rad/s alone takes 12.6 s.
+      movement_time_allowance: 25.0
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: true
@@ -86,23 +97,24 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.1
-      lookahead_dist: 0.5
-      min_lookahead_dist: 0.3
-      max_lookahead_dist: 0.9
+      # Short (maze_nav): pure pursuit cuts corners by about the lookahead.
+      lookahead_dist: 0.35
+      min_lookahead_dist: 0.25
+      max_lookahead_dist: 0.45
       lookahead_time: 1.5
       use_velocity_scaled_lookahead_dist: false
       transform_tolerance: 0.3
       min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 0.6
+      approach_velocity_scaling_dist: 0.4
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.5
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: false
-      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_radius: 0.6
       regulated_linear_scaling_min_speed: 0.05
-      use_rotate_to_heading: true
+      use_rotate_to_heading: true        # quadruped: turn on the spot, then walk
       rotate_to_heading_angular_vel: 0.25
-      rotate_to_heading_min_angle: 0.785
+      rotate_to_heading_min_angle: 0.6   # maze_nav: turn first rather than swing into a wall
       max_angular_accel: 0.5
       allow_reversing: false
       max_robot_pose_search_dist: 10.0
@@ -120,7 +132,8 @@ local_costmap:
       height: 4
       resolution: 0.05
       transform_tolerance: 0.3
-      footprint: "[[0.31, 0.19], [0.31, -0.19], [-0.31, -0.19], [-0.31, 0.19]]"
+      footprint: "[[0.27, 0.23], [0.27, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # feet incl., 5 cm back
+      footprint_padding: 0.0
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -136,8 +149,8 @@ local_costmap:
           raytrace_max_range: 4.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.45
-        cost_scaling_factor: 3.0
+        inflation_radius: 0.3
+        cost_scaling_factor: 6.0
       always_send_full_costmap: true
 
 global_costmap:
@@ -148,10 +161,19 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
+      # Rolling, not sized by /map (maze_nav): the live map ends at about the start pose (lidar
+      # blind behind the robot) and Humble's Smac 2D does not check that the start lies in the
+      # costmap; planning from just off the map edge crashed planner_server and the lifecycle
+      # manager then took all of Nav2 down. The static layer still copies /map in. Goals more
+      # than 10 m (x or y) from the robot are outside this window and fail to plan.
+      rolling_window: true
+      width: 20
+      height: 20
       resolution: 0.05
       transform_tolerance: 0.3
       track_unknown_space: true
-      footprint: "[[0.31, 0.19], [0.31, -0.19], [-0.31, -0.19], [-0.31, 0.19]]"
+      footprint: "[[0.27, 0.23], [0.27, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # feet incl., 5 cm back
+      footprint_padding: 0.0
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -170,20 +192,30 @@ global_costmap:
           raytrace_max_range: 4.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.45
-        cost_scaling_factor: 3.0
+        inflation_radius: 0.3
+        cost_scaling_factor: 6.0
       always_send_full_costmap: true
 
 planner_server:
   ros__parameters:
     use_sim_time: false
-    expected_planner_frequency: 5.0
+    expected_planner_frequency: 1.0
     planner_plugins: ["GridBased"]
     GridBased:
-      plugin: "nav2_navfn_planner/NavfnPlanner"
-      tolerance: 0.5
-      use_astar: false
-      allow_unknown: true   # while mapping, goals border unexplored space
+      plugin: "nav2_smac_planner/SmacPlanner2D"   # maze_nav; was NavFn
+      tolerance: 0.25
+      downsample_costmap: false
+      allow_unknown: true            # while mapping, goals border unexplored space
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      cost_travel_multiplier: 2.0    # keep to the corridor centre
+      use_final_approach_orientation: false
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
 
 smoother_server:
   ros__parameters:

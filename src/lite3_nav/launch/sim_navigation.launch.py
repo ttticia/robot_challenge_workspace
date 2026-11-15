@@ -1,4 +1,4 @@
-"""Run the lite3_nav mission layer (plus the team's unchanged lite3_mission nodes) in the lite3_sim Gazebo simulator.
+"""Run the lite3_nav mission layer in the lite3_sim Gazebo simulator.
 
 ros2 launch lite3_nav sim_navigation.launch.py              # explore arena_1, armed manually
 ros2 launch lite3_nav sim_navigation.launch.py rviz:=false world:=$HOME/arena/arena_2.world

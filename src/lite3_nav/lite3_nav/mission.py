@@ -6,8 +6,14 @@
 #  - Freshness checks (IMU, lifecycle replies, goal timeout) use sim time under use_sim_time,
 #    wall/monotonic time otherwise (unchanged on the robot).
 #  - The 10 Hz tick (and the drive lease it publishes) runs on a steady clock even under sim time.
-#  - core and runtime helpers are imported from the team's lite3_mission package unchanged
-#    (absolute imports instead of relative ones).
+#  - core and runtime helpers come from lite3_nav's own unchanged copies (lite3_nav.core, .runtime)
+#    with absolute imports instead of relative ones.
+#  - START_NOT_CLEAR retry from the nearest clear cell (nearest_clear_start).
+#  - Exit / final cell (lite3_nav.exit_detect, borrowed from maze_nav, origin/navigation 419f205):
+#    explore mode ends as EXITED once the robot is out through the arena opening (or, in any mode,
+#    within final_cell_radius of final_cell_xy): goal cancelled, drive lease dropped, disarmed,
+#    no more goals and no re-arming until relaunch or a mode change. Frontiers on the open floor
+#    beyond the exit are only chosen once nothing else is left (exit_frontiers_last).
 """Nav2 goal coordinator. Shadow mode creates no action client or drive lease."""
 import json
 import math
@@ -31,8 +37,22 @@ from std_msgs.msg import Bool, String
 from std_srvs.srv import SetBool
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from tf2_ros import Buffer, TransformListener, TransformException
-from lite3_mission.core import Grid, relative_goal, select_frontier, yaw_from_quaternion
+from lite3_nav.core import Grid, relative_goal, select_frontier, yaw_from_quaternion
+from scipy.ndimage import distance_transform_edt
+from lite3_nav.exit_detect import ExitDetector, exit_masked_grid, seen_free_clearance
 
+
+def nearest_clear_start(grid, xy, clearance, max_shift=.6):
+    """Closest cell that passes select_frontier's start check, within max_shift metres."""
+    known_free = (grid.data >= 0) & (grid.data <= 25)
+    safe = known_free & (distance_transform_edt(known_free)*grid.resolution > clearance)
+    cells = np.argwhere(safe)
+    if not len(cells):
+        return None
+    points = grid.world(cells[:, ::-1])
+    distance = np.linalg.norm(points-np.asarray(xy), axis=1)
+    i = int(np.argmin(distance))
+    return None if distance[i] > max_shift else (float(points[i][0]), float(points[i][1]))
 
 class Mission(Node):
     def __init__(self,**kwargs):
@@ -45,12 +65,18 @@ class Mission(Node):
                         frontier_clearance_m=.25, frontier_standoff_m=.32, minimum_frontier_size_m=.12,
                         blacklist_duration_sec=30., waypoints=[.5,0.,0.], waypoint_frame='initial_base',
                         map_transient_local=True,maximum_consecutive_failures=3,frontier_yaw_mode='keep_current',
-                        nav2_health_check='lifecycle')
+                        nav2_health_check='lifecycle',
+                        # Exit / final cell (lite3_nav.exit_detect); defaults = maze_nav's.
+                        exit_detection_enabled=True, exit_open_radius=1.1, exit_near_radius=.8,
+                        exit_min_displacement=1.5, exit_enclosed_radius=.7, exit_dwell_sec=2.,
+                        exit_frontiers_last=True, final_cell_xy=[], final_cell_radius=.4)
         immutable = {'execution_enabled','map_topic','map_frame','base_frame','imu_topic','nav_action',
                      'map_transient_local','require_velocity_gate','require_nav2_active','nav2_lifecycle_node',
                      'nav2_health_check'}
         for key,value in defaults.items():
-            self.declare_parameter(key,value,ParameterDescriptor(read_only=key in immutable))
+            # final_cell_xy: empty list (unset) or [x, y]; an empty default has no fixed ROS type.
+            self.declare_parameter(key,value,ParameterDescriptor(read_only=key in immutable,
+                                                                 dynamic_typing=key=='final_cell_xy'))
         result = self.validate([])
         if not result.successful:
             raise ValueError(result.reason)
@@ -68,6 +94,11 @@ class Mission(Node):
         self.cancel_requested = False
         self.goal_started = self.last_preview = self.last_status = 0.
         self.blacklist = []
+        self.exit = ExitDetector()
+        self.exited = False
+        self.run_started = False  # first arming of this mission: the exit test's start pose
+        self.last_exit_check = -math.inf
+        self.clearance_cache = (None, None)  # (grid, seen_free_clearance(grid))
         self.note = 'SHADOW' if not self.execute else 'DISARMED'
         self.buffer = Buffer(cache_time=Duration(seconds=30.))
         self.listener = TransformListener(self.buffer,self)
@@ -146,9 +177,16 @@ class Mission(Node):
                                   ('maximum_tilt_deg',1.,30.),('goal_timeout_sec',5.,600.),
                                   ('nav2_active_timeout_sec',1.,30.),
                                   ('frontier_clearance_m',.1,.6),('frontier_standoff_m',.15,1.),
-                                  ('minimum_frontier_size_m',.04,2.),('blacklist_duration_sec',1.,600.)]:
+                                  ('minimum_frontier_size_m',.04,2.),('blacklist_duration_sec',1.,600.),
+                                  ('exit_open_radius',.5,3.),('exit_near_radius',.2,3.),
+                                  ('exit_min_displacement',0.,20.),('exit_enclosed_radius',.2,2.),
+                                  ('exit_dwell_sec',0.,30.),('final_cell_radius',.1,2.)]:
                 if not low <= float(v(name)) <= high:
                     raise ValueError(name+' outside supported bounds')
+            final=list(v('final_cell_xy'))
+            if final and (len(final)!=2 or any(isinstance(x,(bool,str,bytes)) for x in final)
+                          or not np.isfinite(np.asarray(final,float)).all()):
+                raise ValueError('final_cell_xy must be empty or [x, y] in the map frame')
             if getattr(self,'armed',False) and any(p.name in ('mode','waypoints','waypoint_frame') for p in parameters):
                 raise ValueError('Disarm before changing the mission or waypoint list')
         except (ValueError,TypeError) as exc:
@@ -157,6 +195,9 @@ class Mission(Node):
             self.waypoint_index=0
             self.consecutive_failures=0
             self.anchor=None
+            if hasattr(self,'exit'):  # a new mission: the exit may be found again
+                self.exited=self.run_started=False
+                self.exit.reset()
         return SetParametersResult(successful=True)
 
     def on_map(self,msg):
@@ -223,6 +264,7 @@ class Mission(Node):
         if not reason and self.value('require_nav2_active') and not self.nav2_active():
             reason='NAV2_BT_NAVIGATOR_NOT_ACTIVE'
         if self.pending or self.goal_handle:reason=reason or 'WAIT_FOR_PREVIOUS_GOAL_TO_FINISH_CANCELLING'
+        if self.exited:reason='EXITED: run finished at the exit; relaunch or change mode to run again'
         response.success=reason is None
         response.message=reason or 'Armed; Nav2 goals may now execute'
         if response.success:
@@ -231,6 +273,9 @@ class Mission(Node):
             self.anchor=self.pose
             self.waypoint_index=0
             self.consecutive_failures=0
+            if not self.run_started:  # exit_min_displacement counts from where the run starts;
+                self.exit.reset(self.pose)  # re-arming mid-run keeps it
+                self.run_started=True
             self.note='ARMED'
         return response
 
@@ -244,6 +289,7 @@ class Mission(Node):
             self.goal_handle.cancel_goal_async()
 
     def choose_goal(self):
+        if self.exited:return None,'EXITED'  # the run is over: no goal, no frontier past the exit
         if self.value('mode')=='waypoints':
             values=self.value('waypoints')
             index=3*self.waypoint_index
@@ -253,11 +299,52 @@ class Mission(Node):
             return (relative_goal(self.anchor,goal) if self.value('waypoint_frame')=='initial_base' else goal),'WAYPOINT'
         now=time.monotonic()
         self.blacklist=[(p,until) for p,until in self.blacklist if until>now]
-        goal,state=select_frontier(self.grid,self.pose[:2],self.value('frontier_clearance_m'),
-                               self.value('frontier_standoff_m'),self.value('minimum_frontier_size_m'),
-                               [p for p,until in self.blacklist])
+        # Frontiers on the open floor beyond the exit only once the arena has nothing else left.
+        masked=(exit_masked_grid(self.grid,self.value('exit_open_radius'),self.exit.start or self.pose[:2],
+                                 self.value('exit_min_displacement'),self.clearance())
+                if self.value('exit_detection_enabled') and self.value('exit_frontiers_last') else None)
+        goal,state=self.frontier_on(masked if masked is not None else self.grid)
+        if goal is None and masked is not None:
+            goal,state=self.frontier_on(self.grid)
+            if goal:state='EXIT_FRONTIER'
         if goal and self.value('frontier_yaw_mode')=='keep_current':goal=(goal[0],goal[1],self.pose[2])
         return goal,state
+
+    def frontier_on(self,grid):
+        args=(self.value('frontier_clearance_m'),self.value('frontier_standoff_m'),
+              self.value('minimum_frontier_size_m'),[p for p,until in self.blacklist])
+        goal,state=select_frontier(grid,self.pose[:2],*args)
+        if state=='START_NOT_CLEAR':
+            start=nearest_clear_start(grid,self.pose[:2],args[0])
+            if start is not None:goal,state=select_frontier(grid,start,*args)
+        return goal,state
+
+    def clearance(self):
+        """seen_free_clearance of the current map, computed once per map message."""
+        if self.clearance_cache[0] is not self.grid:
+            self.clearance_cache=(self.grid,seen_free_clearance(self.grid))
+        return self.clearance_cache[1]
+
+    def check_exit(self):
+        """Exit / final-cell test (at most 2 Hz). Returns True once the run has ended there."""
+        if self.exited:return True
+        if self.execute and not self.run_started:return False  # not armed yet: no start pose
+        now=self.sensor_now()
+        if now-self.last_exit_check<.5:return False
+        self.last_exit_check=now
+        explore=self.value('mode')=='explore' and self.value('exit_detection_enabled')
+        final=list(self.value('final_cell_xy'))
+        if not explore and not final:return False
+        e=self.exit
+        e.open_radius,e.near_radius=self.value('exit_open_radius'),self.value('exit_near_radius')
+        e.min_displacement,e.enclosed_radius=self.value('exit_min_displacement'),self.value('exit_enclosed_radius')
+        e.dwell,e.final_cell_radius=self.value('exit_dwell_sec'),self.value('final_cell_radius')
+        e.final_cell_xy=tuple(float(x) for x in final) if final else None
+        if e.update(self.grid,self.pose[:2],now,self.clearance(),open_test=explore):
+            self.exited=True
+            self.get_logger().info(f'EXITED ({e.reason}) at ({self.pose[0]:.2f}, {self.pose[1]:.2f}): '
+                                   'cancelling the goal, holding position, no more goals')
+        return self.exited
 
     def stamped_goal(self,goal):
         msg=PoseStamped()
@@ -333,6 +420,9 @@ class Mission(Node):
         if self.armed and self.value('require_nav2_active') and not self.nav2_active():
             reason=reason or 'NAV2_BT_NAVIGATOR_NOT_ACTIVE'
         if self.armed and reason:self.disarm(reason)
+        if not reason and self.check_exit():
+            if self.armed:self.disarm('EXITED')  # cancels the goal; the lease drops below
+            elif not self.execute:self.note='SHADOW_EXITED'
         if self.armed and (self.pending or self.goal_handle) and sensor_now-self.goal_started>self.value('goal_timeout_sec'):
             self.disarm('GOAL_TIMEOUT')
         # Only a live, accepted goal receives a drive lease. Loss of this process
@@ -353,7 +443,8 @@ class Mission(Node):
             self.last_status=now
             message={'state':reason or self.note,'armed':self.armed,'execution_enabled':self.execute,
                      'active_goal':self.goal if (self.pending or self.goal_handle) else None,
-                     'pose':self.pose,'waypoint_index':self.waypoint_index,'mode':self.value('mode')}
+                     'pose':self.pose,'waypoint_index':self.waypoint_index,'mode':self.value('mode'),
+                     'exited':self.exited,'exit_reason':self.exit.reason or None}
             self.status.publish(String(data=json.dumps(message)))
 
     def lifecycle_result(self,future):
@@ -366,7 +457,7 @@ class Mission(Node):
 
 
 def main():
-    from lite3_mission.runtime import initialize
+    from lite3_nav.runtime import initialize
     stop=initialize()
     node=Mission()
     try:

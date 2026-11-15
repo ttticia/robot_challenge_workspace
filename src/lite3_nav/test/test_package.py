@@ -1,20 +1,35 @@
 """Static checks: no ROS graph needed (rclpy must be importable: source ROS first)."""
 import ast
+import re
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-TEAM = ROOT.parent / 'lite3_mission'
+# Frozen copy of the team's original robot.yaml (lite3_mission main e725625).
+TEAM_ROBOT_YAML = ROOT / 'test' / 'team_robot_e725625.yaml'
 
 
-def test_modules_import_and_use_team_helpers():
-    import lite3_mission.core as core
+def test_modules_import_and_use_own_helpers():
+    import lite3_nav.core as core
     import lite3_nav.mission as mission
     import lite3_nav.velocity_gate as gate
     assert mission.select_frontier is core.select_frontier
     assert gate.VelocityLimiter is core.VelocityLimiter
     assert callable(mission.main) and callable(gate.main)
+
+
+def test_no_lite3_mission_dependency():
+    # Self-contained: no import, launched executable, share lookup, package dependency or
+    # PYTHONPATH entry for lite3_mission. Provenance comments and the observations report
+    # directory (~/.ros/lite3_mission, the team's value) may still name it.
+    pattern = re.compile(r"(import|from)\s+lite3_mission|package=.lite3_mission|"
+                         r"get_package_share_directory\(.lite3_mission|depend>lite3_mission|"
+                         r"\.\./lite3_mission")
+    files = [*ROOT.glob('lite3_nav/*.py'), *ROOT.glob('launch/*.py'), ROOT / 'package.xml',
+             ROOT / 'setup.py', ROOT / 'test' / 'run_tests.sh']
+    for path in files:
+        assert not pattern.search(path.read_text()), path
 
 
 def test_no_relative_imports():
@@ -34,14 +49,30 @@ def flatten(data, prefix=''):
 
 
 def test_robot_yaml_keeps_every_team_value():
-    team = flatten(yaml.safe_load((TEAM / 'config' / 'robot.yaml').read_text()))
+    team = flatten(yaml.safe_load(TEAM_ROBOT_YAML.read_text()))
     ours = flatten(yaml.safe_load((ROOT / 'config' / 'robot.yaml').read_text()))
     assert {k: ours.get(k) for k in team} == team
     assert set(ours) - set(team) == {
         'mission.ros__parameters.nav2_active_timeout_sec',
         'mission.ros__parameters.nav2_health_check',
         'velocity_gate.ros__parameters.output_transient_local',
-        'velocity_gate.ros__parameters.expected_input_publishers'}
+        'velocity_gate.ros__parameters.expected_input_publishers'} | {
+        'mission.ros__parameters.' + k for k in EXIT_KEYS}
+
+
+EXIT_KEYS = ('exit_detection_enabled', 'exit_open_radius', 'exit_near_radius', 'exit_min_displacement',
+             'exit_enclosed_radius', 'exit_dwell_sec', 'exit_frontiers_last', 'final_cell_xy',
+             'final_cell_radius')
+
+
+def test_exit_defaults_match_the_node():
+    import lite3_nav.mission as mission
+    import inspect
+    source = inspect.getsource(mission.Mission.__init__)
+    ours = yaml.safe_load((ROOT / 'config' / 'robot.yaml').read_text())['mission']['ros__parameters']
+    assert ours['final_cell_xy'] == [] and ours['exit_open_radius'] > 0.45  # more than half a 0.9 m corridor
+    for key in EXIT_KEYS:
+        assert key + '=' in source, key
 
 
 def test_sim_yaml_only_overrides_known_nodes():
