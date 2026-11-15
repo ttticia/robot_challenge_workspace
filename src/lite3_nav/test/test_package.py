@@ -57,7 +57,7 @@ def test_robot_yaml_keeps_every_team_value():
         'mission.ros__parameters.nav2_health_check',
         'velocity_gate.ros__parameters.output_transient_local',
         'velocity_gate.ros__parameters.expected_input_publishers'} | {
-        'mission.ros__parameters.' + k for k in EXIT_KEYS}
+        'mission.ros__parameters.' + k for k in EXIT_KEYS if k != 'final_cell_xy'}
 
 
 EXIT_KEYS = ('exit_detection_enabled', 'exit_open_radius', 'exit_near_radius', 'exit_min_displacement',
@@ -70,7 +70,8 @@ def test_exit_defaults_match_the_node():
     import inspect
     source = inspect.getsource(mission.Mission.__init__)
     ours = yaml.safe_load((ROOT / 'config' / 'robot.yaml').read_text())['mission']['ros__parameters']
-    assert ours['final_cell_xy'] == [] and ours['exit_open_radius'] > 0.45  # more than half a 0.9 m corridor
+    # final_cell_xy stays out of the file: an empty list there loads as None, not [].
+    assert 'final_cell_xy' not in ours and ours['exit_open_radius'] > 0.45  # more than half a 0.9 m corridor
     for key in EXIT_KEYS:
         assert key + '=' in source, key
 

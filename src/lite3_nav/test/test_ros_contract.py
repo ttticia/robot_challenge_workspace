@@ -213,6 +213,41 @@ def test_final_cell_ends_the_run_cancels_and_refuses_rearming(context):
         server.destroy()
 
 
+def test_mission_loads_the_real_params_files(context):
+    # Same files, same order as the launch files: robot.yaml, then sim.yaml on top.
+    from pathlib import Path
+    from lite3_nav.mission import Mission
+    config = Path(__file__).resolve().parents[1] / 'config'
+    mission = Mission(cli_args=['--ros-args', '--params-file', str(config / 'robot.yaml'),
+                                '--params-file', str(config / 'sim.yaml')])
+    context.append(mission)
+    assert mission.value('goal_timeout_sec') == 90. and mission.value('nav2_health_check') == 'either'
+    assert list(mission.value('final_cell_xy') or []) == [] and mission.check_exit() is False
+
+
+def test_goal_timeout_blacklists_and_keeps_exploring(context):
+    from rclpy.parameter import Parameter
+    from lite3_nav.mission import Mission
+    mission = Mission(parameter_overrides=[Parameter('mode', value='explore'),
+                                           Parameter('require_imu', value=False)])
+    context.append(mission)
+    cancels = []
+
+    class Handle:
+        def cancel_goal_async(self):
+            cancels.append(True)
+    mission.armed, mission.goal, mission.goal_handle = True, (1., 2., 0.), Handle()
+    epoch = mission.epoch
+    mission.abandon_goal('GOAL_TIMEOUT')
+    assert cancels == [True] and mission.cancel_requested and mission.epoch == epoch + 1
+    assert mission.armed and mission.note == 'GOAL_TIMEOUT' and mission.consecutive_failures == 1
+    assert [p for p, _ in mission.blacklist] == [(1., 2.)]
+    mission.abandon_goal('GOAL_TIMEOUT')  # cancel already requested: not sent twice
+    assert cancels == [True] and mission.armed
+    mission.abandon_goal('GOAL_TIMEOUT')  # third in a row (maximum_consecutive_failures 3)
+    assert not mission.armed and mission.note.startswith('CONSECUTIVE_GOAL_FAILURES')
+
+
 def test_gate_status_names_expected_publisher_count(context):
     import rclpy
     from geometry_msgs.msg import Twist

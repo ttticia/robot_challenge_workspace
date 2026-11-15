@@ -14,6 +14,9 @@
 #    within final_cell_radius of final_cell_xy): goal cancelled, drive lease dropped, disarmed,
 #    no more goals and no re-arming until relaunch or a mode change. Frontiers on the open floor
 #    beyond the exit are only chosen once nothing else is left (exit_frontiers_last).
+#  - GOAL_TIMEOUT no longer ends the run: the stuck goal is cancelled and counted as a failed goal
+#    (explore: blacklisted, next frontier; disarm after maximum_consecutive_failures in a row).
+#  - final_cell_xy loaded as None (an empty list in a params file) counts as unset.
 """Nav2 goal coordinator. Shadow mode creates no action client or drive lease."""
 import json
 import math
@@ -183,7 +186,7 @@ class Mission(Node):
                                   ('exit_dwell_sec',0.,30.),('final_cell_radius',.1,2.)]:
                 if not low <= float(v(name)) <= high:
                     raise ValueError(name+' outside supported bounds')
-            final=list(v('final_cell_xy'))
+            final=list(v('final_cell_xy') or [])  # [] in a params file loads as None
             if final and (len(final)!=2 or any(isinstance(x,(bool,str,bytes)) for x in final)
                           or not np.isfinite(np.asarray(final,float)).all()):
                 raise ValueError('final_cell_xy must be empty or [x, y] in the map frame')
@@ -333,7 +336,7 @@ class Mission(Node):
         if now-self.last_exit_check<.5:return False
         self.last_exit_check=now
         explore=self.value('mode')=='explore' and self.value('exit_detection_enabled')
-        final=list(self.value('final_cell_xy'))
+        final=list(self.value('final_cell_xy') or [])
         if not explore and not final:return False
         e=self.exit
         e.open_radius,e.near_radius=self.value('exit_open_radius'),self.value('exit_near_radius')
@@ -394,6 +397,16 @@ class Mission(Node):
             elif self.goal:self.blacklist.append((self.goal[:2],time.monotonic()+self.value('blacklist_duration_sec')))
         else:self.failed_goal('NAV2_GOAL_FAILED_'+str(status))
 
+    def abandon_goal(self,reason):
+        """Cancel a goal Nav2 is stuck on and count it as a failed goal: in explore mode it is
+        blacklisted and the next frontier tried; disarm after maximum_consecutive_failures."""
+        self.epoch+=1  # the old goal's accepted/finished callbacks are then ignored
+        if self.goal_handle and not self.cancel_requested:
+            self.cancel_requested=True
+            self.goal_handle.cancel_goal_async()
+        self.goal_started=self.sensor_now()  # a still-pending send does not time out again at once
+        self.failed_goal(reason)
+
     def failed_goal(self,reason):
         self.consecutive_failures+=1
         if self.consecutive_failures>=self.value('maximum_consecutive_failures'):
@@ -423,8 +436,9 @@ class Mission(Node):
         if not reason and self.check_exit():
             if self.armed:self.disarm('EXITED')  # cancels the goal; the lease drops below
             elif not self.execute:self.note='SHADOW_EXITED'
-        if self.armed and (self.pending or self.goal_handle) and sensor_now-self.goal_started>self.value('goal_timeout_sec'):
-            self.disarm('GOAL_TIMEOUT')
+        if self.armed and (self.pending or self.goal_handle) and not self.cancel_requested \
+                and sensor_now-self.goal_started>self.value('goal_timeout_sec'):
+            self.abandon_goal('GOAL_TIMEOUT')
         # Only a live, accepted goal receives a drive lease. Loss of this process
         # expires at the independent gate; Nav2 alone cannot keep driving.
         if self.lease:
