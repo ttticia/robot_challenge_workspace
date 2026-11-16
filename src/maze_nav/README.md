@@ -17,7 +17,7 @@ at launch), area clear, operator holding the handheld controller. The launch set
 `/simple_cmd`; the operator sends `lite3_auto` once the log says `gait sent` (`gait:=none` skips the gait), nothing else running SLAM/Nav2 or publishing `/cmd_vel` (`ros2 node list`). Watch
 `/maze/status`. Once it reads `PAUSED`, start the recording (`rec_nav`), then send
 `ros2 topic pub --once /maze/start std_msgs/msg/Empty`; the robot waits for this
-(`wait_for_start:=false` skips it). It then drives 10 cm towards the open frontier (`CREEPING`) and turns 45° left, 90° right and 45° left again (`SCANNING`) before exploring. The run ends with `EXITED`, `NO_EXIT` or `STOPPED`, and the map is saved to
+(`wait_for_start:=false` skips it). It then drives 10 cm straight ahead (`CREEPING`) and turns 45° left, 90° right and 45° left again (`SCANNING`) before exploring. At each junction it faces both ways and saves a picture of each (`~/challenge_ws/logs/junctions/`). The run ends with `EXITED`, `NO_EXIT` or `STOPPED`, and the map is saved to
 `~/challenge_ws/maps/maze_<date>_<time>.{pgm,yaml}` (`latest.yaml` points to the newest).
 
 ## The example maze

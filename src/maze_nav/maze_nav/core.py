@@ -5,6 +5,7 @@
 - choose_frontier: next exploration goal on the SLAM map
 - ExitDetector:    "we were inside narrow corridors and now we are in open space"
 """
+import collections
 from dataclasses import dataclass, field
 import math
 
@@ -13,6 +14,7 @@ from scipy import ndimage
 
 FREE_MAX = 25        # occupancy values 0..FREE_MAX count as free
 OCCUPIED_MIN = 65    # values >= this count as walls
+MAX_GOAL_OFFSET = 0.7  # m: furthest a frontier goal is placed from its frontier
 
 
 # --------------------------------------------------------------------------- wall scan
@@ -50,7 +52,7 @@ def cloud_xyz(data, fields, point_step, row_step, width, height, big_endian=Fals
 
 
 def wall_ranges(points_odom, robot_xy, robot_yaw, floor_z, band, angle_min, angle_inc,
-                n_beams, range_min, range_max):
+                n_beams, range_min, range_max, voxel=0.0, body=None):
     """Flatten a point cloud to a LaserScan that sees maze walls and nothing else.
 
     points_odom: (N, 3) points in a gravity-aligned frame (odom). The height band is measured
@@ -58,6 +60,14 @@ def wall_ranges(points_odom, robot_xy, robot_yaw, floor_z, band, angle_min, angl
     robot's body rises and tilts on ramps, mats and stairs.
     band: (low, high) metres above the floor. Example maze: walls 0..0.45 m, terrain <= 0.15 m,
     stair treads <= 0.26 m, hand rails <= 0.535 m -> (0.30, 0.43) sees walls and rails only.
+    voxel: > 0 thins the wall points to one per voxel x voxel m cell (horizontal grid in
+    odom), keeping the one nearest the robot, so a range is never longer than the nearest
+    real point in that cell.
+    body: (back, front, half_width) m, a box in the robot's frame (x forward from robot_xy,
+    yaw only): points inside are the robot's own legs and body and are dropped. range_min
+    alone (a circle) misses them: the 0.64 x 0.46 m body reaches 0.44 m from base_link, and
+    the hips are ~0.3 m above the floor, inside the wall band. Seen live: the front-right leg
+    marked as a wall during the start scan put the robot "in lethal space" for the planner.
     Returns ranges (n_beams,) with +inf where nothing was hit; beam angles are in the robot's
     heading frame (yaw only).
     """
@@ -70,7 +80,19 @@ def wall_ranges(points_odom, robot_xy, robot_yaw, floor_z, band, angle_min, angl
     if len(p) == 0:
         return ranges
     dx, dy = p[:, 0] - robot_xy[0], p[:, 1] - robot_xy[1]
+    if body is not None:
+        c, s = math.cos(robot_yaw), math.sin(robot_yaw)
+        fx, fy = c * dx + s * dy, -s * dx + c * dy           # robot frame
+        out = ~((fx >= -body[0]) & (fx <= body[1]) & (np.abs(fy) <= body[2]))
+        p, dx, dy = p[out], dx[out], dy[out]
     r = np.hypot(dx, dy)
+    if voxel > 0:
+        cell = np.floor(p[:, :2] / voxel).astype(np.int64)
+        key = (cell[:, 0] << 32) ^ (cell[:, 1] & 0xFFFFFFFF)
+        order = np.argsort(r, kind='stable')                 # nearest first ...
+        _, first = np.unique(key[order], return_index=True)  # ... wins its cell
+        keep_idx = order[first]
+        dx, dy, r = dx[keep_idx], dy[keep_idx], r[keep_idx]
     a = np.arctan2(dy, dx) - robot_yaw
     a = (a - angle_min) % (2 * math.pi)          # wrap into [0, 2pi) from angle_min
     idx = np.floor(a / angle_inc).astype(np.int64)
@@ -101,6 +123,54 @@ def estimate_floor(points_odom, robot_xy, robot_z, expected_drop=0.35, window=0.
     i = int(dense[0])
     near = z[(z >= edges[i] - 0.01) & (z <= edges[i + 1] + 0.01)]
     return float(np.median(near))
+
+
+# base_link above the floor: ~0.35 m standing, ~0.07-0.11 m lying down (robot_info.md §3).
+STANDING_MIN_HEIGHT = 0.25
+LYING_MAX_HEIGHT = 0.18
+
+
+def body_height(points_odom, robot_xy, robot_z):
+    """base_link height above the floor (m) from the cloud, or None if no floor is seen.
+
+    Searches 0.03..0.47 m below base_link, so it finds the floor lying down and standing.
+    """
+    floor = estimate_floor(points_odom, robot_xy, robot_z, expected_drop=0.25, window=0.22)
+    return None if floor is None else robot_z - floor
+
+
+def posture(height):
+    """'standing', 'lying', or None (no measurement, or getting up / sitting down)."""
+    if height is None:
+        return None
+    if height >= STANDING_MIN_HEIGHT:
+        return 'standing'
+    if height <= LYING_MAX_HEIGHT:
+        return 'lying'
+    return None
+
+
+class StandSettle:
+    """Has a standing robot finished getting up? (its height has stopped changing)
+
+    posture() already says 'standing' at 0.25 m, half way up (live run 2026-11-15 09:39:
+    floor measured at 0.27 m, fully up is 0.32-0.36 m). Measuring there makes the floor
+    check compare against the wrong body height. Settled = the last `n` heights are all
+    'standing' and within `tol` of each other.
+    """
+
+    def __init__(self, n=5, tol=0.02):
+        self.heights = collections.deque(maxlen=n)
+        self.tol = tol
+
+    def update(self, height):
+        """Add one height (m, or None = no floor seen). Returns True once settled."""
+        if height is None or posture(height) != 'standing':
+            self.heights.clear()
+            return False
+        self.heights.append(height)
+        return (len(self.heights) == self.heights.maxlen
+                and max(self.heights) - min(self.heights) <= self.tol)
 
 
 # --------------------------------------------------------------------------- grid
@@ -228,11 +298,25 @@ def find_frontiers(grid, robot_xy, robot_radius=0.25, goal_clearance=0.33, min_s
 
     near_unknown = ndimage.binary_dilation(unknown, structure=np.ones((3, 3), bool))
     frontier = free & near_unknown
+    goal_ok = passable & (clear >= goal_clearance) & np.isfinite(dist)
+    if len(blacklist):
+        # A blacklisted point (a reached goal, the creep start) rules out only the frontier
+        # cells around it, not the whole cluster: at startup the unmapped patch behind the
+        # start pose joins up with the real way on along the edge of what the lidar saw,
+        # and dropping that whole cluster ended a live run as NO_EXIT 13 s after the start
+        # (2026-11-15 09:50). MAX_GOAL_OFFSET is the furthest a goal is ever placed
+        # from its frontier, so the frontier that led to a reached goal is always removed.
+        rows, cols = np.indices(free.shape)
+        xs = grid.origin[0] + (cols + 0.5) * res
+        ys = grid.origin[1] + (rows + 0.5) * res
+        for bx, by in blacklist:
+            d2 = (xs - bx) ** 2 + (ys - by) ** 2
+            frontier &= d2 >= max(blacklist_radius, MAX_GOAL_OFFSET) ** 2
+            goal_ok &= d2 >= blacklist_radius ** 2
     labels, n = ndimage.label(frontier, structure=np.ones((3, 3), bool))
     if n == 0:
         return []
 
-    goal_ok = passable & (clear >= goal_clearance) & np.isfinite(dist)
     goal_cells = np.argwhere(goal_ok)                      # (row, col)
     if len(goal_cells) == 0:
         return []
@@ -255,12 +339,10 @@ def find_frontiers(grid, robot_xy, robot_radius=0.25, goal_clearance=0.33, min_s
         anchor = cells[np.argmin(fd)]
         gd = np.hypot(goal_cells[:, 0] - anchor[0], goal_cells[:, 1] - anchor[1]) * res
         j = int(np.argmin(gd))
-        if gd[j] > 0.7:                                    # nowhere to stand near it
+        if gd[j] > MAX_GOAL_OFFSET:                        # nowhere to stand near it
             continue
         g = goal_cells[j]
         goal = grid.world((int(g[1]), int(g[0])))
-        if any(math.hypot(goal[0] - b[0], goal[1] - b[1]) < blacklist_radius for b in blacklist):
-            continue
         c = grid.world((centroid_rc[1], centroid_rc[0]))
         # Face the unknown if it is clearly ahead of the goal, else the direction of travel.
         # (Nav2's goal checker ignores yaw here; this only avoids a pointless last turn.)
@@ -326,6 +408,75 @@ def heading_towards(grid, robot_xy, goal, robot_radius=0.25, lookahead=0.3):
         return straight
     i = np.flatnonzero(ring)[np.argmin(d[rows[ring], cols[ring]])]
     return math.atan2(ys[i] - robot_xy[1], xs[i] - robot_xy[0])
+
+
+def footprint_hits(grid, xy, yaw, box, margin=0.0):
+    """True if the robot's box (back, front, half_width; m, robot frame) plus margin covers
+    an occupied map cell at pose (xy, yaw). Unknown counts as free."""
+    back, front, half = box
+    step = grid.resolution / 2
+    bx, by = np.meshgrid(np.arange(-back - margin, front + margin + 1e-9, step),
+                         np.arange(-half - margin, half + margin + 1e-9, step))
+    c, s = math.cos(yaw), math.sin(yaw)
+    wx = xy[0] + c * bx.ravel() - s * by.ravel()
+    wy = xy[1] + s * bx.ravel() + c * by.ravel()
+    col = np.floor((wx - grid.origin[0]) / grid.resolution).astype(np.int64)
+    row = np.floor((wy - grid.origin[1]) / grid.resolution).astype(np.int64)
+    h, w = grid.data.shape
+    ok = (col >= 0) & (col < w) & (row >= 0) & (row < h)
+    return bool(grid.occupied[row[ok], col[ok]].any())
+
+
+def free_distance_ahead(grid, xy, yaw, box, max_d, margin=0.0, step=0.01):
+    """How far (<= max_d) the box can move straight ahead along yaw before it hits a wall."""
+    d = 0.0
+    while d + step <= max_d + 1e-9:
+        n = d + step
+        if footprint_hits(grid, (xy[0] + n * math.cos(yaw), xy[1] + n * math.sin(yaw)), yaw,
+                          box, margin):
+            return d
+        d = n
+    return max_d
+
+
+def max_turn(grid, xy, yaw, box, direction, limit, margin=0.0, step=math.radians(2)):
+    """Largest turn on the spot (rad, <= limit) towards direction (+1 left, -1 right) whose
+    whole sweep keeps the box clear of walls. 0 if even the first step hits."""
+    a = 0.0
+    while a + step <= limit + 1e-9:
+        n = a + step
+        if footprint_hits(grid, xy, yaw + direction * n, box, margin):
+            return a
+        a = n
+    return limit
+
+
+def find_junction(grid, xy, yaw, frontiers, robot_radius=0.25, max_range=1.5, dist_tol=0.5,
+                  min_angle=math.radians(60), min_separation=0.6):
+    """Two ways on from here, about equally far: the robot is at a junction.
+
+    Looks at the two nearest frontiers (along free space). A junction if both are within
+    max_range, their path lengths differ by <= dist_tol, their goals are >= min_separation
+    apart, and the ways to them leave the robot >= min_angle apart (heading_towards, so a
+    wall between doesn't count as a different direction). Returns
+    [(frontier, heading), (frontier, heading)] ordered so the first needs the smaller turn
+    from yaw, or None.
+    """
+    near = sorted(frontiers, key=lambda f: f.path_length)[:2]
+    if len(near) < 2:
+        return None
+    a, b = near
+    if b.path_length > max_range or b.path_length - a.path_length > dist_tol:
+        return None
+    if math.hypot(a.goal[0] - b.goal[0], a.goal[1] - b.goal[1]) < min_separation:
+        return None
+    ha = heading_towards(grid, xy, a.goal, robot_radius)
+    hb = heading_towards(grid, xy, b.goal, robot_radius)
+    if abs(math.atan2(math.sin(ha - hb), math.cos(ha - hb))) < min_angle:
+        return None
+    turn = lambda h: abs(math.atan2(math.sin(h - yaw), math.cos(h - yaw)))  # noqa: E731
+    ways = [(a, ha), (b, hb)]
+    return sorted(ways, key=lambda w: turn(w[1]))
 
 
 # --------------------------------------------------------------------------- exit

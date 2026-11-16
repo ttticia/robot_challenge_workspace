@@ -11,8 +11,8 @@ Pipeline:
                                                 -> nav_cmd_vel
   cmd_vel_bridge (QoS, clamp, sensor watchdog)  -> /cmd_vel
 
-Before launching: robot STANDING on the start cell (wall_scan measures the floor height at
-startup), operator holding the handheld controller (sends `lite3_auto` once the log says "gait sent"),
+Before launching: robot on the start cell, standing or lying down (auto_stand stands it up;
+wall_scan measures the floor height once it stands), operator holding the handheld controller (sends `lite3_auto` once the log says "gait sent"),
 nothing else publishing /cmd_vel or running SLAM/Nav2 (`ros2 node list`). The launch checks
 the last part itself first (maze_nav/preflight.py) and warns if anything clashes.
 
@@ -22,9 +22,15 @@ Arguments:
   drive:=false     Nav2 runs but nothing reaches /cmd_vel (cmd_vel_bridge preview topic)
   gait:=rug        cmd_vel_bridge sends Move mode + RUG gait (General) once at startup;
                    none = leave the gait alone. Send lite3_auto AFTER "gait sent"
+  perception:=true also start team_perception (robot.launch.py: qr_scanner, human_detector
+                   (YOLO, on this computer), poster_detector); posters:=false = QR codes only
+  auto_stand:=true cmd_vel_bridge sends stand first, ONLY if the lidar shows the robot lying
+                   down (stand is a toggle: a standing robot would sit); false = never
   wait_for_start:=true  hold still once everything is up until
                    `ros2 topic pub --once /maze/start std_msgs/msg/Empty`
-  creep_distance:=0.10  m towards the open frontier after start, onto the SLAM map and off the
+  junction_photos:=true  at a junction (2 frontiers about equally far), face each way and save
+                   a camera picture + JSON in ~/challenge_ws/logs/junctions/run_<time>/
+  creep_distance:=0.10  m straight ahead (no steering) after start, onto the SLAM map and off the
                    back wall (0 = off)
   start_scan:=true turn 45 deg left, 90 right, 45 left after the creep, before exploring
   max_speed:=0.15  band_low:=0.30  band_high:=0.43  floor_z:=nan (measure)
@@ -98,8 +104,25 @@ def preflight(context):
     from maze_nav.preflight import run
     flag = lambda n: LaunchConfiguration(n).perform(context).lower() in ('true', '1')  # noqa: E731
     run(context, flag('bringup'), flag('wait_for_start'),
-        launch.logging.get_logger('maze_nav.preflight'))
+        launch.logging.get_logger('maze_nav.preflight'), perception=flag('perception'))
     return []
+
+
+def perception(context):
+    """team_perception's robot.launch.py (QR codes, posters), if perception:=true."""
+    import launch.logging
+    if LaunchConfiguration('perception').perform(context).lower() not in ('true', '1'):
+        return []
+    try:
+        share = get_package_share_directory('team_perception')
+    except Exception:                               # not built: navigate anyway
+        launch.logging.get_logger('maze_nav').warning(
+            'team_perception not found (colcon build --packages-select team_perception); '
+            'running WITHOUT perception')
+        return []
+    return [IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(share, 'launch', 'robot.launch.py')),
+        launch_arguments={'posters': LaunchConfiguration('posters')}.items())]
 
 
 # What a dead process means for the run, for the banner below.
@@ -116,6 +139,12 @@ DEATH_HINTS = {
     'wall_scan': 'no /wall_scan: SLAM and costmaps get no walls. Ctrl+C.',
     'cmd_vel_bridge': 'nothing reaches /cmd_vel; the robot stops. Ctrl+C.',
     'maze_explorer': 'no more goals; Nav2 finishes the current one. Ctrl+C.',
+    'qr_scanner': 'perception only: no more QR codes. Navigation carries on.',
+    'human_detector': 'perception only: no person boxes, so no more posters. '
+                      'Navigation carries on.',
+    'image_throttle': 'perception only: no images to the external computer, no posters. '
+                      'Navigation carries on.',
+    'poster_detector': 'perception only: no more posters. Navigation carries on.',
 }
 
 
@@ -192,7 +221,7 @@ def generate_launch_description():
                               'default_nav_through_poses_bt_xml': bt_xml}}
 
     def nav2_node(package, executable, remappings=()):
-        return Node(package=package, executable=executable, name=executable, output='screen',
+        return Node(package=package, executable=executable, name=executable, output='both',
                     parameters=[nav2_params, sim_time, extra.get(executable, {})],
                     remappings=list(remappings), arguments=log_args)
 
@@ -209,10 +238,21 @@ def generate_launch_description():
         DeclareLaunchArgument('gait', default_value='rug',
                               description='sent once on /simple_cmd at startup (after Move mode): '
                                           'rug = RUG gait General gear; none = leave it'),
+        DeclareLaunchArgument('perception', default_value='true',
+                              description='also start team_perception robot.launch.py '
+                                          '(QR codes, posters)'),
+        DeclareLaunchArgument('posters', default_value='true',
+                              description='perception: poster detection too (YOLO '
+                                          'human_detector on this computer); '
+                                          'false = QR codes only'),
+        DeclareLaunchArgument('auto_stand', default_value='true',
+                              description='robot lying at launch: send stand once, before gait'),
         DeclareLaunchArgument('wait_for_start', default_value='true',
                               description='hold still once ready until /maze/start (std_msgs/Empty)'),
+        DeclareLaunchArgument('junction_photos', default_value='true',
+                              description='at a junction, face each way and save a picture'),
         DeclareLaunchArgument('creep_distance', default_value='0.10',
-                              description='m towards the open frontier after start; 0 = off'),
+                              description='m straight ahead after start, no steering; 0 = off'),
         DeclareLaunchArgument('start_scan', default_value='true',
                               description='after the creep: turn 45 deg left, 90 right, 45 left (back to the start heading)'),
         DeclareLaunchArgument('max_speed', default_value='0.15',
@@ -255,7 +295,7 @@ def generate_launch_description():
                                                                 'odom_relay.launch.py'])),
             condition=IfCondition(arg('bringup'))),
 
-        Node(package='maze_nav', executable='wall_scan', name='wall_scan', output='screen',
+        Node(package='maze_nav', executable='wall_scan', name='wall_scan', output='both',
              parameters=[sim_time, {
                  'band_low': ParameterValue(arg('band_low'), value_type=float),
                  'band_high': ParameterValue(arg('band_high'), value_type=float),
@@ -263,7 +303,7 @@ def generate_launch_description():
              }]),
 
         Node(package='slam_toolbox', executable='async_slam_toolbox_node', name='slam_toolbox',
-             output='screen', arguments=log_args,
+             output='both', arguments=log_args,
              parameters=[os.path.join(config, 'slam_toolbox.yaml'), sim_time]),
 
         nav2_node('nav2_planner', 'planner_server'),
@@ -273,21 +313,26 @@ def generate_launch_description():
         nav2_node('nav2_velocity_smoother', 'velocity_smoother',
                   [('cmd_vel', 'cmd_vel_nav'), ('cmd_vel_smoothed', 'nav_cmd_vel')]),
         Node(package='nav2_lifecycle_manager', executable='lifecycle_manager',
-             name='lifecycle_manager_navigation', output='screen', arguments=log_args,
+             name='lifecycle_manager_navigation', output='both', arguments=log_args,
              parameters=[{'autostart': True, 'node_names': NAV2_NODES,
                           'bond_timeout': 10.0}, sim_time]),
 
         Node(package='maze_nav', executable='cmd_vel_bridge', name='cmd_vel_bridge',
-             output='screen',
+             output='both',
              parameters=[sim_time, {'drive': ParameterValue(arg('drive'), value_type=bool),
-                                    'gait': arg('gait')}]),
+                                    'gait': arg('gait'),
+                                    'auto_stand': ParameterValue(arg('auto_stand'),
+                                                                 value_type=bool)}]),
+
+        OpaqueFunction(function=perception),
 
         Node(package='maze_nav', executable='maze_explorer', name='maze_explorer',
-             output='screen',
+             output='both',
              parameters=[sim_time, {
                  'go': ParameterValue(arg('go'), value_type=bool),
                  'wait_for_start': ParameterValue(arg('wait_for_start'), value_type=bool),
                  'map_dir': arg('map_dir'),
+                 'junction_photos': ParameterValue(arg('junction_photos'), value_type=bool),
                  'creep_distance': ParameterValue(arg('creep_distance'), value_type=float),
                  'start_scan': ParameterValue(arg('start_scan'), value_type=bool),
              }]),

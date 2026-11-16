@@ -41,6 +41,8 @@ NODES = {'slam_toolbox', 'planner_server', 'controller_server', 'behavior_server
          'bt_navigator', 'velocity_smoother', 'lifecycle_manager_navigation',
          'maze_explorer', 'wall_scan', 'cmd_vel_bridge', 'twist_mux'}
 BRINGUP_NODES = {'laser_mapping', 'odom_relay'}
+# team_perception (perception:=true): a second copy would report every QR code twice
+PERCEPTION_NODES = {'qr_scanner', 'human_detector', 'image_throttle', 'poster_detector'}
 
 
 def _name(path):
@@ -110,10 +112,11 @@ def local_conflicts(bringup=True):
     return sorted(out)
 
 
-def graph_conflicts(node, bringup=True, wait=2.0):
+def graph_conflicts(node, bringup=True, wait=2.0, perception=False):
     """Clashing /cmd_vel publishers and node names on the ROS network."""
     time.sleep(wait)                                # DDS discovery
-    names = NODES | (BRINGUP_NODES if bringup else set())
+    names = (NODES | (BRINGUP_NODES if bringup else set())
+             | (PERCEPTION_NODES if perception else set()))
     out = []
     for info in node.get_publishers_info_by_topic('/cmd_vel'):
         out.append(f'/cmd_vel publisher: {info.node_namespace.rstrip("/")}/{info.node_name}')
@@ -123,12 +126,13 @@ def graph_conflicts(node, bringup=True, wait=2.0):
     return sorted(set(out))
 
 
-def run(context, bringup, wait_for_start, logger):
+def run(context, bringup, wait_for_start, logger, perception=False):
     """Log a warning listing everything that clashes. Returns True if anything did."""
     lines = [f'  pid {pid}: {what}  ({cmd[:110]})' for pid, what, cmd in local_conflicts(bringup)]
     try:
         from launch_ros.ros_adapters import get_ros_node
-        lines += [f'  {g}' for g in graph_conflicts(get_ros_node(context), bringup)]
+        found = graph_conflicts(get_ros_node(context), bringup, perception=perception)
+        lines += [f'  {g}' for g in found]
     except Exception as e:                          # never block a launch on the check itself
         logger.warning(f'preflight: ROS graph check skipped ({e})')
     if not lines:

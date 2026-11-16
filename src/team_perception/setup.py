@@ -18,14 +18,15 @@ setup(
     zip_safe=True,
     maintainer='ngtri',
     maintainer_email='ng.tricia2005@gmail.com',
-    description='Onboard robot build of team_perception: QR scanner, poster detector and '
-                'the image throttle feeding the external YOLO computer.',
+    description='Robot perception for the Lite3: QR scanner, YOLO person detector and '
+                'poster detector, all on the robot computer.',
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
             'qr_scanner = team_perception.qr_scanner_node:main',
             'image_throttle = team_perception.image_throttle_node:main',
             'poster_detector = team_perception.poster_detector_node:main',
+            'human_detector = team_perception.human_detector_node:main',
         ],
     },
 )

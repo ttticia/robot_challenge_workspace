@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
-# Install everything the ONBOARD package (qr_scanner, poster_detector, image_throttle) needs,
+# Install everything team_perception (qr_scanner, human_detector, poster_detector) needs,
 # on the robot computer (Ubuntu 22.04, ROS 2 Humble already installed).
 #
-#     bash install_deps.sh            # apt (asks for sudo) + pip
-#     bash install_deps.sh --no-apt   # pip only (apt packages already installed)
+#     bash install_deps.sh            # apt (asks for sudo) + CPU torch + pip + YOLO weights
+#     bash install_deps.sh --no-apt   # skip apt (packages already installed)
 #
+# The torch and weights downloads need internet once; after that everything runs offline.
 # Then build from the workspace root:  colcon build --packages-select team_perception
 set -euo pipefail
 cd "$(dirname "$0")"
+
+APT=1
+for arg in "$@"; do
+    case "$arg" in
+        --no-apt) APT=0 ;;
+        *) echo "unknown option: $arg" >&2; exit 1 ;;
+    esac
+done
 
 APT_PKGS=(
     ros-humble-cv-bridge ros-humble-tf2-ros ros-humble-tf2-geometry-msgs
@@ -16,21 +25,39 @@ APT_PKGS=(
     python3-pyzbar libzbar0       # QR fallback decoder (Humble's OpenCV has no QUIRC)
     python3-pip
 )
+TORCH=(torch==2.14.1 torchvision==0.29.2)
 
-if [[ "${1:-}" != "--no-apt" ]]; then
+if [[ $APT == 1 ]]; then
     echo ">> apt: ${APT_PKGS[*]}"
     sudo apt-get update
     sudo apt-get install -y "${APT_PKGS[@]}"
 fi
 
+# The robot computer has no CUDA GPU (robot_info.md): CPU build, ~200 MB instead of GBs.
+echo ">> pip: ${TORCH[*]} (CPU build)"
+pip3 install --user "${TORCH[@]}" --index-url https://download.pytorch.org/whl/cpu
+
 echo ">> pip: requirements.txt"
 pip3 install --user -r requirements.txt
 
-echo ">> checking imports"
-python3 - <<'EOF'
+# torch pulls in a pip setuptools that breaks colcon on Humble (_distribution_fullname);
+# removing it restores the apt version.
+echo ">> removing pip setuptools (keeps colcon working)"
+pip3 uninstall -y setuptools || true
+
+echo ">> checking imports, YOLO weights -> ~/.cache/team_perception/yolo11n.pt"
+python3 - <<'PY'
+import os
 import cv2, numpy, zxingcpp
 from pyzbar import pyzbar
 assert int(numpy.__version__.split('.')[0]) < 2, 'numpy must be < 2 for Humble cv_bridge'
-print(f'OK: opencv {cv2.__version__}, numpy {numpy.__version__}, zxing-cpp, pyzbar')
-EOF
+d = os.path.expanduser('~/.cache/team_perception')
+os.makedirs(d, exist_ok=True)
+os.chdir(d)                      # ultralytics downloads bare names into the current folder
+import torch
+from ultralytics import YOLO
+YOLO('yolo11n.pt')
+print(f'OK: opencv {cv2.__version__}, numpy {numpy.__version__}, zxing-cpp, pyzbar, '
+      f'torch {torch.__version__}, weights in {d}')
+PY
 echo ">> done. Build: cd <workspace> && colcon build --packages-select team_perception"

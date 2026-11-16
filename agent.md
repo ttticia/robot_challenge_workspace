@@ -51,9 +51,9 @@ source install/setup.bash
 On the robot computer, `~/.bashrc` already sources all of these and sets
 `ROS_DOMAIN_ID=4`. It also defines the `lite3_auto` and `lite3_manual` aliases (section 7).
 
-This workspace holds only the **onboard** half of perception. YOLO person detection
-(`human_detector`) runs on a separate external computer from the `team_perception_external`
-package (Robot-Dog-Grp4 repo, `challenge_files/external/`), which is not in this workspace.
+All of perception runs on the robot computer, YOLO person detection (`human_detector`)
+included. `human_detector` was pulled into `team_perception` from the
+`team_perception_external` package (Robot-Dog-Grp4 repo, `challenge_files/external/`).
 
 ## 3. Packages in this repository
 
@@ -62,7 +62,7 @@ challenge_ws/
 ├── agent.md                  ← this file
 ├── src/
 │   ├── maze_nav/             maze traversal: wall scan + SLAM + Nav2 + frontier explorer
-│   └── team_perception/      onboard perception: QR scanner, poster detector, image throttle
+│   └── team_perception/      perception: QR scanner, YOLO person detector, poster detector
 ├── maps/                     maps saved by maze_nav (created on first run, git-ignored)
 ├── ROS_bags/                 rosbag recordings + ROSBAG_GUIDE.md (bags git-ignored, never commit)
 ├── hardware_testing/, recordings/, runs/   logs from earlier hardware sessions
@@ -77,8 +77,8 @@ ros2 launch maze_nav maze_nav.launch.py go:=false  # goals on /maze/goal only, r
 ```
 
 The robot holds still (`/maze/status` = `PAUSED`) until
-`ros2 topic pub --once /maze/start std_msgs/msg/Empty`. Start `rec_nav` before sending it.
-Then it drives 10 cm towards the open frontier (`CREEPING`) and turns 45° left, 90° right, 45° left (`SCANNING`) before the first Nav2 goal.
+`ros2 topic pub --once /maze/start std_msgs/msg/Empty`. Start `rec_maze` before sending it.
+Then it drives 10 cm straight ahead (`CREEPING`) and turns 45° left, 90° right, 45° left (`SCANNING`) before the first Nav2 goal.
 
 Explores with `slam_toolbox` + Nav2 until there is open floor next to the robot, then stops.
 `/maze/status` ends as `EXITED`, `NO_EXIT` or `STOPPED`, and the map is saved to `maps/`. It uses its own
@@ -86,10 +86,10 @@ Explores with `slam_toolbox` + Nav2 until there is open floor next to the robot,
 0.45 m tall, and the lab `/scan` starts at ~0.45 m. A simulator of the example maze is in
 `src/maze_nav/test/fake_maze_lite3.py`. Details: `src/maze_nav/README.md`.
 
-### `team_perception`: perception (onboard build)
+### `team_perception`: perception (all on the robot)
 
 ```bash
-ros2 launch team_perception robot.launch.py                 # all three nodes
+ros2 launch team_perception robot.launch.py                 # qr_scanner, human_detector, poster_detector
 ros2 launch team_perception robot.launch.py posters:=false  # QR scanner only
 ros2 launch team_perception robot.launch.py --show-args     # every topic name is an argument
 ```
@@ -97,12 +97,11 @@ ros2 launch team_perception robot.launch.py --show-args     # every topic name i
 | Executable | Subscribes | Publishes |
 |---|---|---|
 | `qr_scanner` | `/camera/color/image_raw/compressed`, `/camera/color/camera_info`, `/camera/depth/image_raw` + `/camera/depth/camera_info` (unaligned depth, mapped in software) | `/qr/detections` (String JSON, once per new code), `/found` (`QR found`) |
-| `image_throttle` | `/camera/color/image_raw/compressed` | `/camera/color/image_offboard/compressed` (10 Hz, for the external computer) |
-| `poster_detector` | `/humans/detections` (from the external computer), depth + camera_info, `/map`, TF | `/posters/detections` (String JSON), `/found` (`Human found`) |
+| `human_detector` | `/camera/color/image_raw/compressed` | `/humans/detections` (String JSON person boxes, YOLO at ≤ 5 Hz, 2 torch threads, ~0.5 core) |
+| `poster_detector` | `/humans/detections`, depth + camera_info, `/map`, TF | `/posters/detections` (String JSON), `/found` (`Human found`) |
 
-Person boxes come from `human_detector` on the external computer; without it there are no
-poster detections, but QR scanning still works (setup: `external_computer_checklist.md`).
-Only the throttled JPEG stream and `/humans/detections` cross the network. Inputs, requirements and what works with less data:
+`offboard:=true` runs `image_throttle` instead of `human_detector`, for YOLO on an external
+computer (`external_computer_checklist.md`). Inputs, requirements and what works with less data:
 `src/team_perception/data_required.md`. Snapshots and CSV logs go to `~/qr_logs/` and
 `~/poster_logs/`. Recording guide: `ROS_bags/ROSBAG_GUIDE.md`.
 
@@ -152,9 +151,8 @@ Only the throttled JPEG stream and `/humans/detections` cross the network. Input
 ### Perception
 
 `/qr/detections`, `/posters/detections` (JSON in `std_msgs/String`), `/found` (plain
-`QR found` / `Human found`), `/camera/color/image_offboard/compressed` (to the external
-computer), `/humans/detections` (from the external computer). The onboard nodes publish no
-debug images.
+`QR found` / `Human found`), `/humans/detections` (person boxes from `human_detector`).
+The perception nodes publish no debug images.
 
 ### TF tree
 
@@ -255,6 +253,7 @@ runs a preset in `ROS_bags/record.sh`. Full guide: `ROS_bags/ROSBAG_GUIDE.md`.
 ```bash
 rec_full <run_name>      # teleop, everything incl. depth (Ctrl+C to stop)
 rec_nav                  # autonomous run, no depth; name defaults to nav_<date>_<time>
+rec_maze                 # full maze_nav run (nav + perception + explorer topics), no depth
 rec_list                 # all presets: perception, detections, navdebug, lidar, video
 rec_last                 # ros2 bag info for the newest bag
 python3 ~/bag_to_video.py ~/challenge_ws/ROS_bags/<run_name>   # bag -> mp4, see ROSBAG_GUIDE §4

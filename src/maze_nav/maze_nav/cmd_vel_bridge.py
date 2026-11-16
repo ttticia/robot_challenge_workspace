@@ -15,6 +15,11 @@ Nav2 can't talk to the robot directly, so this glue stays:
   General gear, 0x21010401; robot_info.md §6.3), each once. `none` or drive:=false: nothing
   is sent. The operator sends lite3_auto AFTER this ("gait sent" in the log): the documented
   order is gait request, then auto mode. There is no gait feedback; watch the robot.
+- Auto stand (auto_stand:=true): before the gait, if wall_scan's /maze/body_height says the
+  robot is LYING DOWN, sends stand (0x21010202) once and waits until it stands (stand_timeout).
+  0x21010202 is a stand/sit TOGGLE: sent to a standing robot it sits down, so it is never sent
+  when the robot already stands or its posture is unknown (no height within stand_wait, e.g.
+  floor_z given). Runs at launch, before the explorer waits for /maze/start.
 """
 import signal
 import threading
@@ -29,11 +34,15 @@ from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityP
                        qos_profile_sensor_data)
 from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import PointCloud2
+from std_msgs.msg import Float32
+
+from maze_nav.core import posture
 
 HARD_MAX_V = 0.25   # m/s, team limit
 HARD_MAX_W = 0.5    # rad/s, team limit
 
 MOVE_MODE = 0x21010D06
+STAND_TOGGLE = 0x21010202   # stand <-> sit; only ever sent to a robot measured lying down
 GAITS = {'rug': 0x21010401, 'none': None}   # robot_info.md §6.3; H-Step left out on purpose
 
 
@@ -56,6 +65,9 @@ class CmdVelBridge(Node):
         p('odom_topic', '/odom')
         p('gait', 'rug')                # sent once at startup; 'none' = leave the gait alone
         p('gait_wait', 20.0)            # s to wait for a /simple_cmd subscriber before giving up
+        p('auto_stand', True)           # lying at launch -> send stand once (see module doc)
+        p('stand_wait', 30.0)           # s from start to get a posture before giving up (not sent)
+        p('stand_timeout', 15.0)        # s after stand was sent to be standing, else no gait
         get = lambda name: self.get_parameter(name).value  # noqa: E731
         self.max_v = min(abs(get('max_linear')), HARD_MAX_V)
         self.max_w = min(abs(get('max_angular')), HARD_MAX_W)
@@ -69,12 +81,17 @@ class CmdVelBridge(Node):
                          lifespan=Duration(seconds=0.3))
         self.pub = self.create_publisher(Twist, out_topic, qos)
         self.create_subscription(Twist, get('input_topic'), self.on_cmd, 10)
+        # raw=True: the watchdog only needs "a cloud arrived", so don't decode each cloud
+        # into a Python message (a small saving; the sim showed no measurable change).
         self.create_subscription(PointCloud2, get('cloud_topic'),
-                                 lambda _: self.mark('cloud'), qos_profile_sensor_data)
+                                 lambda _: self.mark('cloud'), qos_profile_sensor_data,
+                                 raw=True)
         self.create_subscription(Odometry, get('odom_topic'), lambda _: self.mark('odom'), 10)
         self.create_timer(0.1, self.watchdog)
         self.gait_steps = []
-        self.setup_gait(get('gait'), get('drive'), get('gait_wait'))
+        self.stand = 'done'      # 'check' -> ('rising') -> 'done'
+        self.setup_gait(get('gait'), get('drive'), get('gait_wait'), get('auto_stand'),
+                        get('stand_wait'), get('stand_timeout'))
 
         self.seen = {'cloud': None, 'odom': None}
         self.last_cmd = 0.0
@@ -85,21 +102,33 @@ class CmdVelBridge(Node):
             f"({'DRIVING' if get('drive') else 'DRY RUN'}), "
             f'limits {self.max_v} m/s, {self.max_w} rad/s')
 
-    def setup_gait(self, gait, drive, wait):
+    def setup_gait(self, gait, drive, wait, auto_stand, stand_wait, stand_timeout):
         if gait not in GAITS:
             self.get_logger().error(f'gait {gait!r} unknown (one of {sorted(GAITS)}); not sent')
-            return
-        if GAITS[gait] is None:
+            gait = 'none'
+        what = ' + '.join((['stand'] if auto_stand else [])
+                          + ([f'gait {gait}'] if GAITS[gait] is not None else []))
+        if not what:
             return
         if not drive:
-            self.get_logger().info(f'DRY RUN: gait {gait} not sent')
+            self.get_logger().info(f'DRY RUN: {what} not sent')
             return
         try:
             from transfer_interfaces.msg import MotionSimpleCMD
         except ImportError:
             self.get_logger().warn('transfer_interfaces not found (source ~/lite3_ws); '
-                                   f'gait {gait} not sent')
+                                   f'{what} not sent')
             return
+        if auto_stand:
+            self.stand = 'check'
+            self.height = None
+            self.stand_check_deadline = time.monotonic() + stand_wait
+            self.stand_timeout = stand_timeout
+            latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                                 durability=DurabilityPolicy.TRANSIENT_LOCAL)
+            self.height_sub = self.create_subscription(
+                Float32, '/maze/body_height', lambda m: setattr(self, 'height', m.data),
+                latched)
         self.simple_cmd = MotionSimpleCMD
         qos = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
                          reliability=ReliabilityPolicy.RELIABLE,
@@ -107,34 +136,87 @@ class CmdVelBridge(Node):
                          lifespan=Duration(seconds=1.0))
         self.simple_pub = self.create_publisher(MotionSimpleCMD, '/simple_cmd', qos)
         self.gait_name = gait
-        self.gait_steps = [('Move mode', MOVE_MODE), (f'gait {gait}', GAITS[gait])]
+        if GAITS[gait] is not None:
+            self.gait_steps = [('Move mode', MOVE_MODE), (f'gait {gait}', GAITS[gait])]
+        self.what = what
         self.gait_deadline = time.monotonic() + wait
         self.gait_next = 0.0
         self.gait_timer = self.create_timer(0.2, self.gait_tick)
-        self.get_logger().info(f'gait {gait}: waiting for the robot bridge on /simple_cmd')
+        self.get_logger().info(f'{what}: waiting for the robot bridge on /simple_cmd')
+
+    def send_simple(self, name, code):
+        self.simple_pub.publish(self.simple_cmd(cmd_code=code, size=0, type=0))
+        self.get_logger().info(f'sent {name} (0x{code:08X}) on /simple_cmd')
+
+    def stand_tick(self, now):
+        """Auto stand; True once it's done (whatever the outcome) and the gait may follow."""
+        h = self.height
+        state = posture(h)
+        if self.stand == 'check':
+            if state == 'standing':
+                self.get_logger().info(f'robot already standing (base_link {h:.2f} m above '
+                                       'the floor): stand not sent')
+                self.stand = 'done'
+            elif state == 'lying':
+                self.get_logger().warn(f'robot LYING DOWN (base_link {h:.2f} m above the '
+                                       'floor): standing it up')
+                self.send_simple('stand', STAND_TOGGLE)
+                self.stand = 'rising'
+                self.stand_deadline = now + self.stand_timeout
+            elif now > self.stand_check_deadline:
+                why = ('no /maze/body_height from wall_scan' if h is None else
+                       f'base_link {h:.2f} m above the floor, neither lying nor standing')
+                self.get_logger().warn(f'posture unknown ({why}): stand NOT sent (stand it '
+                                       'with the handheld controller)')
+                self.stand = 'done'
+            return self.stand == 'done'
+        # rising
+        if state == 'standing':
+            self.get_logger().info(f'robot standing (base_link {h:.2f} m above the floor)')
+            self.stand = 'done'
+            self.gait_next = now + 1.0                  # let it settle before Move mode
+            return True
+        if now > self.stand_deadline:
+            self.get_logger().error(
+                f'stand sent but the robot is not standing after {self.stand_timeout:.0f} s '
+                f'(base_link {"?" if h is None else f"{h:.2f}"} m above the floor): gait NOT '
+                'sent. Check the robot; stand it with the handheld controller')
+            self.stand = 'done'
+            self.gait_steps = []
+            return True
+        return False
 
     def gait_tick(self):
         now = time.monotonic()
-        if not self.gait_steps:
-            return
         if self.simple_pub.get_subscription_count() == 0:
             # lite3_domain_bridge_4 subscribes only after it sees a publisher (robot_info §6.3)
             if now > self.gait_deadline:
-                self.get_logger().warn(f'no subscriber on /simple_cmd; gait {self.gait_name} '
-                                       'NOT sent (set it on the handheld controller)')
-                self.gait_steps = []
-                self.gait_timer.cancel()
+                self.get_logger().warn(f'no subscriber on /simple_cmd; {self.what} NOT sent '
+                                       '(use the handheld controller)')
+                self.finish_gait()
+            return
+        if self.stand != 'done' and not self.stand_tick(now):
+            return
+        if not self.gait_steps:
+            self.finish_gait()
             return
         if now < self.gait_next:
             return
         name, code = self.gait_steps.pop(0)
-        self.simple_pub.publish(self.simple_cmd(cmd_code=code, size=0, type=0))
-        self.get_logger().info(f'sent {name} (0x{code:08X}) on /simple_cmd')
+        self.send_simple(name, code)
         self.gait_next = now + 1.0                  # one command at a time
         if not self.gait_steps:
             self.get_logger().info(f'gait sent ({self.gait_name}); the operator can now send '
                                    'lite3_auto')
-            self.gait_timer.cancel()
+            self.finish_gait()
+
+    def finish_gait(self):
+        self.gait_steps = []
+        self.stand = 'done'
+        self.gait_timer.cancel()
+        if getattr(self, 'height_sub', None) is not None:
+            self.destroy_subscription(self.height_sub)
+            self.height_sub = None
 
     def mark(self, name):
         self.seen[name] = time.monotonic()

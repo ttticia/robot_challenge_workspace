@@ -8,6 +8,7 @@
 # Presets:
 #   full        teleop, everything incl. depth          (guide 2.1, groups A-G)
 #   nav         Nav2 driving, everything except depth   (guide 2.2, groups A, B, D-G)
+#   maze        full maze_nav run: nav + explorer topics (guide 2.2, groups A, B, D-H)
 #   perception  QR / poster replay, incl. depth         (guide 2.3, groups A, B, C, E, G)
 #   detections  perception results only, small bag      (guide 2.3 small variant)
 #   navdebug    why it moved/stopped/turned             (guide 2.4)
@@ -38,11 +39,13 @@ D="/livox/points /livox/lidar /livox/imu /imu/data /leg_odom2"
 E="/odom /scan /map"
 F="/plan /cmd_vel_nav /cmd_vel_smoothed /nav_cmd_vel /cmd_vel /simple_cmd /handle_state"
 G="/found /qr/detections /posters/detections /humans/detections /camera/color/image_offboard/compressed"
+H="/maze/status /maze/goal /wall_scan"
 
 preset_topics() {
   case "$1" in
     full)       echo "$A $B $C $D $E $F $G" ;;
     nav)        echo "$A $B $D $E $F $G" ;;
+    maze)       echo "$A $B $D $E $F $G $H" ;;
     perception) echo "$A /map $B $C $G" ;;
     detections) echo "$A /map /camera/color/camera_info $G" ;;
     navdebug)   echo "$A /livox/points /odom /scan /map /leg_odom2 $F" ;;
@@ -51,7 +54,7 @@ preset_topics() {
     *)          return 1 ;;
   esac
 }
-PRESETS="full nav perception detections navdebug lidar video"
+PRESETS="full nav maze perception detections navdebug lidar video"
 
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 

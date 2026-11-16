@@ -11,6 +11,7 @@ _REC=~/challenge_ws/ROS_bags/record.sh
 
 alias rec_full="$_REC full"              # teleop, everything incl. depth
 alias rec_nav="$_REC nav"                # Nav2 driving, no depth
+alias rec_maze="$_REC maze"              # full maze_nav run: nav + perception + explorer, no depth
 alias rec_perception="$_REC perception"  # QR / poster replay, incl. depth
 alias rec_detections="$_REC detections"  # perception results only, small
 alias rec_navdebug="$_REC navdebug"      # lidar, localization, velocity chain

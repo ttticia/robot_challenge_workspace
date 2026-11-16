@@ -48,10 +48,11 @@ of [record.sh](record.sh); change topics there.
 | **E. Localization and map** | `/odom`, `/scan`, `/map` | 10 Hz, `/map` occasional | Positions in `map`, the static-map poster test, Nav2 replay. `/map` needs the QoS override below |
 | **F. Navigation and commands** | `/plan`, `/cmd_vel_nav`, `/cmd_vel_smoothed`, `/nav_cmd_vel`, `/cmd_vel`, `/simple_cmd`, `/handle_state` | ≤ 20 Hz | Why the robot moved or didn't: planner → controller → smoother → collision_monitor → bridge |
 | **G. Perception results** | `/found`, `/qr/detections`, `/posters/detections`, `/humans/detections`, `/camera/color/image_offboard/compressed` | small | What the robot decided live. Shows a link failure apart from a logic failure |
+| **H. Maze explorer** | `/maze/status`, `/maze/goal`, `/wall_scan` | small | What `maze_nav`'s explorer was doing (state, current frontier goal, wall slice fed to SLAM) |
 
-Groups E–G only have messages while the matching launch is running: `/tf` to `map`, `/odom`,
-`/scan` and `/map` need Fast-LIO and `slam_toolbox` (from `lite3_launcher`); group F needs
-Nav2; group G needs the perception launch. `/tf` is **empty without
+Groups E–H only have messages while the matching launch is running: `/tf` to `map`, `/odom`,
+`/scan` and `/map` need Fast-LIO and `slam_toolbox` (from `lite3_launcher` or `maze_nav`); group F needs
+Nav2; group G needs the perception launch; group H needs `maze_nav`. `/tf` is **empty without
 Fast-LIO**. Start those before recording (see the checks below).
 
 **Don't record:** `/camera/color/image_raw` (uncompressed colour) or `/camera/depth/points`
@@ -133,7 +134,8 @@ press **Ctrl+C** to stop:
 | Run | Alias | Groups | Depth? | Section |
 |---|---|---|---|---|
 | Teleop, record everything | `rec_full` | A–G | yes | [2.1](#21-full-run-teleop-rec_full) |
-| Nav2 / `maze_nav` driving | `rec_nav` | A, B, D–G | **no** | [2.2](#22-autonomous-run-rec_nav) |
+| Full `maze_nav` run: navigation + perception | `rec_maze` | A, B, D–H | **no** | [2.2](#22-autonomous-run-rec_nav-rec_maze) |
+| Nav2 driving (not `maze_nav`) | `rec_nav` | A, B, D–G | **no** | [2.2](#22-autonomous-run-rec_nav-rec_maze) |
 | Debug posters / QR | `rec_perception` | A, B, C, E, G | yes | [2.3](#23-perception-debug-rec_perception-rec_detections) |
 | Check detections only (small) | `rec_detections` | A, `/map`, G | no | [2.3](#23-perception-debug-rec_perception-rec_detections) |
 | Debug navigation (why it stopped or turned) | `rec_navdebug` | A, lidar, E, F | no | [2.4](#24-navigation-debug-rec_navdebug) |
@@ -184,14 +186,80 @@ edit the command.
 
 Everything, for replaying navigation and perception together. Teleop only, because of depth.
 
-#### 2.2 Autonomous run: `rec_nav`
+#### 2.2 Autonomous run: `rec_nav`, `rec_maze`
 
 The same as `rec_full` without depth, so the lidar isn't delayed and collision_monitor
-doesn't stop the robot.
+doesn't stop the robot. Navigation and perception are recorded together in one bag: lidar,
+localization, map, plan and velocity chain, plus the colour camera and every detection.
+`rec_maze` is `rec_nav` plus the `maze_nav` explorer topics (group H); use it for maze runs.
 
 Untested whether this keeps the lidar lag under 0.5 s. Check during the recording with
 `ros2 topic delay /livox/points` (should stay around 0.1–0.3 s). If it doesn't, use
 `rec_navdebug` instead, which leaves out the camera and the raw lidar/IMU.
+
+##### Full maze run, step by step
+
+A complete challenge run: `maze_nav` drives, perception reports codes and posters, and one bag
+records it all. Use three terminals on the robot computer.
+
+1. **Terminal 1: start navigation.** Do the clash checks in
+   [nav_launch.md](../src/maze_nav/nav_launch.md) section 1 first. Perception, YOLO included,
+   runs on the robot ([launch_guide.md](../src/team_perception/launch_guide.md)).
+   ```bash
+   cd ~/challenge_ws && source install/setup.bash
+   ros2 launch maze_nav maze_nav.launch.py        # also starts perception (perception:=true)
+   ```
+   Wait until `/maze/status` reads `PAUSED`: `ros2 topic echo /maze/status`. The operator
+   sends `lite3_auto` once the log says `gait sent`.
+
+2. **Terminal 2: start recording.** Start it after `PAUSED`, so that SLAM, TF to `map` and
+   `/map` are up, and **before** `/maze/start`:
+   ```bash
+   rec_maze maze_run1
+   ```
+   Don't use `rec_full` or `rec_perception` here (raw depth stalls Nav2; both refuse to start
+   anyway).
+
+3. **Terminal 3: check the lidar delay, then start the run.**
+   ```bash
+   ros2 topic delay /livox/points        # ~0.1-0.3 s; Ctrl+C after a few lines
+   ros2 topic pub --once /maze/start std_msgs/msg/Empty
+   ```
+   If the delay stays above 0.5 s, stop the recording and use
+   `rec_navdebug maze_run1 -- /maze/status /maze/goal /found /qr/detections /posters/detections`
+   instead.
+
+4. **During the run** (Terminal 3, or a laptop with `ROS_DOMAIN_ID=4`):
+   ```bash
+   ros2 topic echo /maze/status          # CREEPING -> SCANNING -> EXPLORING -> EXITED / NO_EXIT / STOPPED
+   ros2 topic echo /found                # QR found / Human found
+   ```
+
+5. **Stop.** Once the status reads `EXITED`, `NO_EXIT` or `STOPPED` (or you stop the robot):
+   Ctrl+C in **Terminal 2** first. The recorder prints the summary; check that no topic you
+   need shows `Count: 0`. Name the bag after the outcome, for example `maze_run1_exited`.
+   Then press Ctrl+C in **Terminal 1**, which saves the map.
+
+6. **Keep the run's other files with the bag.** The map, QR snapshots and logs aren't in the
+   bag. Right after the run, copy everything written since the recording started into
+   `<bag>_extras/`:
+   ```bash
+   BAG=~/challenge_ws/ROS_bags/maze_run1_exited
+   START=$(awk '/nanoseconds_since_epoch/{print int($2/1e9); exit}' $BAG/metadata.yaml)
+   mkdir -p ${BAG}_extras
+   (cd ~ && find challenge_ws/maps qr_logs poster_logs challenge_ws/logs/junctions \
+        -type f -newermt "@$START" -exec cp --parents {} ${BAG}_extras/ \; 2>/dev/null)
+   ls -R ${BAG}_extras
+   ```
+   | What | Where |
+   |---|---|
+   | Final map | `~/challenge_ws/maps/maze_<date>_<time>.{pgm,yaml}` |
+   | QR snapshots (annotated JPEG) + CSV | `~/qr_logs/` |
+   | Poster CSV | `~/poster_logs/` |
+   | Junction photos + JSON | `~/challenge_ws/logs/junctions/run_<date>_<time>/` |
+   | Full node logs | `~/.ros/log/<date>-<time>-…/` (the folder `ros2 launch` printed at startup) |
+
+   `rec_rename` doesn't rename `_extras/`, so rename it by hand if you rename the bag.
 
 #### 2.3 Perception debug: `rec_perception`, `rec_detections`
 
@@ -301,7 +369,7 @@ The robot computer has no screen, so use your own computer:
 
 - **VS Code:** click the `.mp4` in the Explorer sidebar to play it. Right-click a file or bag folder and choose **Download…** to save a copy.
 - **Browser:** open **http://192.168.10.74:8080** (FileBrowser), log in, and click the file to play or download it.
-- **Copy a whole bag** to your computer: `scp -r <user>@192.168.10.74:~/challenge_ws/ROS_bags/run1 .`
+- **Copy a whole bag** to your computer: `scp -r User@192.168.10.74:~/challenge_ws/ROS_bags/run1 .`
 
 ---
 
@@ -311,6 +379,7 @@ The robot computer has no screen, so use your own computer:
 rec_list                     # presets and topics
 rec_full run1                # teleop, everything (Ctrl+C to stop)
 rec_nav                      # Nav2 / maze_nav driving, no depth
+rec_maze maze_run1           # full maze_nav run: navigation + perception, no depth (section 2.2)
 rec_last                     # check: every topic Count > 0
 rec_rename run1_good         # rename the newest bag (or: rec_rename <old> <new>)
 python3 ~/bag_to_video.py ~/challenge_ws/ROS_bags/run1   # -> run1.mp4
@@ -327,6 +396,7 @@ python3 ~/bag_to_video.py ~/challenge_ws/ROS_bags/run1   # -> run1.mp4
 | `/tf` has `Count: 0` | Fast-LIO wasn't running. Start `lite3_bringup` (from `lite3_launcher`) before recording |
 | `/livox/points` missing | The Livox driver isn't running. Start the robot's lidar driver, then check `ros2 topic hz /livox/points`. |
 | Depth doesn't line up with the color image | `/camera/depth/image_raw` isn't aligned. Record the aligned depth topic, or turn on `depth_registration` in the camera driver. See [data_required.md](../src/team_perception/data_required.md). |
+| `Topic '...' has more than one type associated` (repeats every 0.1 s) | Another node uses the topic with a different message type, usually an `rqt_image_view` on a laptop subscribed to a `.../compressed` topic as a raw `Image`. Find it with `ros2 topic info -v <topic>` (look at each `Topic type`). Close it, or reopen it and pick the topic from the dropdown (`rqt_image_view` with no argument). Topics the recorder had already subscribed keep recording; a topic that first appears during the conflict is skipped. |
 | Dropped messages / recorder warnings | Disk or CPU can't keep up. Record fewer topics, or try `--max-cache-size 1000000000`. |
 | Robot won't move under Nav2 while recording; collision_monitor `Ignoring the source` | Recording raw depth delays `/livox/points` (~1.2 s seen). Stop the recording and use `rec_nav` or `rec_navdebug`. |
 | `could not connect to display` / Qt platform plugin error | GUI tools (e.g. `rqt_image_view`, `rviz2`) don't work over SSH/VS Code. Convert to `.mp4` (step 4), or copy the bag to a computer with a screen. |
@@ -338,5 +408,5 @@ python3 ~/bag_to_video.py ~/challenge_ws/ROS_bags/run1   # -> run1.mp4
 | `Bad name '...'` | Names may only use letters, digits, `.`, `_` and `-`. Replace spaces with `_`. |
 | Renamed a bag folder with `mv` and the files inside still have the old name | Harmless (`metadata.yaml` refers to the files by their own names), but to tidy up rename it back and use `rec_rename` |
 | `rec_rename: command not found` | Open a new terminal or `source ~/challenge_ws/ROS_bags/aliases.sh` (alias added 2026-11-14). |
-| `Nav2 is running and preset ... records raw depth` | Use `rec_nav`, or stop Nav2 first. |
+| `Nav2 is running and preset ... records raw depth` | Use `rec_maze` / `rec_nav`, or stop Nav2 first. |
 | Disk filling up | Check with `df -h`. Don't record uncompressed color. Delete or copy off old bag folders. |

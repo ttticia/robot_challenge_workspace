@@ -16,3 +16,4 @@ ROS_bags/*
 recordings/
 runs/
 maps/
+logs/

@@ -1,15 +1,20 @@
 """
-Start the onboard half of the perception pipeline: qr_scanner, poster_detector, image_throttle.
+Start the whole perception pipeline on the robot: qr_scanner, human_detector, poster_detector.
 
     ros2 launch team_perception robot.launch.py
     ros2 launch team_perception robot.launch.py depth_topic:=/camera/aligned_depth/image_raw \
         depth_camera_info_topic:=''        # depth already aligned by the driver
     ros2 launch team_perception robot.launch.py posters:=false   # QR scanner only
+    ros2 launch team_perception robot.launch.py offboard:=true   # YOLO on an external computer
 
-YOLO person detection (human_detector) runs on the EXTERNAL computer
-(`ros2 launch team_perception_external external.launch.py`). image_throttle sends it a
-reduced-rate JPEG stream; it returns /humans/detections, which poster_detector judges here
-against the local depth image. Raw depth and point clouds never leave the robot.
+YOLO person detection (human_detector) runs here on the robot's CPU, reading the camera's
+JPEG stream directly, capped to yolo_threads torch threads and yolo_rate_hz inferences a
+second so it leaves the CPU to navigation. It publishes /humans/detections, which
+poster_detector judges against the depth image.
+
+offboard:=true is the old split: human_detector is NOT started; image_throttle sends a
+reduced-rate JPEG stream to an external computer running
+`ros2 launch team_perception_external external.launch.py` (Robot-Dog-Grp4 repo).
 
 Every argument has a default that matches the robot's Orbbec camera. Check the real topic
 names with `ros2 topic list` before a run. poster_detector needs depth ALIGNED to the
@@ -20,7 +25,7 @@ and the static map.
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 ARGS = {
@@ -35,11 +40,20 @@ ARGS = {
     'map_topic': ('/map', 'static map (nav_msgs/OccupancyGrid, transient local)'),
     'map_frame': ('map', 'frame that positions are reported in'),
     'map_mode': ('veto', "poster_detector map test: 'require', 'veto' or 'off'"),
+    'yolo_rate_hz': ('5.0', 'human_detector: max YOLO inferences per second'),
+    'yolo_threads': ('2', 'human_detector: torch CPU threads (0 = torch default, ~8 cores)'),
+    'yolo_imgsz': ('640', 'human_detector: YOLO input size (smaller = faster, misses far '
+                          'people)'),
+    'yolo_conf': ('0.4', 'human_detector: minimum person confidence'),
+    'yolo_model': ('yolo11n.pt', 'human_detector: weights, bare name -> '
+                                 '~/.cache/team_perception/, or a path'),
+    'offboard': ('false', 'true = YOLO on an external computer: run image_throttle instead '
+                          'of human_detector'),
     'offboard_topic': ('/camera/color/image_offboard/compressed',
-                       'throttled JPEG stream for the external computer'),
-    'offboard_rate_hz': ('10.0', 'frames per second sent to the external computer'),
+                       'offboard: throttled JPEG stream for the external computer'),
+    'offboard_rate_hz': ('10.0', 'offboard: frames per second sent to the external computer'),
     'qr': ('true', 'run qr_scanner'),
-    'posters': ('true', 'run poster_detector + image_throttle (needs the external computer)'),
+    'posters': ('true', 'run human_detector (or image_throttle) + poster_detector'),
 }
 
 
@@ -49,6 +63,13 @@ def generate_launch_description():
               'depth_topic': c['depth_topic'], 'camera_info_topic': c['camera_info_topic'],
               'depth_camera_info_topic': c['depth_camera_info_topic'],
               'use_depth': c['use_depth'], 'map_frame': c['map_frame']}
+
+    def posters_with(offboard):
+        """IfCondition: posters:=true and offboard:=<offboard>."""
+        return IfCondition(PythonExpression([
+            "'", c['posters'], "'.lower() in ('true', '1') and ",
+            '' if offboard else 'not ', "'", c['offboard'], "'.lower() in ('true', '1')"]))
+
     return LaunchDescription([
         *[DeclareLaunchArgument(name, default_value=default, description=desc)
           for name, (default, desc) in ARGS.items()],
@@ -59,7 +80,16 @@ def generate_launch_description():
              parameters=[{'in_topic': [c['image_topic'], '/compressed'],
                           'out_topic': c['offboard_topic'],
                           'rate_hz': c['offboard_rate_hz']}],
-             condition=IfCondition(c['posters'])),
+             condition=posters_with(offboard=True)),
+        Node(package='team_perception', executable='human_detector', name='human_detector',
+             output='screen',
+             parameters=[{'image_topic': c['image_topic'],
+                          'image_transport': c['image_transport'],
+                          'use_depth': False,      # poster_detector places the posters
+                          'model': c['yolo_model'], 'conf': c['yolo_conf'],
+                          'imgsz': c['yolo_imgsz'], 'rate_hz': c['yolo_rate_hz'],
+                          'threads': c['yolo_threads']}],
+             condition=posters_with(offboard=False)),
         Node(package='team_perception', executable='poster_detector', name='poster_detector',
              output='screen',
              parameters=[{'depth_topic': c['depth_topic'],

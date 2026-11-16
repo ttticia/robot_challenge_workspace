@@ -83,7 +83,7 @@ Sources: **[doc]** manufacturer guides (above), **[datasheet]** vendor spec page
 | CPU | Intel Core i5-13420H, 10 threads visible |
 | RAM | 6 GB |
 | Disk | 30 GB, ~6.7 GB free on 2026-11-13 (a full recording uses ~1.6 GB/min, so ~4 min) |
-| GPU | **None usable** (Intel iGPU only, no CUDA). This is why YOLO person detection runs on the external computer, not here |
+| GPU | **None usable** (Intel iGPU only, no CUDA). YOLO person detection runs here on the CPU (`human_detector`, ~0.5 core at 5 Hz with 2 torch threads) |
 | OS | Ubuntu 22.04.5, ROS 2 Humble |
 | Network | `eth0` 192.168.1.74 (robot), `eth1` 192.168.10.74 (lab) |
 
@@ -310,7 +310,7 @@ Check `ros2 node list` first.
 | `/cmd_vel_nav` → `/nav_cmd_vel` | `geometry_msgs/Twist` | Nav2 controller → velocity smoother | Must still be forwarded to `/cmd_vel` (§6.2) |
 | `/joy_cmd_vel` | `Twist` | `teleop_twist_joy` (USB gamepad on the robot computer; LB = enable, RB = turbo) | Lab launcher only |
 | `/qr/detections`, `/posters/detections`, `/found` | `std_msgs/String` | `team_perception` (onboard) | See `src/team_perception/data_required.md` |
-| `/humans/detections` | `std_msgs/String` | `human_detector` on the external computer | Person boxes for `poster_detector`; absent without the external computer |
+| `/humans/detections` | `std_msgs/String` | `human_detector` (team_perception, robot computer) | Person boxes for `poster_detector` |
 
 Lab `twist_mux` (`lite3_launcher/config/twist_mux_topics.yaml`): `joy_cmd_vel` (priority
 100, timeout 0.5 s) beats `nav_cmd_vel` (priority 10, timeout 0.5 s), output `/cmd_vel`.
@@ -346,7 +346,7 @@ Static transforms [live, 2026-11-13] (translation in m, quaternion x y z w):
 
 ### 6.1 The control path
 
-1. A human stands the robot up with the handheld controller.
+1. A human stands the robot up with the handheld controller (or maze_nav `auto_stand` does, if the robot is measured lying down).
 2. The robot must be in **auto (navigation) mode** to accept `/cmd_vel`. A human operator
    sends this (`lite3_auto`, §6.3). **Our code should not switch to auto mode on its own.**
 3. Your node publishes `geometry_msgs/Twist` on `/cmd_vel`.
@@ -471,7 +471,7 @@ Codes relevant to us [doc]:
 | `0x21010C03` | **Navigation (auto) mode**: follow `/cmd_vel` | Not in AI state | `lite3_auto`; sent by the human operator |
 | `0x21010C02` | **Manual mode**: handheld controller drives | | `lite3_manual`; safe fallback, send on shutdown |
 | `0x21020C0E` | **Software emergency STOP** | Any | Used in the 2026-11-12 trial; delivery confirmed. Robot needs operator recovery afterwards |
-| `0x21010202` | Stand / sit toggle | | **Don't send from code**; the operator handles it |
+| `0x21010202` | Stand / sit toggle | | **Toggle: a standing robot sits.** Only `cmd_vel_bridge` `auto_stand` sends it, and only when the lidar floor height shows the robot lying down (maze_nav) |
 | `0x21010D06` | Move mode (needed before gait changes) | Not in AI state | Send it before gait requests |
 | `0x21010D05` | Pose mode (body posture via joystick axes) | Not in AI state | Not used |
 | `0x21010401` | RUG gait, General gear (state 2) | Move mode, not AI | Normal rough-ground gait. **maze_nav default**: `cmd_vel_bridge` sends Move mode + this once at launch (`gait:=rug`) |
@@ -492,7 +492,7 @@ commands, AI gaits). Some of these are dangerous in the maze. **Never enable SDK
 (DEEP Robotics app slider): it replaces the factory locomotion controller with a user
 policy, resets the joints, and disables everything in this document.
 
-Normal sequence: operator stands the robot → (optional, agreed) gait request → operator
+Normal sequence: operator stands the robot (or `auto_stand`) → (optional, agreed) gait request → operator
 sends `lite3_auto` → our node drives on `/cmd_vel` → `lite3_manual` at the end. To stop:
 zero Twist, then `lite3_manual`. For an emergency: handheld STOP, or `0x21020C0E`.
 

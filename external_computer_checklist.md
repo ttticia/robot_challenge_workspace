@@ -1,8 +1,11 @@
 # External computer setup checklist
 
-The robot runs only the onboard half of perception (`src/team_perception`: `qr_scanner`,
-`poster_detector`, `image_throttle`). YOLO person detection (`human_detector`) has to run on a
-separate computer. **Without it, QR codes still work but no poster is ever reported.**
+> **Not needed by default.** Since 2026-11-16 YOLO person detection (`human_detector`) runs on
+> the robot computer as part of `team_perception` ([launch_guide.md](src/team_perception/launch_guide.md)).
+> Use this checklist only for the fallback `ros2 launch team_perception robot.launch.py
+> offboard:=true`, which runs `image_throttle` instead of `human_detector` on the robot and
+> leaves YOLO to an external computer. Never run YOLO in both places: posters would be
+> judged twice.
 
 Package to install there: `team_perception_external`, from the
 [Robot-Dog-Grp4](https://github.com/ttticia/Robot-Dog-Grp4) repo
