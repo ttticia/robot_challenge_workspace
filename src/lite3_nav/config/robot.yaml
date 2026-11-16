@@ -26,6 +26,12 @@ mission:
     maximum_tilt_deg: 22.0
     tilt_hold_sec: 0.5
     goal_timeout_sec: 45.0
+    # goal_timeout_sec counts from the last goal_progress_m of movement, not from the goal's start:
+    # with a fixed 45 s, long trips across the 7 x 6 m dead-end maze timed out and the robot
+    # turned back and forth between far frontiers (check C, 2026-11-16). At the robot's 0.1 m/s,
+    # 45 s is only 4.5 m. goal_max_sec caps a goal's total time. goal_progress_m 0 = fixed timeout.
+    goal_progress_m: 0.3
+    goal_max_sec: 600.0
     # Max age of the last bt_navigator "active" lifecycle reply (or Nav2 goal feedback) before disarming.
     nav2_active_timeout_sec: 3.0
     # How Nav2 liveness is judged: lifecycle (get_state ACTIVE replies only), action_server

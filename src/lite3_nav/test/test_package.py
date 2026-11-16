@@ -60,6 +60,7 @@ def test_robot_yaml_keeps_every_team_value():
         'mission.ros__parameters.frontier_ranking',
         'mission.ros__parameters.frontier_planner_radius_m', 'mission.ros__parameters.minimum_goal_motion_m',
         'mission.ros__parameters.minimum_goal_hop_m', 'mission.ros__parameters.tilt_hold_sec',
+        'mission.ros__parameters.goal_progress_m', 'mission.ros__parameters.goal_max_sec',
         'mission.ros__parameters.start_routine', 'mission.ros__parameters.start_creep_m',
         'mission.ros__parameters.start_creep_speed', 'mission.ros__parameters.start_scan_deg',
         'mission.ros__parameters.auto_stand_up', 'mission.ros__parameters.stand_timeout_sec',
@@ -88,3 +89,16 @@ def test_exit_defaults_match_the_node():
 def test_sim_yaml_only_overrides_known_nodes():
     sim = yaml.safe_load((ROOT / 'config' / 'sim.yaml').read_text())
     assert set(sim) <= {'mission', 'velocity_gate', 'observations'}
+
+
+def test_maze_world_matches_its_generator(tmp_path):
+    # worlds/maze_dead_ends.world is generated; regenerate it rather than editing it by hand.
+    import subprocess
+    import sys
+    out = tmp_path / 'maze.world'
+    subprocess.run([sys.executable, str(ROOT / 'scripts' / 'make_maze_world.py'), '--seed', '36',
+                    '--cols', '7', '--rows', '6', '--loops', '2', '-o', str(out)],
+                   check=True, capture_output=True)
+    assert out.read_text() == (ROOT / 'worlds' / 'maze_dead_ends.world').read_text()
+    setup = (ROOT / 'setup.py').read_text()
+    assert "('share/lite3_nav/worlds', glob('worlds/*.world'))" in setup

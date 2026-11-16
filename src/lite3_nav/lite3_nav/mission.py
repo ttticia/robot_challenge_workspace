@@ -31,6 +31,9 @@
 #    the normal arming checks pass (map, pose, gate, Nav2), within stand_settle_sec. A standing
 #    robot never gets the toggle. robot_info.md 6.3 left standing to the operator; the team chose
 #    auto stand-up on 2026-11-15 because the handheld controller is ignored in auto mode.
+#  - goal_progress_m / goal_max_sec (lite3_nav.progress): goal_timeout_sec counts from the
+#    robot's last goal_progress_m of movement instead of the goal's start, capped at goal_max_sec
+#    (0 = no cap); goal_progress_m 0 is the team's fixed timeout.
 #  - tilt_hold_sec (lite3_nav.tilt): while armed, EXCESS_TILT only once the tilt has stayed over
 #    maximum_tilt_deg that long, so step-climb spikes pass (0 = the team's instant stop). Invalid
 #    IMU readings, and over-limit readings while disarmed (arming), still stop at once.
@@ -62,6 +65,7 @@ from lite3_nav.core import Grid, relative_goal, select_frontier, yaw_from_quater
 from scipy.ndimage import distance_transform_edt
 from lite3_nav.exit_detect import ExitDetector, exit_masked_grid, seen_free_clearance
 from lite3_nav.frontier import select_frontier_by_path
+from lite3_nav.progress import GoalProgress
 from lite3_nav.tilt import TiltGuard
 from lite3_nav.stand import STAND_TOGGLE, StandUp, body_height, quaternion_matrix
 from lite3_nav.wall_band import cloud_xyz
@@ -87,6 +91,7 @@ class Mission(Node):
                         pose_timeout_sec=.75, imu_timeout_sec=.5, maximum_tilt_deg=12., tilt_hold_sec=0.,
                         require_imu=True, require_velocity_gate=True, require_nav2_active=True,
                         nav2_lifecycle_node='/bt_navigator',goal_timeout_sec=45.,nav2_active_timeout_sec=3.,
+                        goal_progress_m=0., goal_max_sec=0.,
                         frontier_clearance_m=.25, frontier_standoff_m=.32, minimum_frontier_size_m=.12,
                         frontier_planner_radius_m=0., minimum_goal_motion_m=.1, minimum_goal_hop_m=0.,
                         blacklist_duration_sec=30., waypoints=[.5,0.,0.], waypoint_frame='initial_base',
@@ -119,6 +124,7 @@ class Mission(Node):
         self.imu_received = self.gate_received = -math.inf
         self.tilt = math.inf
         self.tilt_guard = TiltGuard()
+        self.progress = GoalProgress()
         self.gate = {}
         self.armed = False
         self.epoch = self.waypoint_index = 0
@@ -235,7 +241,7 @@ class Mission(Node):
             if len(waypoints)%3 or not np.isfinite(waypoints).all():
                 raise ValueError('waypoints must be a flat list of x,y,yaw triples in radians')
             for name,low,high in [('pose_timeout_sec',.1,5.),('imu_timeout_sec',.1,5.),
-                                  ('maximum_tilt_deg',1.,30.),('tilt_hold_sec',0.,2.),('goal_timeout_sec',5.,600.),
+                                  ('maximum_tilt_deg',1.,30.),('tilt_hold_sec',0.,2.),('goal_timeout_sec',5.,600.),('goal_progress_m',0.,2.),('goal_max_sec',0.,3600.),
                                   ('nav2_active_timeout_sec',1.,30.),
                                   ('frontier_clearance_m',.1,.6),('frontier_standoff_m',.15,1.),
                                   ('frontier_planner_radius_m',0.,.5),('minimum_goal_motion_m',0.,.5),
@@ -530,6 +536,7 @@ class Mission(Node):
         self.goal=goal
         self.goal_kind=kind
         self.goal_started=self.sensor_now()
+        self.progress.start(self.pose[:2] if self.pose else None,self.goal_started)
         message=NavigateToPose.Goal(pose=self.stamped_goal(goal))
         self.pending=self.client.send_goal_async(message,feedback_callback=self.on_feedback)
         self.pending.add_done_callback(lambda future:self.accepted(future,epoch))
@@ -539,6 +546,7 @@ class Mission(Node):
         self.goal=None
         self.goal_kind='start'
         self.goal_started=self.sensor_now()
+        self.progress.start(self.pose[:2] if self.pose else None,self.goal_started)
         if kind=='START_SCAN':
             message=Spin.Goal(target_yaw=float(value),time_allowance=DurationMsg(sec=20))
         else:
@@ -610,6 +618,7 @@ class Mission(Node):
             self.cancel_requested=True
             self.goal_handle.cancel_goal_async()
         self.goal_started=self.sensor_now()  # a still-pending send does not time out again at once
+        self.progress.start(self.pose[:2] if self.pose else None,self.goal_started)
         self.failed_goal(reason)
 
     def failed_goal(self,reason):
@@ -647,9 +656,11 @@ class Mission(Node):
         if not reason and self.check_exit():
             if self.armed:self.disarm('EXITED')  # cancels the goal; the lease drops below
             elif not self.execute:self.note='SHADOW_EXITED'
-        if self.armed and (self.pending or self.goal_handle) and not self.cancel_requested \
-                and sensor_now-self.goal_started>self.value('goal_timeout_sec'):
-            self.abandon_goal('GOAL_TIMEOUT')
+        if self.armed and (self.pending or self.goal_handle) and not self.cancel_requested:
+            step=self.value('goal_progress_m')
+            self.progress.update(self.pose[:2] if self.pose else None,sensor_now,step)
+            if self.progress.timed_out(sensor_now,self.value('goal_timeout_sec'),step,self.value('goal_max_sec')):
+                self.abandon_goal('GOAL_TIMEOUT')
         # Only a live, accepted goal receives a drive lease. Loss of this process
         # expires at the independent gate; Nav2 alone cannot keep driving.
         if self.lease:
