@@ -41,7 +41,7 @@ DEFAULT_PROMPT = 'Describe the image'
 MAX_WIDTH = 1024
 MAX_HEIGHT = 768
 # Where the camera tests save the frames they send (one subfolder per run).
-DEFAULT_SAVE_DIR = '~/ir/prompted_frames'
+DEFAULT_SAVE_DIR = '~/test_scene_understanding'
 
 
 class VLMError(Exception):
@@ -406,3 +406,4 @@ def main(argv=None):
 
 if __name__ == '__main__':
     sys.exit(main())
+
