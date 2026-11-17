@@ -1,0 +1,39 @@
+<!--
+  Nav2 Humble default "navigate_w_replanning_and_recovery" tree without BackUp (from maze_nav,
+  origin/navigation 419f205, config/maze_bt.xml). The Lite3's lidar does not see behind the body,
+  so backing up in a 0.9 m corridor is blind; spin and wait are the only recoveries.
+  Replans at 1 Hz: the SLAM map keeps growing while the robot walks into unknown corridors.
+  Few retries on purpose: the mission blacklists a failed frontier and picks another one.
+  robot_navigation.launch.py points both default_nav_to_pose_bt_xml and
+  default_nav_through_poses_bt_xml here (Humble loads a through-poses tree too, and its
+  default one needs the BackUp server, which is not started).
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="3" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearingActions">
+            <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </Sequence>
+          <Spin spin_dist="1.57"/>
+          <Wait wait_duration="3"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

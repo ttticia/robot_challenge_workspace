@@ -1,0 +1,160 @@
+# Copy of lite3_mission/config/robot.yaml (main e725625) plus the lite3_nav parameters
+# mission.nav2_active_timeout_sec, mission.nav2_health_check, velocity_gate.output_transient_local
+# and velocity_gate.expected_input_publishers, the mission exit_* / final_cell_* parameters
+# and mission.frontier_ranking / start_* / auto_stand_up / stand_*, velocity_gate.simple_cmd_allowed_node.
+# All other values are the team's (test/team_robot_e725625.yaml), except maximum_tilt_deg (12 -> 22, below).
+mission:
+  ros__parameters:
+    use_sim_time: false
+    execution_enabled: false
+    mode: waypoints
+    map_topic: /map
+    map_frame: map
+    base_frame: base_link
+    imu_topic: /imu/data
+    nav_action: /navigate_to_pose
+    require_imu: true
+    require_velocity_gate: true
+    require_nav2_active: true
+    nav2_lifecycle_node: /bt_navigator
+    pose_timeout_sec: 0.75
+    imu_timeout_sec: 0.5
+    # Course STL (example maze): sloped pit faces 17.4 deg, 0.12 m platform and 0.12 m stair rises
+    # (short pitch spikes on the climb), rough blocks ~5-8 deg; stairs are ~39 deg (not drivable
+    # with this stop). 22 deg clears the pit; tilt_hold_sec lets climb spikes pass while armed.
+    # Team value was 12.0 (instant).
+    maximum_tilt_deg: 22.0
+    tilt_hold_sec: 0.5
+    goal_timeout_sec: 45.0
+    # goal_timeout_sec counts from the last goal_progress_m of movement, not from the goal's start:
+    # with a fixed 45 s, long trips across the 7 x 6 m dead-end maze timed out and the robot
+    # turned back and forth between far frontiers (check C, 2026-11-16). At the robot's 0.1 m/s,
+    # 45 s is only 4.5 m. goal_max_sec caps a goal's total time. goal_progress_m 0 = fixed timeout.
+    goal_progress_m: 0.3
+    goal_max_sec: 600.0
+    # Exploration time budget (booklet v5.1: ~6 min per run incl. the drone launch; the timer
+    # runs through restarts). After this many seconds from the first arming the robot stops
+    # exploring and heads for the nearest seen open floor beyond the exit (HEADING_TO_EXIT);
+    # if none has been seen yet it keeps exploring, exit frontiers allowed. 0 = no budget.
+    # Tune in the lab to the real speed and arena size.
+    explore_budget_sec: 180.0
+    # Team decision (2026-11-16): as soon as the open floor past the exit has been seen, head
+    # for the exit (HEADING_TO_EXIT) instead of going back for unexplored parts first.
+    exit_when_seen: true
+    # Max age of the last bt_navigator "active" lifecycle reply (or Nav2 goal feedback) before disarming.
+    nav2_active_timeout_sec: 3.0
+    # How Nav2 liveness is judged: lifecycle (get_state ACTIVE replies only), action_server
+    # (navigate_to_pose server visible), or either. Trade-off: in Nav2 Humble the action server
+    # exists from on_configure, so it alone cannot tell configured from active; an inactive
+    # bt_navigator then rejects our goals (counted as failed goals -> disarm). "either" keeps
+    # working when get_state replies are lost on the lab network. Accepted goals with fresh
+    # feedback always count as active.
+    nav2_health_check: either
+    frontier_clearance_m: 0.25
+    # = global_costmap robot_radius (nav2_robot.yaml): goals no closer to a wall than the planner
+    # can reach (else Nav2 "succeeds" without moving and the same frontier returns).
+    frontier_planner_radius_m: 0.35
+    # A frontier goal that "succeeds" with the robot moving less than this and turning < 0.5 rad
+    # is skipped (with goals within 0.5 m of it) for the rest of the run instead of looping.
+    minimum_goal_motion_m: 0.1
+    # Frontier goals at least this far from the robot: Nav2's xy_goal_tolerance is 0.25 m, so a
+    # nearer goal "succeeds" on the spot (sim 2026-11-15: 0.23 m goals, robot never moved).
+    minimum_goal_hop_m: 0.35
+    frontier_standoff_m: 0.32
+    minimum_frontier_size_m: 0.12
+    blacklist_duration_sec: 30.0
+    maximum_consecutive_failures: 3
+    frontier_yaw_mode: keep_current
+    # path_length: nearest frontier along free space (finishes the closest branch first, from
+    # maze_nav); score: the team's original ranking (size over straight-line distance).
+    frontier_ranking: path_length
+    # Start routine (maze_nav), first arming in explore mode only; arming is the start signal.
+    # Creep start_creep_m straight ahead at start_creep_speed (Nav2 drive_on_heading), then turn
+    # start_scan_deg left, twice that right and back (Nav2 spin) so SLAM sees the start cell.
+    # A failed step is skipped. 0 turns a step off. The operator still stands the robot up.
+    start_routine: true
+    start_creep_m: 0.1
+    start_creep_speed: 0.05
+    start_scan_deg: 45.0
+    # Auto stand-up on arming (lite3_nav/stand.py): the lidar body height decides. Lying (base_link
+    # <= 0.18 m above the floor): the stand/sit toggle 0x21010202 is sent ONCE on /simple_cmd,
+    # then the robot must read as standing (>= 0.27 m) within stand_timeout_sec. Standing: nothing
+    # is sent. Then the mission arms itself once the usual checks pass, within stand_settle_sec.
+    # Needs transfer_interfaces sourced; without it arming is refused. false = stand it by hand.
+    auto_stand_up: true
+    stand_timeout_sec: 15.0
+    stand_settle_sec: 30.0
+    # Exit / final cell (lite3_nav/exit_detect.py, from maze_nav's ExitDetector). The run ends
+    # (state EXITED: goal cancelled, lease dropped, disarmed, no more goals) when, in explore
+    # mode, a disk of SLAM-seen free floor of radius exit_open_radius lies within
+    # exit_near_radius of the robot, >= exit_min_displacement from where it was first armed,
+    # the robot has been in a corridor (clearance <= exit_enclosed_radius) and this holds for
+    # exit_dwell_sec. 0.9 m corridors allow at most ~0.45 m, so 1.1 m only exists outside.
+    exit_detection_enabled: true
+    exit_open_radius: 1.1
+    # 1.6 (maze_nav: 0.8): the run must end INSIDE the final cell (booklet v5.1, 10 points).
+    # The open disk's centre is ~1.0 m beyond the opening, so 1.6 fires with the robot ~0.5 m
+    # inside (the cell centre); 0.8 fired only ~0.3 m outside it.
+    exit_near_radius: 1.6
+    exit_min_displacement: 1.5
+    exit_enclosed_radius: 0.7
+    exit_dwell_sec: 1.0              # 2.0 before 16 Nov: the robot kept driving out meanwhile
+    # Frontiers on that open floor are chosen only when no other frontier is left.
+    exit_frontiers_last: true
+    # Known final cell centre [x, y] in the map frame (any mode): within final_cell_radius ends
+    # the run at once. Empty = unknown.
+    # final_cell_xy: [x, y]   # leave commented out = unknown (ROS params cannot be an empty list)
+    final_cell_radius: 0.4
+    # First manually armed trial: 0.5 m relative to the initial body heading.
+    # These are development goals, not the competition maze route.
+    waypoints: [0.5, 0.0, 0.0]
+    waypoint_frame: initial_base
+    map_transient_local: true
+velocity_gate:
+  ros__parameters:
+    drive_output_enabled: false
+    input_topic: /mission/nav_cmd_vel
+    output_topic: /cmd_vel
+    # RELIABLE + TRANSIENT_LOCAL output, lifespan = command_timeout_sec: required by the
+    # Lite3 domain bridge's /cmd_vel subscription; also compatible with VOLATILE subscribers.
+    output_transient_local: true
+    # Distinct nodes publishing input_topic. 1 = controller only; stock Nav2 with velocity_smoother
+    # and behavior_server both remapped onto input_topic gives 2 (see config/sim.yaml).
+    expected_input_publishers: 1
+    max_linear_m_s: 0.1
+    max_angular_rad_s: 0.25
+    acceleration_m_s2: 0.2
+    angular_acceleration_rad_s2: 0.5
+    command_timeout_sec: 0.25
+    lease_timeout_sec: 0.3
+    # The mission's auto stand-up toggle on /simple_cmd is not a competing command source.
+    simple_cmd_allowed_node: mission
+observations:
+  ros__parameters:
+    use_sim_time: false
+    map_frame: map
+    input_topic: /mission/observations
+    point_topic: /detections
+    point_kind: target
+    point_label: lab_detection
+    dedup_radius_m: 0.25
+    cell_grid_enabled: false
+    cell_size_m: 0.8
+    cell_origin_x: 0.0
+    cell_origin_y: 0.0
+    report_directory: ~/.ros/lite3_mission
+qr:
+  ros__parameters:
+    image_topic: /camera/color/image_raw
+    camera_info_topic: /camera/color/camera_info
+    max_decode_hz: 2.0
+    # Set the measured physical QR side length before enabling PnP localization.
+    qr_size_m: 0.0
+scene_client:
+  ros__parameters:
+    image_topic: /camera/color/image_raw
+    client_path: ''
+    server: http://192.168.10.141:8000
+    group: group04
+    minimum_interval_sec: 5.0
+    request_timeout_sec: 20.0

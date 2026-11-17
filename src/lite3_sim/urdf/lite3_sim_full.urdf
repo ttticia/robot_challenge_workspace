@@ -1,0 +1,454 @@
+<robot name="lite3">
+  <link name="base_link">
+    <inertial>
+      <origin />
+      <mass value="5.6056" />
+      <inertia ixx="0.02456" ixy="0" ixz="0" iyy="0.05518" iyz="0" izz="0.07016" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://lite3_sim/meshes/torso.STL" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.01" rpy="0 0 0" />
+      <geometry>
+        <box size="0.5 0.2 0.12" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="camera_link" />
+  <joint name="D435I_FIXED" type="fixed">
+    <parent link="base_link" />
+    <child link="camera_link" />
+    <origin xyz="0.25228 -0.00050 0.07410" rpy="0 0.3490658504 0" />
+  </joint>
+  <link name="livox_frame" />
+  <joint name="MID360_FIXED" type="fixed">
+    <parent link="base_link" />
+    <child link="livox_frame" />
+    <origin xyz="0.18678 0 0.12498" rpy="0 0.2617993878 0" />
+  </joint>
+  <link name="FL_HIP">
+    <inertial>
+      <origin xyz="-0.00601 -0.0066532 0.00034295" />
+      <mass value="0.550" />
+      <inertia ixx="0.0003949" ixy="0" ixz="0" iyy="0.0004028" iyz="0" izz="0.0004472" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://lite3_sim/meshes/hip.STL" scale="1 1 1" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="FL_HipX_joint" type="fixed">
+    <origin xyz="0.1745 0.062 0" />
+    <parent link="base_link" />
+    <child link="FL_HIP" />
+  </joint>
+  <link name="FL_THIGH">
+    <inertial>
+      <origin xyz="-0.0039245 -0.014632 -0.025146" />
+      <mass value="0.86" />
+      <inertia ixx="0.005736" ixy="0" ixz="0" iyy="0.004960" iyz="0" izz="0.001436" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://lite3_sim/meshes/thigh.STL" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="FL_HipY_joint" type="fixed">
+    <origin xyz="0 0.09735 0" rpy="0 0.7000 0" />
+    <parent link="FL_HIP" />
+    <child link="FL_THIGH" />
+  </joint>
+  <link name="FL_SHANK">
+    <inertial>
+      <origin xyz="0.0064794 -1.4535E-06 -0.12157" />
+      <mass value="0.153" />
+      <inertia ixx="0.00089039" ixy="0" ixz="0" iyy="0.00090672" iyz="0" izz="3.1266E-05" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://lite3_sim/meshes/shank.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+  </link>
+  <joint name="FL_Knee_joint" type="fixed">
+    <origin xyz="0 0 -0.20" rpy="0 -1.3600 0" />
+    <parent link="FL_THIGH" />
+    <child link="FL_SHANK" />
+  </joint>
+  <link name="FL_FOOT">
+    <collision>
+      <origin rpy="1.57079632679 0 0" />
+      <geometry>
+        <sphere radius="0.022" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.02" />
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0" />
+    </inertial>
+  </link>
+  <joint name="FL_Ankle" type="fixed">
+    <parent link="FL_SHANK" />
+    <child link="FL_FOOT" />
+    <origin xyz="0 0 -0.21012" />
+  </joint>
+  <link name="FR_HIP">
+    <inertial>
+      <origin xyz="-0.010579 0.011358 0.00048546" />
+      <mass value="0.550" />
+      <inertia ixx="0.0004472" ixy="0" ixz="0" iyy="0.0004028" iyz="0" izz="0.0003949" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://lite3_sim/meshes/hip.STL" scale="1 -1 1" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="FR_HipX_joint" type="fixed">
+    <origin xyz="0.1745 -0.062 0" />
+    <parent link="base_link" />
+    <child link="FR_HIP" />
+  </joint>
+  <link name="FR_THIGH">
+    <inertial>
+      <origin xyz="-0.0039245 0.014632 -0.025146" />
+      <mass value="0.86" />
+      <inertia ixx="0.005736" ixy="0" ixz="0" iyy="0.004960" iyz="0" izz="0.001436" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://lite3_sim/meshes/thigh.STL" scale="1 -1 1" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="FR_HipY_joint" type="fixed">
+    <origin xyz="0 -0.09735 0" rpy="0 0.7000 0" />
+    <parent link="FR_HIP" />
+    <child link="FR_THIGH" />
+  </joint>
+  <link name="FR_SHANK">
+    <inertial>
+      <origin xyz="0.0064794 -1.4552E-06 -0.12157" />
+      <mass value="0.153" />
+      <inertia ixx="0.00089039" ixy="0" ixz="0" iyy="0.00090672" iyz="0" izz="3.1266E-05" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://lite3_sim/meshes/shank.STL" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="FR_Knee_joint" type="fixed">
+    <origin xyz="0 0 -0.20" rpy="0 -1.3600 0" />
+    <parent link="FR_THIGH" />
+    <child link="FR_SHANK" />
+  </joint>
+  <link name="FR_FOOT">
+    <collision>
+      <origin rpy="1.57079632679 0 0" />
+      <geometry>
+        <sphere radius="0.022" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.02" />
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0" />
+    </inertial>
+  </link>
+  <joint name="FR_Ankle" type="fixed">
+    <parent link="FR_SHANK" />
+    <child link="FR_FOOT" />
+    <origin xyz="0 0 -0.21012" />
+  </joint>
+  <link name="HL_HIP">
+    <inertial>
+      <origin xyz="0.010905 -0.012636 0.001051" />
+      <mass value="0.550" />
+      <inertia ixx="0.0003949" ixy="0" ixz="0" iyy="0.0004028" iyz="0" izz="0.0004472" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://lite3_sim/meshes/hip.STL" scale="-1 1 1" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="HL_HipX_joint" type="fixed">
+    <origin xyz="-0.1745 0.062 0" />
+    <parent link="base_link" />
+    <child link="HL_HIP" />
+  </joint>
+  <link name="HL_THIGH">
+    <inertial>
+      <origin xyz="-0.0039245 -0.014632 -0.025146" />
+      <mass value="0.86" />
+      <inertia ixx="0.005736" ixy="0" ixz="0" iyy="0.004960" iyz="0" izz="0.001436" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://lite3_sim/meshes/thigh.STL" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="HL_HipY_joint" type="fixed">
+    <origin xyz="0 0.09735 0" rpy="0 0.7000 0" />
+    <parent link="HL_HIP" />
+    <child link="HL_THIGH" />
+  </joint>
+  <link name="HL_SHANK">
+    <inertial>
+      <origin xyz="0.0064794 -1.4558E-06 -0.12157" />
+      <mass value="0.153" />
+      <inertia ixx="0.00089039" ixy="0" ixz="0" iyy="0.00090672" iyz="0" izz="3.1266E-05" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://lite3_sim/meshes/shank.STL" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="HL_Knee_joint" type="fixed">
+    <origin xyz="0 0 -0.20" rpy="0 -1.3600 0" />
+    <parent link="HL_THIGH" />
+    <child link="HL_SHANK" />
+  </joint>
+  <link name="HL_FOOT">
+    <collision>
+      <origin rpy="1.57079632679 0 0" />
+      <geometry>
+        <sphere radius="0.022" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.02" />
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0" />
+    </inertial>
+  </link>
+  <joint name="HL_Ankle" type="fixed">
+    <parent link="HL_SHANK" />
+    <child link="HL_FOOT" />
+    <origin xyz="0 0 -0.21012" />
+  </joint>
+  <link name="HR_HIP">
+    <inertial>
+      <origin xyz="0.010354 0.011423 0.00049498" />
+      <mass value="0.550" />
+      <inertia ixx="0.0004472" ixy="0" ixz="0" iyy="0.0004028" iyz="0" izz="0.0003949" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://lite3_sim/meshes/hip.STL" scale="-1 -1 1" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="HR_HipX_joint" type="fixed">
+    <origin xyz="-0.1745 -0.062 0" />
+    <parent link="base_link" />
+    <child link="HR_HIP" />
+  </joint>
+  <link name="HR_THIGH">
+    <inertial>
+      <origin xyz="-0.0039245 0.014632 -0.025146" />
+      <mass value="0.86" />
+      <inertia ixx="0.005736" ixy="0" ixz="0" iyy="0.004960" iyz="0" izz="0.001436" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://lite3_sim/meshes/thigh.STL" scale="1 -1 1" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="HR_HipY_joint" type="fixed">
+    <origin xyz="0 -0.09735 0" rpy="0 0.7000 0" />
+    <parent link="HR_HIP" />
+    <child link="HR_THIGH" />
+  </joint>
+  <link name="HR_SHANK">
+    <inertial>
+      <origin xyz="0.0064794 -1.4529E-06 -0.12157" />
+      <mass value="0.153" />
+      <inertia ixx="0.00089039" ixy="0" ixz="0" iyy="0.00090672" iyz="0" izz="3.1266E-05" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://lite3_sim/meshes/shank.STL" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="HR_Knee_joint" type="fixed">
+    <origin xyz="0 0 -0.20" rpy="0 -1.3600 0" />
+    <parent link="HR_THIGH" />
+    <child link="HR_SHANK" />
+  </joint>
+  <link name="HR_FOOT">
+    <collision>
+      <origin rpy="1.57079632679 0 0" />
+      <geometry>
+        <sphere radius="0.022" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.02" />
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0" />
+    </inertial>
+  </link>
+  <joint name="HR_Ankle" type="fixed">
+    <parent link="HR_SHANK" />
+    <child link="HR_FOOT" />
+    <origin xyz="0 0 -0.21012" />
+  </joint>
+  <link name="camera_depth_frame" />
+  <joint name="camera_depth_frame_joint" type="fixed">
+    <parent link="camera_link" />
+    <child link="camera_depth_frame" />
+    <origin xyz="0 0 0" rpy="0 0 0" />
+  </joint>
+  <link name="camera_color_frame" />
+  <joint name="camera_color_frame_joint" type="fixed">
+    <parent link="camera_depth_frame" />
+    <child link="camera_color_frame" />
+    <origin xyz="0.00184 -0.01409 0.00013" rpy="0 0 0" />
+  </joint>
+  <link name="camera_depth_optical_frame" />
+  <joint name="camera_depth_optical_frame_joint" type="fixed">
+    <parent link="camera_depth_frame" />
+    <child link="camera_depth_optical_frame" />
+    <origin xyz="0 0 0" rpy="-1.570796 0 -1.570796" />
+  </joint>
+  <link name="camera_color_optical_frame" />
+  <joint name="camera_color_optical_frame_joint" type="fixed">
+    <parent link="camera_color_frame" />
+    <child link="camera_color_optical_frame" />
+    <origin xyz="0 0 0" rpy="-1.570796 0 -1.570796" />
+  </joint>
+  <gazebo reference="base_link">
+    <mu1>0.0</mu1>
+    <mu2>0.0</mu2>
+  </gazebo>
+  <gazebo reference="FL_FOOT">
+    <mu1>0.0</mu1>
+    <mu2>0.0</mu2>
+  </gazebo>
+  <gazebo reference="FR_FOOT">
+    <mu1>0.0</mu1>
+    <mu2>0.0</mu2>
+  </gazebo>
+  <gazebo reference="HL_FOOT">
+    <mu1>0.0</mu1>
+    <mu2>0.0</mu2>
+  </gazebo>
+  <gazebo reference="HR_FOOT">
+    <mu1>0.0</mu1>
+    <mu2>0.0</mu2>
+  </gazebo>
+  <gazebo>
+    <plugin name="lite3_planar_move" filename="libgazebo_ros_planar_move.so">
+      <ros>
+        <remapping>cmd_vel:=cmd_vel</remapping>
+        <remapping>odom:=odom</remapping>
+      </ros>
+      <update_rate>50</update_rate>
+      <publish_rate>30</publish_rate>
+      <publish_odom>true</publish_odom>
+      <publish_odom_tf>true</publish_odom_tf>
+      <odometry_frame>odom</odometry_frame>
+      <robot_base_frame>base_link</robot_base_frame>
+      <covariance_x>0.0001</covariance_x>
+      <covariance_y>0.0001</covariance_y>
+      <covariance_yaw>0.001</covariance_yaw>
+    </plugin>
+  </gazebo>
+  <gazebo reference="livox_frame">
+    <sensor name="mid360" type="ray">
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <update_rate>10</update_rate>
+      <ray>
+        <scan>
+          <horizontal>
+            <samples>720</samples>
+            <resolution>1</resolution>
+            <min_angle>-3.14159</min_angle>
+            <max_angle>3.14159</max_angle>
+          </horizontal>
+          <vertical>
+            <samples>16</samples>
+            <resolution>1</resolution>
+            <min_angle>-0.122</min_angle>
+            <max_angle>0.907</max_angle>
+          </vertical>
+        </scan>
+        <range>
+          <min>0.1</min>
+          <max>40.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
+      </ray>
+      <plugin name="livox_driver" filename="libgazebo_ros_ray_sensor.so">
+        <ros>
+          <namespace>/livox</namespace>
+          <remapping>~/out:=points</remapping>
+        </ros>
+        <output_type>sensor_msgs/PointCloud2</output_type>
+        <frame_name>livox_frame</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+  <gazebo reference="camera_link">
+    <sensor name="orbbec" type="depth">
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <update_rate>10</update_rate>
+      <camera>
+        <horizontal_fov>1.2</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.1</near>
+          <far>10.0</far>
+        </clip>
+      </camera>
+      <plugin name="orbbec_driver" filename="libgazebo_ros_camera.so">
+        <ros>
+          <namespace>/camera</namespace>
+          <remapping>color/depth/image_raw:=color/depth/image_m</remapping>
+          <remapping>color/depth/camera_info:=color/depth/camera_info_m</remapping>
+          <remapping>color/points:=depth/points</remapping>
+        </ros>
+        <camera_name>color</camera_name>
+        <frame_name>camera_color_optical_frame</frame_name>
+        <min_depth>0.1</min_depth>
+        <max_depth>10.0</max_depth>
+      </plugin>
+    </sensor>
+  </gazebo>
+  <gazebo reference="base_link">
+    <sensor name="imu" type="imu">
+      <always_on>true</always_on>
+      <update_rate>200</update_rate>
+      <plugin name="imu_driver" filename="libgazebo_ros_imu_sensor.so">
+        <ros>
+          <namespace>/imu</namespace>
+          <remapping>~/out:=data</remapping>
+        </ros>
+        <initial_orientation_as_reference>false</initial_orientation_as_reference>
+        <frame_name>base_link</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+</robot>
