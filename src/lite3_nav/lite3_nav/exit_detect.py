@@ -14,12 +14,16 @@ of the arena. Two ways to recognise it:
 
 exit_masked_grid() hides the open floor beyond the exit (the same disks) from frontier selection
 so exploration finishes the arena before it drives out (lite3_nav addition, not in maze_nav).
+exit_goal() is the nearest point (along free space) of that open floor: where the robot heads
+once the exploration time budget is spent (lite3_nav addition, booklet v5.1: ~6 min runs).
 """
 from dataclasses import dataclass, field
 import math
 
 import numpy as np
 from scipy.ndimage import binary_dilation, distance_transform_edt
+
+from lite3_nav.frontier import fill_ray_gaps, geodesic_distance
 
 FREE_MAX = 25
 
@@ -63,6 +67,46 @@ def exit_masked_grid(grid, open_radius, start=None, min_displacement=0., clearan
     data = grid.data.copy()
     data[region] = 100
     return type(grid)(data, grid.resolution, grid.origin, grid.yaw)
+
+
+def exit_goal(grid, xy, open_radius, start=None, min_displacement=0., clearance=None,
+              safe_clearance=.25, planner_radius=0., excluded=(), exclude_radius=.5, max_shift=.6):
+    """Nearest point along free space of the open floor beyond the exit, as (x, y, heading), or
+    None if no such floor has been seen (or none is reachable). Paths keep safe_clearance from
+    walls and unknown space, as in frontier.select_frontier_by_path; the goal keeps
+    planner_radius from walls; points within exclude_radius of `excluded` (failed goals) are
+    skipped. If the robot's own cell is not clear, the path starts from the nearest clear cell
+    within max_shift."""
+    region = open_region(grid, open_radius, start, min_displacement, clearance)
+    if not region.any():
+        return None
+    known_free = fill_ray_gaps(grid.data)
+    safe = known_free & (distance_transform_edt(known_free)*grid.resolution > safe_clearance)
+    cell = grid.cell(xy)
+    if not grid.contains(cell) or not safe[cell[1], cell[0]]:
+        cells = np.argwhere(safe)
+        if not len(cells):
+            return None
+        shift = np.linalg.norm(grid.world(cells[:, ::-1])-np.asarray(xy[:2]), axis=1)
+        i = int(np.argmin(shift))
+        if shift[i] > max_shift:
+            return None
+        cell = cells[i][::-1]
+    path = geodesic_distance(safe, (int(cell[0]), int(cell[1])))
+    occupied_distance = distance_transform_edt(grid.data < 65)*grid.resolution
+    candidates = region & np.isfinite(path) & (occupied_distance > planner_radius)
+    rows_cols = np.argwhere(candidates)
+    if not len(rows_cols):
+        return None
+    points = grid.world(rows_cols[:, ::-1])
+    lengths = path[rows_cols[:, 0], rows_cols[:, 1]]
+    for index in np.argsort(lengths):
+        point = points[index]
+        if any(math.dist(point, p[:2]) < exclude_radius for p in excluded):
+            continue
+        heading = math.atan2(point[1]-xy[1], point[0]-xy[0])
+        return float(point[0]), float(point[1]), heading
+    return None
 
 
 @dataclass

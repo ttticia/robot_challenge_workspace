@@ -3,7 +3,7 @@ import math
 
 import numpy as np
 from lite3_nav.core import Grid, select_frontier
-from lite3_nav.exit_detect import ExitDetector, exit_masked_grid, open_region, seen_free_clearance
+from lite3_nav.exit_detect import ExitDetector, exit_goal, exit_masked_grid, open_region, seen_free_clearance
 
 RES = .05
 
@@ -111,3 +111,28 @@ def test_no_open_floor_no_mask():
     grid = Grid(data, RES, (0., 0.))
     assert exit_masked_grid(grid, 1.1) is None
     assert seen_free_clearance(grid).max() < 1.1
+
+
+def test_wider_near_radius_stops_inside_the_final_cell():
+    # robot.yaml exit_near_radius 1.6 (booklet v5.1: "stop within the final cell"). The arena's
+    # last 1 m of corridor (x 3..4) is the final cell; the opening is at x = 4.
+    grid = arena()
+    d = ExitDetector(near_radius=1.6, dwell=1.)
+    d.update(grid, (.5, 1.5), 0.)
+    assert not run(d, grid, (2.5, 1.5), 3., 1.)[0]         # one cell back: not yet
+    found, _ = run(d, grid, (3.5, 1.5), 3., 5.)            # final cell centre, 0.5 m inside
+    assert found and d.reason == 'OPEN_FLOOR'
+    d0 = ExitDetector()                                    # the old 0.8 m: only outside
+    d0.update(grid, (.5, 1.5), 0.)
+    assert not run(d0, grid, (3.5, 1.5), 3., 1.)[0]
+
+
+def test_exit_goal_is_the_nearest_open_floor():
+    grid = arena()
+    goal = exit_goal(grid, (.5, 1.5), 1.1, start=(.5, 1.5), min_displacement=1.5)
+    assert goal is not None and 3.9 <= goal[0] <= 4.6 and 1.0 <= goal[1] <= 2.0  # at the opening
+    again = exit_goal(grid, (.5, 1.5), 1.1, start=(.5, 1.5), min_displacement=1.5,
+                      excluded=[goal[:2]])
+    assert again is not None and math.dist(again[:2], goal[:2]) >= .5      # failed goal skipped
+    closed = arena(outside_unknown_from=4.)                # outside not seen yet
+    assert exit_goal(closed, (.5, 1.5), 1.1, start=(.5, 1.5), min_displacement=1.5) is None

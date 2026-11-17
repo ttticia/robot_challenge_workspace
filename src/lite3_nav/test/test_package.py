@@ -61,6 +61,7 @@ def test_robot_yaml_keeps_every_team_value():
         'mission.ros__parameters.frontier_planner_radius_m', 'mission.ros__parameters.minimum_goal_motion_m',
         'mission.ros__parameters.minimum_goal_hop_m', 'mission.ros__parameters.tilt_hold_sec',
         'mission.ros__parameters.goal_progress_m', 'mission.ros__parameters.goal_max_sec',
+        'mission.ros__parameters.explore_budget_sec', 'mission.ros__parameters.exit_when_seen',
         'mission.ros__parameters.start_routine', 'mission.ros__parameters.start_creep_m',
         'mission.ros__parameters.start_creep_speed', 'mission.ros__parameters.start_scan_deg',
         'mission.ros__parameters.auto_stand_up', 'mission.ros__parameters.stand_timeout_sec',

@@ -31,6 +31,13 @@
 #    the normal arming checks pass (map, pose, gate, Nav2), within stand_settle_sec. A standing
 #    robot never gets the toggle. robot_info.md 6.3 left standing to the operator; the team chose
 #    auto stand-up on 2026-11-15 because the handheld controller is ignored in auto mode.
+#  - explore_budget_sec (booklet v5.1: ~6 min runs): once that long has passed since the first
+#    arming, exploration stops; the robot heads for the nearest seen open floor beyond the exit
+#    (exit_detect.exit_goal, state HEADING_TO_EXIT, cancelling a frontier goal in progress) or,
+#    while none has been seen, keeps exploring with the beyond-exit mask off. 0 = no budget.
+#  - exit_when_seen (team decision 2026-11-16): head for the exit as soon as its open floor has
+#    been seen (state HEADING_TO_EXIT, a frontier goal in progress cancelled, not failed), rather
+#    than first going back to explore what is left. The time budget still applies before that.
 #  - goal_progress_m / goal_max_sec (lite3_nav.progress): goal_timeout_sec counts from the
 #    robot's last goal_progress_m of movement instead of the goal's start, capped at goal_max_sec
 #    (0 = no cap); goal_progress_m 0 is the team's fixed timeout.
@@ -63,7 +70,7 @@ from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from tf2_ros import Buffer, TransformListener, TransformException
 from lite3_nav.core import Grid, relative_goal, select_frontier, yaw_from_quaternion
 from scipy.ndimage import distance_transform_edt
-from lite3_nav.exit_detect import ExitDetector, exit_masked_grid, seen_free_clearance
+from lite3_nav.exit_detect import ExitDetector, exit_goal, exit_masked_grid, open_region, seen_free_clearance
 from lite3_nav.frontier import select_frontier_by_path
 from lite3_nav.progress import GoalProgress
 from lite3_nav.tilt import TiltGuard
@@ -91,7 +98,7 @@ class Mission(Node):
                         pose_timeout_sec=.75, imu_timeout_sec=.5, maximum_tilt_deg=12., tilt_hold_sec=0.,
                         require_imu=True, require_velocity_gate=True, require_nav2_active=True,
                         nav2_lifecycle_node='/bt_navigator',goal_timeout_sec=45.,nav2_active_timeout_sec=3.,
-                        goal_progress_m=0., goal_max_sec=0.,
+                        goal_progress_m=0., goal_max_sec=0., explore_budget_sec=0., exit_when_seen=False,
                         frontier_clearance_m=.25, frontier_standoff_m=.32, minimum_frontier_size_m=.12,
                         frontier_planner_radius_m=0., minimum_goal_motion_m=.1, minimum_goal_hop_m=0.,
                         blacklist_duration_sec=30., waypoints=[.5,0.,0.], waypoint_frame='initial_base',
@@ -138,6 +145,8 @@ class Mission(Node):
         self.exit = ExitDetector()
         self.exited = False
         self.run_started = False  # first arming of this mission: the exit test's start pose
+        self.run_t0 = None        # sensor time of that first arming (explore_budget_sec)
+        self.last_budget_check = -math.inf
         self.last_exit_check = -math.inf
         self.last_exit_log = -math.inf
         self.clearance_cache = (None, None)  # (grid, seen_free_clearance(grid))
@@ -241,7 +250,7 @@ class Mission(Node):
             if len(waypoints)%3 or not np.isfinite(waypoints).all():
                 raise ValueError('waypoints must be a flat list of x,y,yaw triples in radians')
             for name,low,high in [('pose_timeout_sec',.1,5.),('imu_timeout_sec',.1,5.),
-                                  ('maximum_tilt_deg',1.,30.),('tilt_hold_sec',0.,2.),('goal_timeout_sec',5.,600.),('goal_progress_m',0.,2.),('goal_max_sec',0.,3600.),
+                                  ('maximum_tilt_deg',1.,30.),('tilt_hold_sec',0.,2.),('goal_timeout_sec',5.,600.),('goal_progress_m',0.,2.),('explore_budget_sec',0.,3600.),('goal_max_sec',0.,3600.),
                                   ('nav2_active_timeout_sec',1.,30.),
                                   ('frontier_clearance_m',.1,.6),('frontier_standoff_m',.15,1.),
                                   ('frontier_planner_radius_m',0.,.5),('minimum_goal_motion_m',0.,.5),
@@ -269,6 +278,7 @@ class Mission(Node):
             self.anchor=None
             if hasattr(self,'exit'):  # a new mission: the exit may be found again
                 self.exited=self.run_started=False
+                self.run_t0=None
                 self.exit.reset()
                 self.start_steps=[]
         return SetParametersResult(successful=True)
@@ -354,6 +364,7 @@ class Mission(Node):
             if not self.run_started:  # exit_min_displacement counts from where the run starts;
                 self.exit.reset(self.pose)  # re-arming mid-run keeps it
                 self.run_started=True
+                self.run_t0=self.sensor_now()
                 self.unresolvable=[]
                 if self.value('mode')=='explore' and self.value('start_routine'):
                     self.start_steps=self.start_plan()
@@ -463,6 +474,17 @@ class Mission(Node):
             return (relative_goal(self.anchor,goal) if self.value('waypoint_frame')=='initial_base' else goal),'WAYPOINT'
         now=time.monotonic()
         self.blacklist=[(p,until) for p,until in self.blacklist if until>now]
+        if self.leave_reason():
+            # Leaving: head for the exit if its open floor has been seen. Otherwise, once the
+            # time is up, keep exploring with nothing hidden, so the way out is taken as soon as
+            # it is the nearest frontier (exit_when_seen alone keeps exploring as usual).
+            goal=self.exit_target()
+            if goal:return (goal if self.value('frontier_yaw_mode')!='keep_current'
+                            else (goal[0],goal[1],self.pose[2])),'HEADING_TO_EXIT'
+        if self.budget_spent():
+            goal,state=self.frontier_on(self.grid)
+            if goal and self.value('frontier_yaw_mode')=='keep_current':goal=(goal[0],goal[1],self.pose[2])
+            return goal,state
         # Frontiers on the open floor beyond the exit only once the arena has nothing else left.
         masked=(exit_masked_grid(self.grid,self.value('exit_open_radius'),self.exit.start or self.pose[:2],
                                  self.value('exit_min_displacement'),self.clearance())
@@ -473,6 +495,39 @@ class Mission(Node):
             if goal:state='EXIT_FRONTIER'
         if goal and self.value('frontier_yaw_mode')=='keep_current':goal=(goal[0],goal[1],self.pose[2])
         return goal,state
+
+    def budget_spent(self):
+        budget=self.value('explore_budget_sec')
+        return (budget>0 and self.value('mode')=='explore' and self.run_t0 is not None
+                and self.sensor_now()-self.run_t0>=budget)
+
+    def leave_reason(self):
+        """Why the robot should head for the exit as soon as it has seen it, or None."""
+        if self.value('mode')!='explore':return None
+        if self.budget_spent():return 'EXPLORE_BUDGET_SPENT'
+        return 'EXIT_SEEN' if self.value('exit_when_seen') else None
+
+    def exit_seen(self):
+        return bool(self.grid is not None and self.pose and self.value('exit_detection_enabled')
+                    and open_region(self.grid,self.value('exit_open_radius'),self.exit.start or self.pose[:2],
+                                    self.value('exit_min_displacement'),self.clearance()).any())
+
+    def exit_target(self):
+        """Nearest seen open floor beyond the exit (exit_detect.exit_goal), or None."""
+        if not self.value('exit_detection_enabled') or self.grid is None or not self.pose:return None
+        return exit_goal(self.grid,self.pose[:2],self.value('exit_open_radius'),
+                         self.exit.start or self.pose[:2],self.value('exit_min_displacement'),
+                         self.clearance(),self.value('frontier_clearance_m'),
+                         self.value('frontier_planner_radius_m'),[p for p,until in self.blacklist])
+
+    def redirect(self,note):
+        """Cancel the goal in progress without counting it as failed (time budget spent)."""
+        self.epoch+=1  # its accepted/finished callbacks are then ignored
+        if self.goal_handle and not self.cancel_requested:
+            self.cancel_requested=True
+            self.goal_handle.cancel_goal_async()
+        self.note=note
+        self.get_logger().info(f'{note}: cancelling the frontier goal, heading for the exit')
 
     def frontier_on(self,grid):
         args=(self.value('frontier_clearance_m'),self.value('frontier_standoff_m'),
@@ -656,6 +711,10 @@ class Mission(Node):
         if not reason and self.check_exit():
             if self.armed:self.disarm('EXITED')  # cancels the goal; the lease drops below
             elif not self.execute:self.note='SHADOW_EXITED'
+        if self.armed and self.goal_kind=='explore' and (self.pending or self.goal_handle) \
+                and not self.cancel_requested and sensor_now-self.last_budget_check>=1. and self.leave_reason():
+            self.last_budget_check=sensor_now
+            if self.exit_seen():self.redirect(self.leave_reason())
         if self.armed and (self.pending or self.goal_handle) and not self.cancel_requested:
             step=self.value('goal_progress_m')
             self.progress.update(self.pose[:2] if self.pose else None,sensor_now,step)
@@ -674,7 +733,9 @@ class Mission(Node):
             if goal:
                 self.preview.publish(self.stamped_goal(goal))
                 if self.execute and self.armed:
-                    if self.client.server_is_ready():self.dispatch(goal)
+                    if self.client.server_is_ready():
+                        self.dispatch(goal,'exit' if state=='HEADING_TO_EXIT' else 'explore')
+                        if state=='HEADING_TO_EXIT':self.note=state
                     else:self.disarm('NAV2_ACTION_SERVER_UNAVAILABLE')
             elif self.armed and state=='NO_REACHABLE_FRONTIER' and self.blacklist:
                 # Only blacklisted frontiers left (e.g. a small one whose approach points all
@@ -691,6 +752,8 @@ class Mission(Node):
                      'active_goal':self.goal if (self.pending or self.goal_handle) else None,
                      'pose':self.pose,'waypoint_index':self.waypoint_index,'mode':self.value('mode'),
                      'exited':self.exited,'exit_reason':self.exit.reason or None,
+                     'explore_budget_left':(None if not self.value('explore_budget_sec') or self.run_t0 is None
+                                            else round(max(0.,self.value('explore_budget_sec')-(sensor_now-self.run_t0)),1)),
                      # Exit detector inputs (see exit_detect.ExitDetector): OPEN_FLOOR needs
                      # seen_enclosed, open_nearby >= exit_open_radius and that held for exit_dwell_sec.
                      'exit_check':{'clearance':round(self.exit.clearance,2),

@@ -32,6 +32,15 @@ mission:
     # 45 s is only 4.5 m. goal_max_sec caps a goal's total time. goal_progress_m 0 = fixed timeout.
     goal_progress_m: 0.3
     goal_max_sec: 600.0
+    # Exploration time budget (booklet v5.1: ~6 min per run incl. the drone launch; the timer
+    # runs through restarts). After this many seconds from the first arming the robot stops
+    # exploring and heads for the nearest seen open floor beyond the exit (HEADING_TO_EXIT);
+    # if none has been seen yet it keeps exploring, exit frontiers allowed. 0 = no budget.
+    # Tune in the lab to the real speed and arena size.
+    explore_budget_sec: 180.0
+    # Team decision (2026-11-16): as soon as the open floor past the exit has been seen, head
+    # for the exit (HEADING_TO_EXIT) instead of going back for unexplored parts first.
+    exit_when_seen: true
     # Max age of the last bt_navigator "active" lifecycle reply (or Nav2 goal feedback) before disarming.
     nav2_active_timeout_sec: 3.0
     # How Nav2 liveness is judged: lifecycle (get_state ACTIVE replies only), action_server
@@ -83,10 +92,13 @@ mission:
     # exit_dwell_sec. 0.9 m corridors allow at most ~0.45 m, so 1.1 m only exists outside.
     exit_detection_enabled: true
     exit_open_radius: 1.1
-    exit_near_radius: 0.8
+    # 1.6 (maze_nav: 0.8): the run must end INSIDE the final cell (booklet v5.1, 10 points).
+    # The open disk's centre is ~1.0 m beyond the opening, so 1.6 fires with the robot ~0.5 m
+    # inside (the cell centre); 0.8 fired only ~0.3 m outside it.
+    exit_near_radius: 1.6
     exit_min_displacement: 1.5
     exit_enclosed_radius: 0.7
-    exit_dwell_sec: 2.0
+    exit_dwell_sec: 1.0              # 2.0 before 16 Nov: the robot kept driving out meanwhile
     # Frontiers on that open floor are chosen only when no other frontier is left.
     exit_frontiers_last: true
     # Known final cell centre [x, y] in the map frame (any mode): within final_cell_radius ends

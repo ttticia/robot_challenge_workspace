@@ -587,3 +587,60 @@ def test_wall_scan_keeps_only_the_wall_band(context, floor_z):
     angles = msg.angle_min + hit * msg.angle_increment
     assert len(hit) and (np.abs(angles) < math.atan(.3 / 1.) + .02).all()   # only the wall, no floor
     assert (ranges[hit] < 1.05).all()
+
+
+def test_explore_budget_heads_for_the_exit_without_a_failure(context):
+    from rclpy.parameter import Parameter
+    from lite3_nav.core import Grid
+    from lite3_nav.mission import Mission
+    mission = Mission(parameter_overrides=[Parameter('mode', value='explore'),
+                                           Parameter('require_imu', value=False),
+                                           Parameter('explore_budget_sec', value=60.)])
+    context.append(mission)
+    res = .05   # 0.9 m corridor x 0..4 m opening east onto seen-free floor x 4..7 m
+    data = np.full((60, 160), -1, dtype=int)
+    data[21:39, 0:80] = 0
+    data[20, 0:80] = data[39, 0:80] = 100
+    data[20:40, 0] = 100
+    data[:, 80:140] = 0
+    mission.grid, mission.pose = Grid(data, res, (0., 0.)), (.5, 1.5, 0.)
+    mission.exit.reset((.5, 1.5))
+    mission.run_t0 = mission.sensor_now()
+    assert mission.choose_goal()[1] != 'HEADING_TO_EXIT'          # budget left: explore
+    mission.run_t0 = mission.sensor_now() - 61.
+    goal, state = mission.choose_goal()
+    assert state == 'HEADING_TO_EXIT' and 3.9 <= goal[0] <= 4.6 and mission.exit_seen()
+    cancels = []
+
+    class Handle:
+        def cancel_goal_async(self):
+            cancels.append(True)
+    mission.armed, mission.goal, mission.goal_handle = True, (1., 1., 0.), Handle()
+    mission.redirect('EXPLORE_BUDGET_SPENT')                       # cancelled, not failed
+    assert cancels == [True] and mission.cancel_requested and mission.armed
+    assert mission.consecutive_failures == 0 and not mission.blacklist
+    assert mission.note == 'EXPLORE_BUDGET_SPENT'
+
+
+def test_exit_when_seen_heads_for_the_exit_at_once(context):
+    from rclpy.parameter import Parameter
+    from lite3_nav.core import Grid
+    from lite3_nav.mission import Mission
+    mission = Mission(parameter_overrides=[Parameter('mode', value='explore'),
+                                           Parameter('require_imu', value=False),
+                                           Parameter('exit_when_seen', value=True)])
+    context.append(mission)
+    data = np.full((60, 160), -1, dtype=int)   # corridor x 0..4 m; a side room still unknown
+    data[21:39, 0:80] = 0
+    data[20, 0:80] = data[39, 0:80] = 100
+    data[20:40, 0] = 100
+    data[39, 20:40] = 0                        # opening in the north wall at x 1..2 m: a frontier
+    data[:, 80:140] = 0                        # open floor past the east opening, seen
+    mission.grid, mission.pose = Grid(data, .05, (0., 0.)), (1.5, 1.5, 0.)
+    mission.exit.reset((.5, 1.5))
+    mission.run_t0 = mission.sensor_now()
+    assert mission.leave_reason() == 'EXIT_SEEN'
+    goal, state = mission.choose_goal()
+    assert state == 'HEADING_TO_EXIT' and goal[0] >= 3.9    # not the nearer side opening
+    mission.set_parameters([Parameter('exit_when_seen', value=False)])
+    assert mission.leave_reason() is None and mission.choose_goal()[1] != 'HEADING_TO_EXIT'
