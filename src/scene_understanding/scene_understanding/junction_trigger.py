@@ -10,7 +10,7 @@ Subscribes to:
 
 Publishes:
   /scene_understanding/result
-      std_msgs/msg/String containing JSON
+      std_msgs/msg/String containing a scene observation or JSON null
 
 Behaviour:
 - Continuously keeps the latest camera frame.
@@ -37,12 +37,16 @@ from rclpy.executors import ExternalShutdownException
 from std_msgs.msg import Bool, String
 
 from scene_understanding.image_subscriber import ImageSubscriber
-from scene_understanding.scene_prompt import build_prompt, parse_scene_json
+from scene_understanding.scene_prompt import (
+    build_prompt, extract_scene_result, validate_group_id,
+)
 
 from scene_understanding.vlm_client import (
     VLMClient,
     DEFAULT_SERVER,
     DEFAULT_SAVE_DIR,
+    MAX_HEIGHT,
+    MAX_WIDTH,
     fit_within,
     SourceTracker,
     stamp_key,
@@ -178,10 +182,21 @@ class JunctionTrigger(ImageSubscriber):
             5.0
         )
 
-        self.declare_parameter(
-            'mission_cue',
-            ''
-        )
+        self.declare_parameter('vlm_max_width', MAX_WIDTH)
+        self.declare_parameter('vlm_max_height', MAX_HEIGHT)
+
+        self.declare_parameter('junction_scan_enabled', False)
+        self.declare_parameter('junction_scan_angle_deg', 30.0)
+        self.declare_parameter('junction_spin_action', '/spin')
+        self.scan = None
+        if self.get_parameter('junction_scan_enabled').value:
+            from scene_understanding.junction_scan import JunctionScan
+
+            self.scan = JunctionScan(
+                self,
+                self.get_parameter('junction_spin_action').value,
+                self.get_parameter('junction_scan_angle_deg').value,
+            )
 
         # ============================================================
         # Output / saving parameters
@@ -233,6 +248,7 @@ class JunctionTrigger(ImageSubscriber):
         # ============================================================
 
         self.vlm = None
+        self.vlm_error = 'VLM disabled'
         self.run_dir = None
         self._vlm_busy = threading.Lock()
 
@@ -319,25 +335,24 @@ class JunctionTrigger(ImageSubscriber):
             ).value
         )
 
-        mission_cue = self.get_parameter(
-            'mission_cue'
-        ).value
-
-        prompt = build_prompt(
-            mission_cue
-        )
+        group_id = group_id.strip()
 
         try:
+            validate_group_id(group_id)
+            prompt = build_prompt()
             self.vlm = VLMClient(
                 group_id,
                 prompt=prompt,
                 server=server,
                 read_timeout=read_timeout,
                 connect_timeout=connect_timeout,
+                max_width=self.get_parameter('vlm_max_width').value,
+                max_height=self.get_parameter('vlm_max_height').value,
             )
 
         except Exception as e:
             self.vlm = None
+            self.vlm_error = str(e)
 
             self.get_logger().error(
                 f'Could not initialise Lab 6 VLM: {e}'
@@ -347,7 +362,7 @@ class JunctionTrigger(ImageSubscriber):
 
         self.get_logger().info(
             f'Lab 6 VLM ready '
-            f'(server={server}, group={group_id})'
+            f'(server={server}, automatic mission detection)'
         )
 
     # ================================================================
@@ -448,7 +463,7 @@ class JunctionTrigger(ImageSubscriber):
                 frame,
                 stamp,
                 index,
-                source_file
+                source_file,
             ),
             daemon=True
         )
@@ -460,7 +475,7 @@ class JunctionTrigger(ImageSubscriber):
         frame,
         stamp,
         index,
-        source_file
+        source_file,
     ):
         """
         Save the image first.
@@ -483,7 +498,30 @@ class JunctionTrigger(ImageSubscriber):
             'error': None,
         }
 
+        three_view = False
+        scan_error = None
         try:
+            if self.scan is not None:
+                started = time.monotonic()
+                composite = None
+                try:
+                    composite = self.scan.capture()
+                except Exception as exc:
+                    scan_error = exc
+                finally:
+                    record['scan_latency_sec'] = round(time.monotonic() - started, 2)
+                if composite is None:
+                    record['view_layout'] = ['center']
+                    if scan_error is None:
+                        record['scan_warning'] = (
+                            f'Nav2 Spin action {self.scan.action_name} unavailable; used center frame'
+                        )
+                        self.get_logger().warning(record['scan_warning'])
+                else:
+                    frame = composite
+                    three_view = True
+                    record['view_layout'] = ['left', 'center', 'right']
+
             # ========================================================
             # STEP 1: SAVE TRIGGERED IMAGE FIRST
             # ========================================================
@@ -526,10 +564,12 @@ class JunctionTrigger(ImageSubscriber):
             # STEP 2: CHECK WHETHER VLM IS AVAILABLE
             # ========================================================
 
+            if scan_error is not None:
+                # The robot may have turned partway, so this frame is diagnostic only.
+                raise scan_error
+
             if self.vlm is None:
-                record['error'] = (
-                    'VLM disabled or unavailable'
-                )
+                record['error'] = self.vlm_error
 
                 self.get_logger().warning(
                     f'Junction #{index}: '
@@ -546,8 +586,9 @@ class JunctionTrigger(ImageSubscriber):
                     'sending frame to Lab 6 VLM...'
                 )
 
-                result = self.vlm.describe(
-                    frame
+                result = (
+                    self.vlm.describe(frame, prompt=build_prompt(three_view=True))
+                    if three_view else self.vlm.describe(frame)
                 )
 
                 # Copy VLM fields into our record.
@@ -555,61 +596,14 @@ class JunctionTrigger(ImageSubscriber):
                     result
                 )
 
-                response = result.get(
-                    'response'
-                )
-
-                scene = None
-
-                # ====================================================
-                # IMPORTANT:
-                #
-                # Lab 6 may return response as either:
-                #
-                #   dict
-                #
-                # OR
-                #
-                #   JSON/string text
-                #
-                # Do NOT call parse_scene_json() on a dict.
-                # ====================================================
-
-                if result.get('ok'):
-                    if isinstance(response, dict):
-                        scene = response
-
-                    elif isinstance(response, str):
-                        scene = parse_scene_json(
-                            response
-                        )
-
-                    elif response is None:
-                        self.get_logger().warning(
-                            f'Junction #{index}: '
-                            'VLM returned no response.'
-                        )
-
-                    else:
-                        self.get_logger().warning(
-                            f'Junction #{index}: '
-                            'unexpected response type: '
-                            f'{type(response).__name__}'
-                        )
-
-                record['scene'] = scene
-
-                # If it was a successful request but parsing failed,
-                # preserve the raw response.
-                if (
-                    result.get('ok')
-                    and scene is None
-                    and response is not None
-                ):
-                    self.get_logger().warning(
-                        f'Junction #{index}: '
-                        'response could not be parsed into scene JSON; '
-                        'raw response is still saved.'
+                if result['ok']:
+                    response = result['response']
+                    record['scene'] = extract_scene_result(response)
+                    # The parsed scene already contains the model output.
+                    record['response'] = (
+                        {key: value for key, value in response.items() if key != 'result'}
+                        if isinstance(response, dict) and 'result' in response
+                        else None
                     )
 
         except Exception as e:
@@ -664,7 +658,7 @@ class JunctionTrigger(ImageSubscriber):
                 result_msg = String()
 
                 result_msg.data = json.dumps(
-                    record,
+                    record['scene'],
                     ensure_ascii=False
                 )
 
@@ -682,23 +676,13 @@ class JunctionTrigger(ImageSubscriber):
             # ========================================================
 
             if record.get('ok'):
-                scene = record.get(
-                    'scene'
+                summary = ', '.join(
+                    f'{path["direction"]}={path["status"]}'
+                    for path in record['scene']['paths']
                 )
-
-                summary = ''
-
-                if isinstance(scene, dict):
-                    summary = scene.get(
-                        'summary',
-                        ''
-                    )
-
                 self.get_logger().info(
-                    f'Junction #{index}: '
-                    f'VLM successful '
-                    f'({record.get("latency_sec")}s) '
-                    f'{summary}'
+                    f'Junction #{index}: {summary} '
+                    f'({record.get("latency_sec")}s)'
                 )
 
             else:

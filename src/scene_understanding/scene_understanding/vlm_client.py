@@ -112,7 +112,7 @@ class VLMClient:
         # time.monotonic() before which the server asked us not to call.
         self.retry_not_before = 0.0
 
-    def analyze(self, frame):
+    def analyze(self, frame, *, prompt=None):
         """
         Send a BGR numpy image to /analyze and return the server's answer.
 
@@ -130,7 +130,10 @@ class VLMClient:
         try:
             r = requests.post(
                 f'{self.server}/analyze',
-                data={'group_id': self.group_id, 'prompt': self.prompt},
+                data={
+                    'group_id': self.group_id,
+                    'prompt': self.prompt if prompt is None else prompt,
+                },
                 files={'image': ('frame.jpg', jpeg, 'image/jpeg')},
                 timeout=(self.connect_timeout, self.read_timeout))
         except requests.ConnectTimeout:
@@ -165,7 +168,7 @@ class VLMClient:
         except ValueError:
             return r.text
 
-    def describe(self, frame):
+    def describe(self, frame, *, prompt=None):
         """
         Analyze a frame and never raise; for use from a ROS node.
 
@@ -175,7 +178,7 @@ class VLMClient:
         """
         start = time.monotonic()
         try:
-            response, error = self.analyze(frame), None
+            response, error = self.analyze(frame, prompt=prompt), None
         except VLMError as e:
             response, error = None, str(e)
         return {

@@ -1,6 +1,6 @@
 from scene_understanding.image_folder_publisher import is_junction_file
 from scene_understanding.scene_prompt import (
-    build_prompt, NO_CUE, parse_scene_json)
+    build_prompt, parse_scene_json)
 
 
 def test_junction_file_names():
@@ -13,10 +13,13 @@ def test_junction_file_names():
     assert not is_junction_file('20261106_071404305_iOS.jpg')
 
 
-def test_build_prompt_cue():
-    assert 'red arrow' in build_prompt('red arrow')
-    assert NO_CUE in build_prompt('')
-    assert '"scene_type"' in build_prompt()
+def test_build_prompt_detects_mission_clues_automatically():
+    prompt = build_prompt()
+    assert 'printed human figures' in prompt
+    assert 'QR codes' in prompt
+    assert '"mission_matches":[]' in prompt
+    assert '"scene_type"' in prompt
+    assert 'M01' not in prompt
 
 
 def test_parse_plain_and_fenced():

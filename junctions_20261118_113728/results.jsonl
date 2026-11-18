@@ -1,0 +1,1 @@
+{"junction": 1, "stamp": "1795001870.046865000", "source_file": null, "time": "2026-11-18T11:37:50", "scene": null, "ok": false, "response": null, "error": "Nav2 junction turn failed with status 6", "scan_latency_sec": 15.13}
