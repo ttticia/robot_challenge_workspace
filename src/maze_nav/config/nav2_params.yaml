@@ -121,8 +121,11 @@ local_costmap:
           expected_update_rate: 0.5
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.4
-        cost_scaling_factor: 8.0
+        # 0.5 / 6.0 (was 0.4 / 8.0): RPP's collision check sees cost further off the walls.
+        # Sim run 2026-11-16: with 0.4 / 8.0 the robot spent ~24 s within 3 cm of a wall at
+        # the ramp corner and ended NO_EXIT ("Starting point in lethal space").
+        inflation_radius: 0.5
+        cost_scaling_factor: 6.0
       always_send_full_costmap: true
 
 global_costmap:
@@ -168,9 +171,11 @@ global_costmap:
         # Wide and gentle, so the planner keeps to the corridor centre and swings wide of the
         # inner wall in turns: cost still ~100 (of 252) in the middle of a 0.9 m corridor,
         # rising towards the walls. With 0.4 / 8.0 the cost was 0 from 0.4 m off a wall,
-        # and paths hugged the inside of corners.
-        inflation_radius: 0.6
-        cost_scaling_factor: 4.0
+        # and paths hugged the inside of corners. 0.7 / 3.5 (was 0.6 / 4.0, 2026-11-16): a bit
+        # more again (~130 mid-corridor instead of ~118); with 0.6 / 4.0 the sim robot still
+        # scraped the inner wall at the ramp corner.
+        inflation_radius: 0.7
+        cost_scaling_factor: 3.5
       always_send_full_costmap: true
 
 behavior_server:

@@ -24,9 +24,9 @@ setup(
     entry_points={
         'console_scripts': [
             'qr_scanner = team_perception.qr_scanner_node:main',
-            'image_throttle = team_perception.image_throttle_node:main',
             'poster_detector = team_perception.poster_detector_node:main',
             'human_detector = team_perception.human_detector_node:main',
+            'depth_relay = team_perception.depth_relay_node:main',
         ],
     },
 )

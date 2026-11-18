@@ -336,6 +336,17 @@ Static transforms [live, 2026-11-13] (translation in m, quaternion x y z w):
 | `camera_depth_frame → camera_color_frame` | (0.00184, −0.01409, 0.00013) | ≈ identity | Colour sensor about 14 mm to the right of depth |
 | `camera_*_frame → camera_*_optical_frame` | (0, 0, 0) | (−0.5, 0.5, −0.5, 0.5) | Standard optical frame (z forward, x right, y down) |
 | `odom → lidar_init` | same as `base_link → livox_frame` | | Fast-LIO's start frame |
+| `base_link → camera_depth_optical_frame` | (0.25, 0, 0.05) | (−0.5, 0.5, −0.5, 0.5) | **Wrong, since 2026-11-18** [live]: a second parent for the depth optical frame, with no pitch (below) |
+
+**Known fault [live, 2026-11-18]:** `/tf_static` (only publisher: `lite3_domain_bridge_4`)
+now has both `camera_depth_frame → camera_depth_optical_frame` (correct) and the direct,
+unpitched `base_link → camera_depth_optical_frame` above. A TF frame keeps one parent, and the
+wrong one wins, so anything that looks up the depth camera gets it level instead of 20° down,
+and the colour ↔ depth transform 20° off. Workarounds in our code: `stair_detector` builds the
+camera pose from `base_link → camera_link` (`camera_link_frame`); `qr_scanner`,
+`poster_detector` and `human_detector` re-assert the correct parent in their TF buffers
+(`team_perception/tf_pin.py`). The real fix is on the robot side (camera driver / bridge
+config). Any new node that uses camera TF needs a workaround until then.
 
 `base_link` follows ROS REP-103: **x forward, y left, z up**. Without a running Fast-LIO stack,
 `/tf` is empty and only `/tf_static` exists.
@@ -456,7 +467,12 @@ Shell aliases on the robot (from `~/.bashrc`, the block marked `#DO NOT CHANGE`,
 ```bash
 alias lite3_auto='ros2 topic pub /simple_cmd transfer_interfaces/msg/MotionSimpleCMD "{cmd_code: 0x21010C03, type: 0}" --once'
 alias lite3_manual='ros2 topic pub /simple_cmd transfer_interfaces/msg/MotionSimpleCMD "{cmd_code: 0x21010C02, type: 0}" --once'
+# added 2026-11-17, below that block: AI state + AI basic gait, and back out
+alias lite3_ai='ros2 topic pub /simple_cmd ... "{cmd_code: 0x21010528, ...}" --once && sleep 1 && ros2 topic pub /simple_cmd ... "{cmd_code: 0x2101052A, ...}" --once'
+alias lite3_ai_off='ros2 topic pub /simple_cmd ... "{cmd_code: 0x2101052B, ...}" --once && sleep 1 && ros2 topic pub /simple_cmd ... "{cmd_code: 0x21010C02, ...}" --once'
 ```
+`lite3_auto` and `lite3_manual` don't leave AI state: after `lite3_ai`, use `lite3_ai_off`
+first.
 **Why it prints `Waiting for at least 1 matching subscription(s)...`:** `--once` waits for a subscriber
 so the single message isn't lost. `lite3_domain_bridge_4` creates its `/simple_cmd` (and `/cmd_vel`)
 subscription **only after it sees a publisher** (RELIABLE + VOLATILE, so default-QoS `ros2 topic pub` matches).
@@ -484,16 +500,20 @@ Codes relevant to us [doc]:
 | `0x21012109` | Motion-host AI options: value `0x00` all off, `0x20` auto-stop, `0xC0` people tracking | Not AI | **Don't send.** Tracking would make the robot follow people. Current setting on our robot is unknown |
 | `0x21010C0B` | Stop a continuous action (Twist, Moonwalk); send value 0 **and** 1 | | Only needed if someone starts a show action |
 | `0x21010C05` | Reset joints to zero | | **Don't send** |
-| `0x21010528` / `0x2101052B` | Enter / exit AI state | | **Don't send.** Auto mode doesn't work in AI state |
+| `0x21010528` / `0x2101052B` | Enter / exit AI state | | `lite3_ai` / `lite3_ai_off`. **In AI state auto mode doesn't work**: the robot ignores `/cmd_vel`, so no `maze_nav` driving, and Move mode / RUG gait requests aren't valid (launch `maze_nav` with `gait:=none` if the robot is in AI state). Untested on this robot |
+| `0x2101052A` | AI basic gait | AI state | Sent by `lite3_ai` after entering AI state. Untested |
+| `0x2101052E` / `0x21010529` / `0x2101052C` | AI fast / jump / stand gait | AI state | Not used. Jump is dangerous in the maze |
 | `0x21010C01` | Save fault data, then soft e-stop and quit the motion program | | **Never send** |
 
 Leave out everything else from the manufacturer list (backflip, jumps, moonwalk, voice
-commands, AI gaits). Some of these are dangerous in the maze. **Never enable SDK mode**
+commands, the AI fast and jump gaits). Some of these are dangerous in the maze. **Never enable SDK mode**
 (DEEP Robotics app slider): it replaces the factory locomotion controller with a user
 policy, resets the joints, and disables everything in this document.
 
 Normal sequence: operator stands the robot (or `auto_stand`) → (optional, agreed) gait request → operator
-sends `lite3_auto` → our node drives on `/cmd_vel` → `lite3_manual` at the end. To stop:
+sends `lite3_auto` → our node drives on `/cmd_vel` → `lite3_manual` at the end. Coming from AI
+mode: `lite3_ai_off` first, then launch `maze_nav` (it sends Move mode + RUG gait), then
+`lite3_auto`. To stop:
 zero Twist, then `lite3_manual`. For an emergency: handheld STOP, or `0x21020C0E`.
 
 Only `/cmd_vel` and `/simple_cmd` are forwarded. **`/complex_cmd` and `/cmd_vel_corrected` from
@@ -630,3 +650,7 @@ Still open:
 6. Current motion-host AI options (`0x21012109`: auto-stop / tracking). Is auto-stop on?
 7. Real foot swing envelope and step height for planning.
 8. One live check that `/leg_odom` `position.z` really carries yaw.
+9. Who added `base_link → camera_depth_optical_frame` to `/tf_static` (seen 2026-11-18, §5),
+   and can it be removed? Until then our nodes work around it.
+10. Does the robot follow `/cmd_vel` in the AI basic gait (`lite3_ai`)? The manufacturer
+    list says auto mode isn't valid in AI state; not tested.

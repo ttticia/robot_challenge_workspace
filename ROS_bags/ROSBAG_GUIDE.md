@@ -47,8 +47,15 @@ of [record.sh](record.sh); change topics there.
 | **D. Lidar and IMU** | `/livox/points`, `/livox/lidar`, `/livox/imu`, `/imu/data`, `/leg_odom2` | 10 Hz / ~190 Hz | Re-running Fast-LIO (needs `/livox/lidar` + `/livox/imu`), rebuilding `/scan`, comparing with leg odometry |
 | **E. Localization and map** | `/odom`, `/scan`, `/map` | 10 Hz, `/map` occasional | Positions in `map`, the static-map poster test, Nav2 replay. `/map` needs the QoS override below |
 | **F. Navigation and commands** | `/plan`, `/cmd_vel_nav`, `/cmd_vel_smoothed`, `/nav_cmd_vel`, `/cmd_vel`, `/simple_cmd`, `/handle_state` | ≤ 20 Hz | Why the robot moved or didn't: planner → controller → smoother → collision_monitor → bridge |
-| **G. Perception results** | `/found`, `/qr/detections`, `/posters/detections`, `/humans/detections`, `/camera/color/image_offboard/compressed` | small | What the robot decided live. Shows a link failure apart from a logic failure |
+| **G. Perception results** | `/found`, `/qr/detections`, `/posters/detections`, `/humans/detections`, `/camera/color/image_offboard/compressed` | small | What the robot decided live. `/camera/color/image_offboard/compressed` is left over from the removed external-computer mode: nothing publishes it any more, so it records nothing |
 | **H. Maze explorer** | `/maze/status`, `/maze/goal`, `/wall_scan` | small | What `maze_nav`'s explorer was doing (state, current frontier goal, wall slice fed to SLAM) |
+
+**Not recorded by any preset yet** (added to `maze_nav` / `team_perception` since the presets
+were written): `/stairs/status`, `/stairs/detection`, `/stairs/pose` (stair line-up),
+`/scene/trigger`, `/junction_detected` (scene trigger), `/qr/read`, `/qr/unread`,
+`/perception/look_request` (explorer `FACING_QR` / `LOOKING`). All are small. Add them after
+`--` for now, e.g. `rec_maze run1 -- /stairs/status /scene/trigger /qr/unread /qr/read
+/perception/look_request`, or add them to groups G/H in [record.sh](record.sh).
 
 Groups E–H only have messages while the matching launch is running: `/tf` to `map`, `/odom`,
 `/scan` and `/map` need Fast-LIO and `slam_toolbox` (from `lite3_launcher` or `maze_nav`); group F needs
@@ -247,7 +254,7 @@ records it all. Use three terminals on the robot computer.
    BAG=~/challenge_ws/ROS_bags/maze_run1_exited
    START=$(awk '/nanoseconds_since_epoch/{print int($2/1e9); exit}' $BAG/metadata.yaml)
    mkdir -p ${BAG}_extras
-   (cd ~ && find challenge_ws/maps qr_logs poster_logs challenge_ws/logs/junctions \
+   (cd ~ && find challenge_ws/maps qr_logs poster_logs challenge_ws/logs/cpu \
         -type f -newermt "@$START" -exec cp --parents {} ${BAG}_extras/ \; 2>/dev/null)
    ls -R ${BAG}_extras
    ```
@@ -256,7 +263,7 @@ records it all. Use three terminals on the robot computer.
    | Final map | `~/challenge_ws/maps/maze_<date>_<time>.{pgm,yaml}` |
    | QR snapshots (annotated JPEG) + CSV | `~/qr_logs/` |
    | Poster CSV | `~/poster_logs/` |
-   | Junction photos + JSON | `~/challenge_ws/logs/junctions/run_<date>_<time>/` |
+   | CPU per process + summary (`cpu_log`) | `~/challenge_ws/logs/cpu/run_<date>_<time>{.csv,_summary.txt}` |
    | Full node logs | `~/.ros/log/<date>-<time>-…/` (the folder `ros2 launch` printed at startup) |
 
    `rec_rename` doesn't rename `_extras/`, so rename it by hand if you rename the bag.

@@ -24,6 +24,7 @@ so thresholds can be tuned from logs.
 """
 from collections import deque
 from dataclasses import dataclass
+import itertools
 import math
 
 import numpy as np
@@ -277,6 +278,61 @@ class Track:
     last_seen: float
     reported_at: float = -1e9
     count: int = 0
+    room: tuple = None        # survivor's room point (pulled back from the wall), track frame
+    n_room: int = 0
+    cell: tuple = None        # cell last reported for this poster ...
+    cell_frame: str = None    # ... and the frame it was placed in (odom before SLAM is up)
+    need: int = None          # poster votes needed for this track (None = tracker default)
+
+    def add_room(self, xyz):
+        """Running average of the room point, like the track position."""
+        self.room = _avg(self.room, xyz, min(self.n_room, 9))
+        self.n_room += 1
+
+
+def _avg(old, new, k):
+    if old is None or k == 0:
+        return tuple(float(v) for v in new)
+    return tuple((o * k + n) / (k + 1) for o, n in zip(old, new))
+
+
+@dataclass
+class MazeCells:
+    """
+    The maze's square cells in the map frame: SAME convention as maze_nav's
+    scene_understanding.CellGrid (and the same parameter names in scene_trigger), so a cell
+    index means the same cell to both packages. Cell (0, 0) is centred on `origin` (the map
+    origin = where the robot stood at bringup, on the start cell); +i points along `yaw`.
+    """
+    size: float = 1.0
+    origin: tuple = (0.0, 0.0)
+    yaw: float = 0.0
+
+    def cell(self, xy):
+        dx, dy = xy[0] - self.origin[0], xy[1] - self.origin[1]
+        c, s = math.cos(self.yaw), math.sin(self.yaw)
+        u, v = (c * dx + s * dy) / self.size, (-s * dx + c * dy) / self.size
+        return int(math.floor(u + 0.5)), int(math.floor(v + 0.5))
+
+    def centre(self, cell):
+        u, v = cell[0] * self.size, cell[1] * self.size
+        c, s = math.cos(self.yaw), math.sin(self.yaw)
+        return self.origin[0] + c * u - s * v, self.origin[1] + s * u + c * v
+
+
+def pull_back(xyz, dist):
+    """
+    Point `dist` m from xyz back towards the camera (xyz in a camera frame, camera at 0).
+
+    A poster hangs on a wall, and walls sit on cell edges, so the poster point itself can
+    fall in either cell. The survivor's room is the one the camera sees the poster from:
+    stepping back towards the camera by about a quarter cell lands well inside it.
+    """
+    r = math.sqrt(sum(v * v for v in xyz))
+    if r <= dist or r == 0.0:
+        return (0.0, 0.0, 0.0) if r == 0.0 else tuple(v * 0.5 for v in xyz)
+    k = 1.0 - dist / r
+    return tuple(v * k for v in xyz)
 
 
 class PosterTracker:
@@ -297,10 +353,11 @@ class PosterTracker:
         self.forget = forget_s
         self.repeat = repeat_after_s
         self.tracks = []
-        self._next = 1
+        self._ids = itertools.count(1)
 
-    def update(self, xyz, label, now):
-        """Add one classification. Returns (track, report_now)."""
+    def update(self, xyz, label, now, need=None):
+        """Add one classification. Returns (track, report_now). need: votes needed for THIS
+        track from now on (e.g. fewer in a room with a QR code); None = the default."""
         self.tracks = [t for t in self.tracks if now - t.last_seen < self.forget]
         x, y, z = xyz
         best, best_d = None, self.merge
@@ -309,8 +366,7 @@ class PosterTracker:
             if d <= best_d:
                 best, best_d = t, d
         if best is None:
-            best = Track(self._next, x, y, z, deque(maxlen=self.window), now)
-            self._next += 1
+            best = Track(next(self._ids), x, y, z, deque(maxlen=self.window), now)
             self.tracks.append(best)
         else:   # running average keeps the position steady
             k = min(best.count, 9)
@@ -320,6 +376,8 @@ class PosterTracker:
         best.labels.append(label)
         best.last_seen = now
         best.count += 1
+        if need is not None:
+            best.need = need
         confirmed = self.is_poster(best)
         report = confirmed and now - best.reported_at >= self.repeat
         if report:
@@ -327,7 +385,108 @@ class PosterTracker:
         return best, report
 
     def is_poster(self, t):
-        return sum(1 for lab in t.labels if lab == POSTER) >= self.need
+        need = t.need if t.need is not None else self.need
+        return sum(1 for lab in t.labels if lab == POSTER) >= need
 
     def votes(self, t):
         return f'{sum(1 for lab in t.labels if lab == POSTER)}/{len(t.labels)}'
+
+
+class Announced:
+    """Positions already announced ("Human found"), all in ONE fixed frame (odom)."""
+
+    def __init__(self, merge_radius_m=0.5):
+        self.merge = merge_radius_m
+        self.positions = []
+
+    def add(self, xyz):
+        """True (and remembered) if nothing was announced within merge radius of xyz."""
+        if any(math.dist(xyz, p) <= self.merge for p in self.positions):
+            return False
+        self.positions.append(tuple(xyz))
+        return True
+
+
+@dataclass
+class QrRoom:
+    """A room known to hold at least one survivor because a QR code was read in it."""
+    text: str
+    room: tuple                 # room point (pulled back from the code's wall), odom
+    first_seen: float
+    n: int = 1
+    has_poster: bool = False    # a poster was confirmed in this room
+    look_requested: bool = False
+    visited: bool = False       # the robot has been within leave_radius of the room point
+    backup: bool = False        # survivor reported from the QR alone ...
+    backup_claimed: bool = False  # ... and later matched by a confirmed poster
+    cell: tuple = None          # cell last reported for the QR-only survivor ...
+    cell_frame: str = None      # ... and the frame it was placed in
+
+
+class QrRooms:
+    """
+    Rooms with QR codes, all in ONE fixed frame (odom). QR codes only appear in rooms with
+    survivors (but not every survivor room has one), so a read code means "at least one
+    survivor here". Used to confirm posters with fewer votes near a code, to ask the explorer
+    to look around a code's room when no poster has been confirmed there yet, and to report
+    a survivor from the code alone once the robot has left such a room.
+
+    Rooms need not be single cells, so "in the room" is a distance: room points (posters and
+    codes are both pulled back from their walls towards the camera) within `radius` m.
+    """
+
+    def __init__(self, radius=1.0):
+        self.radius = radius
+        self.rooms = {}             # text -> QrRoom
+
+    def add(self, text, room, now):
+        """Record a read code (repeat reads refine its room point). Returns the QrRoom."""
+        r = self.rooms.get(text)
+        if r is None:
+            r = self.rooms[text] = QrRoom(text, tuple(room), now)
+        else:
+            r.room = _avg(r.room, room, min(r.n, 9))
+            r.n += 1
+        return r
+
+    def near(self, xyz):
+        """QR rooms within radius of xyz, nearest first."""
+        rs = [(math.dist(r.room[:2], xyz[:2]), r) for r in self.rooms.values()]
+        return [r for d, r in sorted(rs, key=lambda dr: dr[0]) if d <= self.radius]
+
+    def poster_confirmed(self, xyz):
+        """
+        A poster was confirmed at room point xyz: mark its QR room(s). Returns the room whose
+        QR-only survivor report this poster turns out to be (no new "Human found"), or None.
+        """
+        claim = None
+        for r in self.near(xyz):
+            r.has_poster = True
+            if claim is None and r.backup and not r.backup_claimed:
+                r.backup_claimed = True
+                claim = r
+        return claim
+
+    def to_look(self, now, delay):
+        """Rooms read `delay` s ago with no poster confirmed and no look-around asked yet."""
+        return [r for r in self.rooms.values()
+                if not r.has_poster and not r.look_requested and now - r.first_seen >= delay]
+
+    def to_report(self, robot_xyz, now, leave_radius, timeout):
+        """
+        Rooms to report a survivor in from the code alone: no poster confirmed there, and
+        the robot has been in the room (within leave_radius of its room point) and left
+        again, or `timeout` s have passed since the code was read. A code read from afar
+        doesn't count as "left": the robot may still go in and find the poster.
+        """
+        out = []
+        for r in self.rooms.values():
+            if r.has_poster or r.backup:
+                continue
+            d = None if robot_xyz is None else math.dist(robot_xyz[:2], r.room[:2])
+            if d is not None and d <= leave_radius:
+                r.visited = True
+            left = r.visited and d is not None and d > leave_radius
+            if left or now - r.first_seen >= timeout:
+                out.append(r)
+        return out

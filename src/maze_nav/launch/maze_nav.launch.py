@@ -23,13 +23,21 @@ Arguments:
   gait:=rug        cmd_vel_bridge sends Move mode + RUG gait (General) once at startup;
                    none = leave the gait alone. Send lite3_auto AFTER "gait sent"
   perception:=true also start team_perception (robot.launch.py: qr_scanner, human_detector
-                   (YOLO, on this computer), poster_detector); posters:=false = QR codes only
+                   (YOLO, on this computer), poster_detector); posters:=false = QR codes only.
+                   Depth for them and stair_detector goes through ONE team_perception
+                   depth_relay (raw depth once from the bridge, 10 Hz on /camera/depth_relay/*)
   auto_stand:=true cmd_vel_bridge sends stand first, ONLY if the lidar shows the robot lying
                    down (stand is a toggle: a standing robot would sit); false = never
   wait_for_start:=true  hold still once everything is up until
                    `ros2 topic pub --once /maze/start std_msgs/msg/Empty`
-  junction_photos:=true  at a junction (2 frontiers about equally far), face each way and save
-                   a camera picture + JSON in ~/challenge_ws/logs/junctions/run_<time>/
+  stairs:=true     stair_detector: stairs in the depth image within 1.5 m -> the explorer stops
+                   Nav2, the robot turns to face them, centres, stops with base_link 0.45 m
+                   from the first riser, square to the steps (AT_STAIRS), and holds until
+                   /maze/start (maze_nav/stair_detector.py)
+  scene_trigger:=true  publish /scene/trigger (+ /junction_detected) the first time the robot
+                   reaches each cell, start cell included, only while the explorer runs
+                   (CREEPING/SCANNING/EXPLORING/TURNING/LOOKING on /maze/status)
+                   (maze_nav/scene_understanding/scene_trigger.py)
   creep_distance:=0.10  m straight ahead (no steering) after start, onto the SLAM map and off the
                    back wall (0 = off)
   start_scan:=true turn 45 deg left, 90 right, 45 left after the creep, before exploring
@@ -64,7 +72,7 @@ NAV2_NODES = ['planner_server', 'controller_server', 'behavior_server', 'bt_navi
               'velocity_smoother']
 
 
-ROBOT_DOMAIN = '4'   # lite3_domain_bridge_4, RViz / external computer: robot_info.md
+ROBOT_DOMAIN = '4'   # lite3_domain_bridge_4, RViz: robot_info.md
 
 
 def ros_domain(context):
@@ -108,21 +116,53 @@ def preflight(context):
     return []
 
 
-def perception(context):
-    """team_perception's robot.launch.py (QR codes, posters), if perception:=true."""
+RAW_DEPTH, RAW_INFO = '/camera/depth/image_raw', '/camera/depth/camera_info'
+RELAY_DEPTH, RELAY_INFO = '/camera/depth_relay/image_raw', '/camera/depth_relay/camera_info'
+
+
+def depth_users(context):
+    """team_perception (perception:=true) and stair_detector (stairs:=true), sharing ONE
+    depth_relay: the raw depth comes from lite3_domain_bridge_4 (another VM), which sends a
+    full 18 MB/s copy to every subscribing process. The relay takes one and passes 10 frames a
+    second on (team_perception/depth_relay_node.py). Without team_perception built there is no
+    relay and stair_detector reads the raw depth itself."""
     import launch.logging
-    if LaunchConfiguration('perception').perform(context).lower() not in ('true', '1'):
-        return []
+    log = launch.logging.get_logger('maze_nav')
+    flag = lambda n: LaunchConfiguration(n).perform(context).lower() in ('true', '1')  # noqa: E731
+    perception, stairs = flag('perception'), flag('stairs')
     try:
         share = get_package_share_directory('team_perception')
     except Exception:                               # not built: navigate anyway
-        launch.logging.get_logger('maze_nav').warning(
-            'team_perception not found (colcon build --packages-select team_perception); '
-            'running WITHOUT perception')
-        return []
-    return [IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(share, 'launch', 'robot.launch.py')),
-        launch_arguments={'posters': LaunchConfiguration('posters')}.items())]
+        share = None
+        if perception:
+            log.warning('team_perception not found (colcon build --packages-select '
+                        'team_perception); running WITHOUT perception')
+        perception = False
+    out = []
+    depth, info = RAW_DEPTH, RAW_INFO
+    if share is not None and (perception or stairs):
+        out.append(Node(package='team_perception', executable='depth_relay', name='depth_relay',
+                        output='both',
+                        parameters=[{'in_depth_topic': RAW_DEPTH, 'in_info_topic': RAW_INFO,
+                                     'out_depth_topic': RELAY_DEPTH,
+                                     'out_info_topic': RELAY_INFO, 'rate_hz': 10.0}]))
+        depth, info = RELAY_DEPTH, RELAY_INFO
+    if perception:
+        out.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(share, 'launch', 'robot.launch.py')),
+            launch_arguments={'posters': LaunchConfiguration('posters'),
+                              'depth_relay': 'false',          # ours above
+                              'depth_topic': depth,
+                              'depth_camera_info_topic': info}.items()))
+    if stairs:
+        out.append(Node(
+            package='maze_nav', executable='stair_detector', name='stair_detector',
+            output='both',
+            parameters=[{'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time'),
+                                                        value_type=bool),
+                         'drive': ParameterValue(LaunchConfiguration('go'), value_type=bool),
+                         'depth_topic': depth, 'depth_camera_info_topic': info}]))
+    return out
 
 
 # What a dead process means for the run, for the banner below.
@@ -142,9 +182,13 @@ DEATH_HINTS = {
     'qr_scanner': 'perception only: no more QR codes. Navigation carries on.',
     'human_detector': 'perception only: no person boxes, so no more posters. '
                       'Navigation carries on.',
-    'image_throttle': 'perception only: no images to the external computer, no posters. '
-                      'Navigation carries on.',
     'poster_detector': 'perception only: no more posters. Navigation carries on.',
+    'cpu_monitor': 'CPU logging only. Navigation carries on.',
+    'scene_trigger': 'scene understanding only: no more /scene/trigger. Navigation carries on.',
+    'depth_relay': 'no depth: no QR positions, no posters, no stair line-up. Navigation '
+                   'carries on.',
+    'stair_detector': 'no stair line-up: Nav2 drives over the stairs as floor. If it died '
+                      'while turning the robot, cmd_vel_bridge stops it (idle).',
 }
 
 
@@ -249,8 +293,13 @@ def generate_launch_description():
                               description='robot lying at launch: send stand once, before gait'),
         DeclareLaunchArgument('wait_for_start', default_value='true',
                               description='hold still once ready until /maze/start (std_msgs/Empty)'),
-        DeclareLaunchArgument('junction_photos', default_value='true',
-                              description='at a junction, face each way and save a picture'),
+        DeclareLaunchArgument('stairs', default_value='true',
+                              description='stair_detector: face the stairs square and stop '
+                                          'in front of them, hold until /maze/start'),
+        DeclareLaunchArgument('scene_trigger', default_value='true',
+                              description='publish /scene/trigger once per new cell reached'),
+        DeclareLaunchArgument('cpu_log', default_value='true',
+                              description='log CPU per process to ~/challenge_ws/logs/cpu/'),
         DeclareLaunchArgument('creep_distance', default_value='0.10',
                               description='m straight ahead after start, no steering; 0 = off'),
         DeclareLaunchArgument('start_scan', default_value='true',
@@ -324,7 +373,13 @@ def generate_launch_description():
                                     'auto_stand': ParameterValue(arg('auto_stand'),
                                                                  value_type=bool)}]),
 
-        OpaqueFunction(function=perception),
+        OpaqueFunction(function=depth_users),     # depth_relay, team_perception, stair_detector
+
+        Node(package='maze_nav', executable='cpu_monitor', name='cpu_monitor', output='both',
+             condition=IfCondition(arg('cpu_log'))),
+
+        Node(package='maze_nav', executable='scene_trigger', name='scene_trigger',
+             output='both', parameters=[sim_time], condition=IfCondition(arg('scene_trigger'))),
 
         Node(package='maze_nav', executable='maze_explorer', name='maze_explorer',
              output='both',
@@ -332,8 +387,18 @@ def generate_launch_description():
                  'go': ParameterValue(arg('go'), value_type=bool),
                  'wait_for_start': ParameterValue(arg('wait_for_start'), value_type=bool),
                  'map_dir': arg('map_dir'),
-                 'junction_photos': ParameterValue(arg('junction_photos'), value_type=bool),
                  'creep_distance': ParameterValue(arg('creep_distance'), value_type=float),
                  'start_scan': ParameterValue(arg('start_scan'), value_type=bool),
+                 # Switched-off features are disconnected, so a stray publisher on the
+                 # domain (an old stair_detector, a test rig) can't stop the robot.
+                 'stairs_topic': ParameterValue(PythonExpression(
+                     ["'/stairs/status' if '", arg('stairs'), "'.lower() in ('true', '1') "
+                      "else ''"]), value_type=str),
+                 'look_topic': ParameterValue(PythonExpression(
+                     ["'/perception/look_request' if '", arg('perception'),
+                      "'.lower() in ('true', '1') else ''"]), value_type=str),
+                 'qr_unread_topic': ParameterValue(PythonExpression(
+                     ["'/qr/unread' if '", arg('perception'),
+                      "'.lower() in ('true', '1') else ''"]), value_type=str),
              }]),
     ])

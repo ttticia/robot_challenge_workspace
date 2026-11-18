@@ -40,6 +40,39 @@ Loop (period `replan_period`):
      `max_recoveries` times. Seen live: a phantom wall (the robot's own leg) put the robot
      "in lethal space" for the planner, the goal failed, was blacklisted, and the run ended
      NO_EXIT with a 2 m wide frontier still open.
+Turning near a wall (`pre_turn`): before each new goal, if the way there leaves the robot
+more than `pre_turn_min_angle` off its heading (Nav2's path follower would turn on the spot
+first, always the short way) and that turn's sweep would bring the footprint within
+`turn_margin` of a wall on the SLAM map, the explorer stops (status TURNING) and turns the
+robot itself the long way round, if that sweep is clear, then goes on (core.plan_turn).
+Blocked both ways (the usual case in a 0.9 m corridor: the rear corners turn on a 0.437 m
+circle): it creeps straight ahead, no steering, up to `pre_turn_max_creep` m, to the spot
+where the turn is clear with the most room to the nearest wall, then turns there
+(core.plan_creep_turn: `turn_margin`, else 1 cm, which is all a 0.9 m corridor corner
+leaves). No such spot: left to Nav2. Clear short turns are left to Nav2 too. Once per goal.
+Sim 2026-11-16: an 80 deg short-way turn at a cell edge swung the rear corner into the wall. Walls within ~0.5 m
+beside the robot that the lidar never saw from further away aren't on the map, so this only
+covers walls it has seen.
+Stairs (stair_detector.py): while EXPLORING, TURNING or LOOKING, stair_detector's /stairs/status
+HANDOVER means stairs are close ahead. The explorer cancels the Nav2 goal (or turn), sends a
+zero Twist and goes to STAIRS; only then does stair_detector drive (face the stairs, square up,
+stop in front), so it and Nav2 never both command nav_cmd_vel. Its AT_STAIRS -> AT_STAIRS here:
+hold still until /maze/start (switch gait for the stairs first), then explore on. Its ABORTED
+or IDLE, or `stairs_timeout` s in STAIRS -> back to EXPLORING. stairs_topic:='' = ignore it.
+Look-around (`look_topic`, from poster_detector): a QR room with no survivor poster confirmed
+yet (QR codes only appear in rooms with survivors). While EXPLORING within `look_radius` of the
+requested point, the explorer cancels the goal and sweeps left, right and back (LOOKING), each
+way as far as `look_angle` or until the body would touch a wall (like the start scan), so
+the camera sees the room; then EXPLORING again. Requests never reached expire after
+`look_timeout` s (poster_detector then reports that room's survivor from the QR alone).
+Unreadable QR code (`qr_unread_topic`, from qr_scanner: located in the image but not read,
+e.g. too far round, blurred or at a steep angle): while EXPLORING, the explorer cancels the
+goal and turns to face it (FACING_QR; cut short where the body would touch a wall, like
+LOOKING), then holds still while qr_scanner runs its slow, thorough decode on every frame.
+It goes back to EXPLORING when the code is read (`qr_read_topic`), when it hasn't been seen
+for `face_lost` s, or after `face_timeout` s (that spot is then ignored for `face_cooldown`
+s, so the robot can't get stuck on it). Re-aims up to `face_max_turns` times if it drifts.
+Stairs (HANDOVER) interrupt it like LOOKING.
 Nav2 down for `nav_down_timeout` s (a server crashed and the lifecycle manager deactivated
 the rest; Humble doesn't bring it back) -> STOPPED, not NO_EXIT.
 Nothing left to explore and no exit -> DONE (no exit found): the running goal is cancelled
@@ -48,20 +81,10 @@ cancelled, the map is saved and /maze/status says why. Ctrl+C / SIGTERM (also fr
 ros2 launch) ends the run as STOPPED the same way: rclpy's own signal handler is off so
 the context is still valid for the cancel and the final status.
 
-Junction photos (`junction_photos`): when the two nearest frontiers are about equally far
-(core.find_junction: both within `junction_range`, path lengths within `junction_dist_tol`,
-ways >= `junction_min_angle` apart), the robot stops (status JUNCTION), turns to face the
-first way (the smaller turn), waits `junction_settle` s, takes a colour image, does the same
-for the second way, saves both plus a JSON (pose, headings, frontier goals, image files) in
-`junction_dir`/run_<time>/, then explores on as before. Each junction once (`junction_revisit`).
-Turns use Nav2's spin, cut short where the footprint would hit a mapped wall. No image within
-`image_timeout` s: logged, recorded as null, the run goes on. Skipped with go:=false.
-
-Status on /maze/status (std_msgs/String, latched): STARTING, PAUSED, CREEPING, SCANNING, JUNCTION, EXPLORING, EXITED, NO_EXIT,
-STOPPED. Goals on /maze/goal (PoseStamped) for RViz. `go` parameter false = plan and publish
-goals but never send them to Nav2 (dry run on the robot).
+Status on /maze/status (std_msgs/String, latched): STARTING, PAUSED, CREEPING, SCANNING, EXPLORING, TURNING,
+LOOKING, FACING_QR, STAIRS, AT_STAIRS, EXITED, NO_EXIT, STOPPED. Goals on /maze/goal (PoseStamped) for RViz. `go`
+parameter false = plan and publish goals but never send them to Nav2 (dry run on the robot).
 """
-import json
 import math
 import os
 import signal
@@ -71,23 +94,22 @@ import time
 import rclpy
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PointStamped, PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose, Spin
 from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid
-from rclpy.qos import qos_profile_sensor_data
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
 from rclpy.time import Time
-from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import Empty, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from maze_nav.core import (ExitDetector, Grid, choose_frontier, find_frontiers,
-                           find_junction, footprint_hits, free_distance_ahead, max_turn)
+                           free_distance_ahead, heading_towards, max_turn, plan_creep_turn,
+                           plan_turn)
 
 START_CMD = 'ros2 topic pub --once /maze/start std_msgs/msg/Empty'
 
@@ -133,34 +155,43 @@ class Explorer(Node):
         p('footprint_front', 0.27)
         p('footprint_half_width', 0.23)
         p('turn_margin', 0.03)         # m kept clear of walls while turning on the spot
+        p('pre_turn', True)            # turn the robot ourselves when Nav2's turn would hit a wall
+        p('pre_turn_min_angle', 0.6)   # rad; = RPP rotate_to_heading_min_angle (nav2_params.yaml)
+        p('pre_turn_max_creep', 0.6)   # m straight ahead to find room when blocked both ways; 0 = off
         p('creep_margin', 0.05)        # m kept clear of walls ahead at the end of the creep
         p('goal_max_offset', 7.5)      # m in x and y from the robot; global costmap is 16 x 16 rolling
         p('goal_grace', 3)             # replans the current goal's frontier may be missing
         #                                before switching goals (a blink isn't a switch)
         p('nav_down_timeout', 5.0)     # s of Nav2 reported inactive before giving up (STOPPED)
+        p('stairs_topic', '/stairs/status')   # stair_detector handshake; '' = ignore stairs
+        p('stairs_timeout', 60.0)      # s in STAIRS (stair_detector driving) before exploring on
+        # Look-around requests from poster_detector: a QR room (QR codes only appear in rooms
+        # with survivors) where no poster has been confirmed yet. '' = ignore them.
+        p('look_topic', '/perception/look_request')
+        p('look_radius', 1.5)          # m: look around once the robot is this close
+        p('look_angle', math.pi)       # rad each way (less where the body would hit a wall)
+        p('look_timeout', 120.0)       # s: drop a request the robot never got close to
+        # QR codes seen but unreadable (qr_scanner /qr/unread): turn to face them until read
+        # (/qr/read). '' = ignore; maze_nav.launch.py blanks both when perception:=false.
+        p('qr_unread_topic', '/qr/unread')
+        p('qr_read_topic', '/qr/read')
+        p('face_timeout', 10.0)        # s facing a code without a read before giving up on it
+        p('face_lost', 4.0)            # s with no unread sighting: code gone (or was noise)
+        p('face_min_angle', math.radians(8))   # rad: closer than this = already facing it
+        p('face_max_turns', 3)         # re-aims while it drifts off-centre
+        p('face_cooldown', 60.0)       # s: ignore a code given up on (within 0.75 m)
         p('map_dir', os.path.expanduser('~/challenge_ws/maps'))
-        p('junction_photos', True)     # at a junction: face each way and take a picture
-        p('junction_range', 1.5)       # m along free space: both ways' frontiers within this
-        p('junction_dist_tol', 0.5)    # m: their path lengths differ by at most this
-        p('junction_min_angle', 60.0)  # deg between the two ways, seen from the robot
-        p('junction_revisit', 1.0)     # m: a junction this close to a photographed one is skipped
-        p('junction_settle', 0.7)      # s still after a turn before the picture
-        p('image_topic', '/camera/color/image_raw/compressed')   # CompressedImage (JPEG)
-        p('image_raw_topic', '/camera/color/image_raw')          # Image, used if no JPEG comes
-        p('image_timeout', 3.0)        # s to wait for a picture
-        p('junction_dir', os.path.expanduser('~/challenge_ws/logs/junctions'))
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self.cfg = {n: g(n) for n in ('go', 'start_delay', 'wait_for_start', 'robot_radius', 'goal_clearance',
                                       'min_frontier_size', 'robot_width', 'min_frontier_width_ratio', 'goal_timeout', 'max_failures', 'done_confirm', 'max_recoveries',
                                       'max_runtime', 'map_dir', 'creep_distance', 'creep_speed',
                                       'start_scan', 'scan_angle', 'footprint_back',
                                       'footprint_front', 'footprint_half_width', 'turn_margin',
+                                      'pre_turn', 'pre_turn_min_angle', 'pre_turn_max_creep',
                                       'creep_margin', 'goal_max_offset', 'goal_grace',
-                                      'nav_down_timeout',
-                                      'junction_photos', 'junction_range', 'junction_dist_tol',
-                                      'junction_min_angle', 'junction_revisit', 'junction_settle',
-                                      'image_topic', 'image_raw_topic', 'image_timeout',
-                                      'junction_dir')}
+                                      'nav_down_timeout', 'stairs_timeout', 'look_radius',
+                                      'look_angle', 'look_timeout', 'face_timeout', 'face_lost',
+                                      'face_min_angle', 'face_max_turns', 'face_cooldown')}
         self.exit = ExitDetector(open_radius=g('exit_open_radius'),
                                  near_radius=g('exit_near_radius'),
                                  min_displacement=g('exit_min_displacement'),
@@ -185,14 +216,16 @@ class Explorer(Node):
         self.create_subscription(OccupancyGrid, '/map', self.on_map, LATCHED)
         # Volatile on purpose: a start sent before this run is never replayed.
         self.create_subscription(Empty, '/maze/start', self.on_start, 10)
+        if g('stairs_topic'):
+            self.create_subscription(String, g('stairs_topic'), self.on_stairs, LATCHED)
+        if g('look_topic'):
+            self.create_subscription(PointStamped, g('look_topic'), self.on_look_request, 10)
+        if g('qr_unread_topic'):
+            self.create_subscription(PointStamped, g('qr_unread_topic'), self.on_qr_unread, 10)
+            if g('qr_read_topic'):
+                self.create_subscription(String, g('qr_read_topic'), self.on_qr_read, 10)
         self.create_timer(g('replan_period'), self.step)
         self.create_timer(0.1, self.creep_tick)   # faster than cmd_vel_bridge's idle_timeout
-
-        self.junctions = []          # (x, y) of photographed junctions
-        self.jn = None               # the junction being photographed
-        self.img_subs = []
-        self.img_msg = None
-        self.run_dir = os.path.join(self.cfg['junction_dir'], time.strftime('run_%Y%m%d_%H%M%S'))
 
         self.map = None
         self.first_map = None
@@ -215,6 +248,8 @@ class Explorer(Node):
         self.creep_target = None     # m the creep actually drives (shortened near a wall)
         self.spin_busy = False       # scan turn sent, result not back yet
         self.spin_handle = None
+        self.pre_turned = None       # goal (x, y) the last pre-turn was for: once per goal
+        self.turn_creep = None       # TURNING: creeping ahead to room for the turn {goal, ...}
         self.creep_from = None       # (x, y) in map where the creep started
         self.creep_until = None      # monotonic deadline for the creep
         self.goal_result_at = None   # monotonic time goal_result arrived
@@ -222,6 +257,14 @@ class Explorer(Node):
         self.nav_reply_at = -1.0     # sent_at of the newest is_active answer
         self.nav_active = True
         self.nav_down_since = None
+        self.stairs_since = None     # monotonic time STAIRS began
+        self.resume_requested = False   # /maze/start while AT_STAIRS
+        self.looks = []              # pending look-around requests: (PointStamped, received)
+        self.look_turns = None       # LOOKING: turns still to make
+        self.unread = None           # newest /qr/unread: (PointStamped in odom, monotonic time)
+        self.qr_read_at = -1e9       # monotonic time of the newest /qr/read
+        self.face = None             # FACING_QR: {'since', 'turns'}
+        self.face_given_up = []      # [((x, y) in map, monotonic time)]: codes not read in time
         self.set_state('STARTING', 'waiting for /map, TF map->base_link and Nav2')
 
     # ------------------------------------------------------------------ helpers
@@ -240,8 +283,41 @@ class Explorer(Node):
         if self.state == 'PAUSED':
             self.start_requested = True
             self.get_logger().info('start received')
+        elif self.state == 'AT_STAIRS':
+            self.resume_requested = True
+            self.get_logger().info('start received: exploring on from the stairs')
         elif self.state == 'STARTING':
             self.get_logger().warn('start ignored: not ready yet (wait for PAUSED)')
+
+    def on_stairs(self, msg):
+        """stair_detector's /stairs/status (see the module doc)."""
+        stairs = msg.data.split(':', 1)[0].strip()
+        if stairs == 'HANDOVER' and \
+                self.state in ('EXPLORING', 'TURNING', 'LOOKING', 'FACING_QR') \
+                and self.cfg['go']:
+            if self.spin_handle is not None:          # a turn, scan or look-around
+                self.spin_handle.cancel_goal_async()
+                self.spin_handle = None
+            self.look_turns = None                    # a look-around ends here
+            self.face = None                          # so does facing a QR code
+            if self.goal_handle is not None:
+                self.goal_handle.cancel_goal_async()
+            self.goal_handle, self.current, self.goal_result = None, None, None
+            self.stop_robot()
+            self.stairs_since = time.monotonic()
+            self.set_state('STAIRS', 'stairs ahead: Nav2 stopped, stair_detector lines the '
+                           'robot up')
+        elif self.state == 'STAIRS':
+            if stairs == 'AT_STAIRS':
+                self.resume_requested = False
+                self.set_state('AT_STAIRS', f'{msg.data.split(":", 1)[-1].strip()}; holding '
+                               f'still - switch gait, then: {START_CMD}')
+            elif stairs in ('IDLE', 'ABORTED'):
+                self.begin_after_stairs(f'stair_detector {msg.data}')
+
+    def begin_after_stairs(self, why):
+        self.pre_turned = None
+        self.set_state('EXPLORING', why)
 
     def robot_pose(self):
         try:
@@ -271,9 +347,13 @@ class Explorer(Node):
             self.nav_query = None
             self.nav_reply_at = sent
             if active != self.nav_active:
-                log = self.get_logger().info if active else self.get_logger().error
-                log('Nav2 is active again' if active else
-                    'Nav2 is NOT active (a server died? see the Nav2 log above)')
+                # Separate call sites: rclpy raises "Logger severity cannot be changed between
+                # calls" if one call site logs at two severities.
+                if active:
+                    self.get_logger().info('Nav2 is active again')
+                else:
+                    self.get_logger().error('Nav2 is NOT active (a server died? see the Nav2 '
+                                            'log above)')
             self.nav_active = active
             self.nav_down_since = None if active else (self.nav_down_since or now)
         if self.nav_check.service_is_ready():
@@ -314,10 +394,39 @@ class Explorer(Node):
             if time.monotonic() - self.started > self.cfg['max_runtime']:
                 return self.finish('STOPPED', f'max_runtime {self.cfg["max_runtime"]:.0f} s')
             return                                  # creep_tick drives, then moves on
-        if self.state == 'JUNCTION':
+        if self.state in ('STAIRS', 'AT_STAIRS'):  # stair_detector drives / holding still
             if time.monotonic() - self.started > self.cfg['max_runtime']:
                 return self.finish('STOPPED', f'max_runtime {self.cfg["max_runtime"]:.0f} s')
-            return                                  # junction_tick drives it
+            if self.state == 'STAIRS' and \
+                    time.monotonic() - self.stairs_since > self.cfg['stairs_timeout']:
+                self.get_logger().warn(f'stair_detector still busy after '
+                                       f'{self.cfg["stairs_timeout"]:.0f} s')
+                self.begin_after_stairs('stairs timeout; exploring on')
+            elif self.state == 'AT_STAIRS' and self.resume_requested:
+                self.resume_requested = False
+                self.begin_after_stairs('resumed at the stairs')
+            return
+        if self.state == 'TURNING':
+            if time.monotonic() - self.started > self.cfg['max_runtime']:
+                return self.finish('STOPPED', f'max_runtime {self.cfg["max_runtime"]:.0f} s')
+            if self.spin_busy or self.turn_creep is not None:
+                return                              # spinning, or creep_tick creeping
+            self.set_state('EXPLORING', 'turned; going on')   # replan from the new heading
+            return
+        if self.state == 'LOOKING':
+            if time.monotonic() - self.started > self.cfg['max_runtime']:
+                return self.finish('STOPPED', f'max_runtime {self.cfg["max_runtime"]:.0f} s')
+            if self.spin_busy:
+                return
+            if self.look_turns:
+                self.send_spin(self.look_turns.pop(0), 'look around')
+                return
+            self.set_state('EXPLORING', 'looked around; going on')   # replan from here
+            return
+        if self.state == 'FACING_QR':
+            if time.monotonic() - self.started > self.cfg['max_runtime']:
+                return self.finish('STOPPED', f'max_runtime {self.cfg["max_runtime"]:.0f} s')
+            return self.face_tick(pose)
         if self.state == 'SCANNING':
             if time.monotonic() - self.started > self.cfg['max_runtime']:
                 return self.finish('STOPPED', f'max_runtime {self.cfg["max_runtime"]:.0f} s')
@@ -351,6 +460,11 @@ class Explorer(Node):
                                f'{self.exit.open_nearby:.2f} m of open floor next to it')
         if time.monotonic() - self.started > self.cfg['max_runtime']:
             return self.finish('STOPPED', f'max_runtime {self.cfg["max_runtime"]:.0f} s')
+
+        if self.maybe_face(grid, xy, yaw):
+            return
+        if self.maybe_look(grid, xy, yaw):
+            return
 
         # Goal bookkeeping
         if self.goal_result is not None:
@@ -413,14 +527,6 @@ class Explorer(Node):
             print('nav stopped', flush=True)
             return
         self.empty_replans = 0
-        if self.cfg['junction_photos'] and self.cfg['go'] and \
-                not any(math.hypot(xy[0] - j[0], xy[1] - j[1]) < self.cfg['junction_revisit']
-                        for j in self.junctions):
-            ways = find_junction(grid, xy, yaw, frontiers, self.cfg['robot_radius'],
-                                 self.cfg['junction_range'], self.cfg['junction_dist_tol'],
-                                 math.radians(self.cfg['junction_min_angle']))
-            if ways:
-                return self.begin_junction(ways, xy, yaw)
         nxt = choose_frontier(frontiers, self.current, yaw, xy)
         if self.current is not None and self.goal_handle is not None:
             cg = self.current.goal
@@ -436,7 +542,220 @@ class Explorer(Node):
                 if self.current_missing < self.cfg['goal_grace']:
                     return
         self.current_missing = 0
+        if self.pre_turn(grid, xy, yaw, nxt):
+            return
         self.send(nxt, len(frontiers))
+
+    def pre_turn(self, grid, xy, yaw, f):
+        """Turn the robot ourselves before goal f if Nav2's own turn would hit a wall."""
+        if not (self.cfg['go'] and self.cfg['pre_turn']) or not self.spin.server_is_ready():
+            return False
+        if self.pre_turned is not None and \
+                math.hypot(f.goal[0] - self.pre_turned[0], f.goal[1] - self.pre_turned[1]) < 0.4:
+            return False                            # turned for this goal already
+        heading = heading_towards(grid, xy, f.goal, self.cfg['robot_radius'])
+        angle, why = plan_turn(grid, xy, yaw, heading, self.box, self.cfg['turn_margin'],
+                               self.cfg['pre_turn_min_angle'])
+        short = math.degrees(math.atan2(math.sin(heading - yaw), math.cos(heading - yaw)))
+        where = f'goal ({f.goal[0]:.2f}, {f.goal[1]:.2f})'
+        if angle is None and why == 'blocked both ways' and self.cfg['pre_turn_max_creep'] > 0:
+            # Find room straight ahead (core.plan_creep_turn), creep there, turn there.
+            d, margin, why2 = plan_creep_turn(
+                grid, xy, yaw, f.goal, self.box,
+                margins=tuple(sorted({self.cfg['turn_margin'], 0.01}, reverse=True)),
+                min_angle=self.cfg['pre_turn_min_angle'],
+                max_creep=self.cfg['pre_turn_max_creep'],
+                creep_margin=self.cfg['creep_margin'], robot_radius=self.cfg['robot_radius'])
+            if d is None:
+                self.get_logger().warn(f'{where} needs a {short:+.0f} deg turn, blocked by walls '
+                                       f'both ways and {why2}; leaving it to Nav2')
+                return False
+            self.halt_for_turn(f)
+            self.turn_creep = {'goal': f.goal, 'from': xy, 'target': d, 'margin': margin,
+                               'until': time.monotonic() + d / self.cfg['creep_speed'] + 3.0}
+            self.set_state('TURNING', f'{short:+.0f} deg to {where} blocked by walls both ways: '
+                           f'creeping {d * 100:.0f} cm ahead to turn there ({why2})')
+            return True
+        if angle is None:
+            return False
+        self.halt_for_turn(f)
+        self.set_state('TURNING', f'{short:+.0f} deg to {where} would hit a wall: turning '
+                       f'{math.degrees(angle):+.0f} deg instead')
+        self.send_spin(angle, 'turn before goal')
+        return True
+
+    def halt_for_turn(self, f):
+        """Stop driving (cancel the Nav2 goal) before turning for goal f, once per goal."""
+        self.pre_turned = f.goal
+        if self.goal_handle is not None:            # stop where we are
+            self.goal_handle.cancel_goal_async()
+        self.goal_handle, self.current, self.goal_result = None, None, None
+        self.stop_robot()
+
+    def on_look_request(self, msg):
+        """poster_detector: a QR room with no poster yet; look around there once."""
+        self.looks.append((msg, time.monotonic()))
+        self.get_logger().info(f'look-around requested at {msg.header.frame_id} '
+                               f'({msg.point.x:.2f}, {msg.point.y:.2f})')
+
+    def maybe_look(self, grid, xy, yaw):
+        """
+        EXPLORING: near a requested point, stop and sweep left and right (as far as
+        look_angle or until the body would touch a wall, like the start scan) so the camera
+        sees the whole room. Returns True if a look-around started.
+        """
+        now = time.monotonic()
+        self.looks = [(m, t) for m, t in self.looks if now - t < self.cfg['look_timeout']]
+        if not self.looks or not self.cfg['go'] or self.state != 'EXPLORING' or \
+                self.spin_busy or self.turn_creep is not None or \
+                not self.spin.server_is_ready():
+            return False
+        for i, (msg, _) in enumerate(self.looks):
+            try:   # requests are in odom; the map <- odom correction moves with SLAM
+                tf = self.tf.lookup_transform('map', msg.header.frame_id, Time())
+            except TransformException:
+                continue
+            t, q = tf.transform.translation, tf.transform.rotation
+            th = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+            px = t.x + math.cos(th) * msg.point.x - math.sin(th) * msg.point.y
+            py = t.y + math.sin(th) * msg.point.x + math.cos(th) * msg.point.y
+            if math.hypot(px - xy[0], py - xy[1]) > self.cfg['look_radius']:
+                continue
+            del self.looks[i]
+            a, m = abs(self.cfg['look_angle']), self.cfg['turn_margin']
+            left = max_turn(grid, xy, yaw, self.box, +1, a, m)
+            right = max_turn(grid, xy, yaw, self.box, -1, a, m)
+            turns = [t for t in (left, -(left + right), right) if abs(t) > math.radians(5)]
+            if not turns:
+                self.get_logger().warn('look-around skipped: walls too close to turn')
+                return False
+            self.halt_for_look()
+            self.look_turns = turns
+            self.set_state('LOOKING', f'QR room at ({px:.2f}, {py:.2f}) with no survivor '
+                           f'poster yet: {math.degrees(left):.0f} deg left, '
+                           f'{math.degrees(left + right):.0f} right, {math.degrees(right):.0f} '
+                           'left')
+            return True
+        return False
+
+    def on_qr_unread(self, msg):
+        """qr_scanner: a QR code in view that it can't read (position in odom)."""
+        self.unread = (msg, time.monotonic())
+
+    def on_qr_read(self, _msg):
+        self.qr_read_at = time.monotonic()
+
+    def odom_to_map(self, msg):
+        """(x, y) in map of a PointStamped in another fixed frame (latest TF), or None."""
+        try:
+            tf = self.tf.lookup_transform('map', msg.header.frame_id, Time())
+        except TransformException:
+            return None
+        t, q = tf.transform.translation, tf.transform.rotation
+        th = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        return (t.x + math.cos(th) * msg.point.x - math.sin(th) * msg.point.y,
+                t.y + math.sin(th) * msg.point.x + math.cos(th) * msg.point.y)
+
+    def face_turn(self, grid, xy, yaw, target):
+        """Turn (rad, + = left) towards target, cut to what the walls allow (max_turn)."""
+        want = wrap(math.atan2(target[1] - xy[1], target[0] - xy[0]) - yaw)
+        if abs(want) < self.cfg['face_min_angle']:
+            return 0.0, want
+        sign = 1 if want > 0 else -1
+        ok = max_turn(grid, xy, yaw, self.box, sign, abs(want), self.cfg['turn_margin'])
+        return (sign * ok if ok > math.radians(5) else 0.0), want
+
+    def maybe_face(self, grid, xy, yaw):
+        """
+        EXPLORING: a QR code is in view but unreadable: stop and turn to face it (FACING_QR)
+        so the camera sees it squarely, until qr_scanner reads it. Returns True if started.
+        """
+        now = time.monotonic()
+        self.face_given_up = [(p, t) for p, t in self.face_given_up
+                              if now - t < self.cfg['face_cooldown']]
+        if self.unread is None or now - self.unread[1] > 1.5 or not self.cfg['go'] or \
+                self.state != 'EXPLORING' or self.spin_busy or self.turn_creep is not None \
+                or now - self.qr_read_at < 1.0 or not self.spin.server_is_ready():
+            return False
+        target = self.odom_to_map(self.unread[0])
+        if target is None or any(math.hypot(target[0] - p[0], target[1] - p[1]) < 0.75
+                                 for p, _ in self.face_given_up):
+            return False
+        turn, want = self.face_turn(grid, xy, yaw, target)
+        self.halt_for_look()
+        self.face = {'since': now, 'turns': 0, 'target': target}
+        what = (f'turning {math.degrees(turn):+.0f} deg' if turn else
+                'already facing it' if abs(want) < self.cfg['face_min_angle'] else
+                f'walls block the {math.degrees(want):+.0f} deg turn, holding')
+        self.set_state('FACING_QR', f'QR code at ({target[0]:.2f}, {target[1]:.2f}) in view '
+                       f'but unreadable: {what} until it is read')
+        if turn:
+            self.face['turns'] = 1
+            self.send_spin(turn, 'face QR code')
+        return True
+
+    def face_tick(self, pose):
+        """FACING_QR: wait for the read; re-aim if it drifts; give up after face_timeout."""
+        now, f = time.monotonic(), self.face
+        if f is None:
+            return self.set_state('EXPLORING', 'facing QR code interrupted; going on')
+        if self.qr_read_at > f['since']:
+            self.face = None
+            return self.set_state('EXPLORING', 'QR code read; going on')
+        if self.spin_busy:
+            return
+        if now - f['since'] > self.cfg['face_timeout']:
+            self.face_given_up.append((f['target'], now))
+            self.face = None
+            self.get_logger().warn(f'QR code at ({f["target"][0]:.2f}, {f["target"][1]:.2f}) '
+                                   f'still unreadable after {self.cfg["face_timeout"]:.0f} s; '
+                                   f'ignoring it for {self.cfg["face_cooldown"]:.0f} s')
+            return self.set_state('EXPLORING', 'QR code not read in time; going on')
+        if self.unread is None or now - self.unread[1] > self.cfg['face_lost']:
+            self.face = None
+            return self.set_state('EXPLORING', 'unreadable QR code no longer in view; going on')
+        target = self.odom_to_map(self.unread[0])
+        if target is None or f['turns'] >= self.cfg['face_max_turns']:
+            return
+        xy, yaw = pose
+        turn, want = self.face_turn(Grid.from_msg(self.map), xy, yaw, target)
+        if turn and abs(want) > math.radians(15):
+            f['turns'] += 1
+            f['target'] = target
+            self.send_spin(turn, 'face QR code again')
+
+    def halt_for_look(self):
+        """Stop driving (cancel the Nav2 goal) before a look-around."""
+        if self.goal_handle is not None:
+            self.goal_handle.cancel_goal_async()
+        self.goal_handle, self.current, self.goal_result = None, None, None
+        self.stop_robot()
+
+    def end_turn_creep(self, why):
+        """Crept ahead for a blocked turn: turn now, if it is clear from here."""
+        tc, self.turn_creep = self.turn_creep, None
+        self.stop_robot()
+        self.get_logger().info(f'turn creep: {why}')
+        pose = self.robot_pose()
+        if pose is None or self.map is None:
+            return                                  # step() moves on to EXPLORING
+        xy, yaw = pose
+        grid = Grid.from_msg(self.map)
+        heading = heading_towards(grid, xy, tc['goal'], self.cfg['robot_radius'])
+        want = math.atan2(math.sin(heading - yaw), math.cos(heading - yaw))
+        if abs(want) < math.radians(5):
+            return
+        m, s = tc['margin'], (1.0 if want >= 0 else -1.0)
+        other = 2 * math.pi - abs(want)
+        if max_turn(grid, xy, yaw, self.box, s, abs(want), m) >= abs(want) - 1e-6:
+            angle = want
+        elif max_turn(grid, xy, yaw, self.box, -s, other, m) >= other - 1e-6:
+            angle = -s * other
+        else:
+            self.get_logger().warn(f'turn creep: {math.degrees(want):+.0f} deg still blocked '
+                                   'here; leaving it to Nav2')
+            return
+        self.send_spin(angle, 'turn after creep')
 
     def begin(self):
         self.set_state('EXPLORING', 'go' if self.cfg['go'] else 'DRY RUN (go:=false)')
@@ -524,136 +843,31 @@ class Explorer(Node):
         self.creep_until = time.monotonic() + free / self.cfg['creep_speed'] + 3.0
         self.set_state('CREEPING', f'{free * 100:.0f} cm straight ahead, no steering')
 
-    # ------------------------------------------------------------------ junction photos
-    def begin_junction(self, ways, xy, yaw):
-        if self.goal_handle is not None:            # stop where we are
-            self.goal_handle.cancel_goal_async()
-        self.goal_handle, self.current, self.goal_result = None, None, None
-        self.stop_robot()
-        n = len(self.junctions) + 1
-        self.junctions.append(xy)
-        self.jn = {'n': n, 'xy': xy, 'yaw': yaw, 'ways': ways, 'k': 0, 'phase': 'turn',
-                   'sent': False, 't': time.monotonic(), 'records': []}
-        desc = ', '.join(f'{math.degrees(h):+.0f} deg to ({f.goal[0]:.2f}, {f.goal[1]:.2f}) '
-                         f'{f.path_length:.1f} m' for f, h in ways)
-        self.set_state('JUNCTION', f'junction {n} at ({xy[0]:.2f}, {xy[1]:.2f}): {desc}')
-
-    def junction_tick(self):
-        j, now = self.jn, time.monotonic()
-        f, heading = j['ways'][j['k']]
-        if j['phase'] == 'turn':
-            if self.spin_busy:
-                return
-            if j['sent']:                           # turn finished (or failed: logged)
-                j['phase'], j['t'] = 'settle', now
-                return
-            pose = self.robot_pose()
-            if pose is None:
-                return
-            xy, yaw = pose
-            want = math.atan2(math.sin(heading - yaw), math.cos(heading - yaw))
-            sign, grid, m = (1.0 if want >= 0 else -1.0), Grid.from_msg(self.map), self.cfg['turn_margin']
-            if footprint_hits(grid, xy, yaw, self.box, m):
-                # A wall where the robot stands is a map artefact (stray cells, seen in the
-                # sim); the check would block every turn. Rely on Nav2 spin's own check.
-                self.get_logger().warn('junction: map shows a wall at the robot; turning '
-                                       'without the map check (Nav2 spin still checks)')
-                can = abs(want)
-            else:
-                can = max_turn(grid, xy, yaw, self.box, sign, abs(want), m)
-                if can < abs(want) - math.radians(3):
-                    other = 2 * math.pi - abs(want)         # the long way round
-                    if max_turn(grid, xy, yaw, self.box, -sign, other, m) >= other - 1e-6:
-                        self.get_logger().info(f'junction: short turn blocked by a wall; '
-                                               f'turning {math.degrees(other):.0f} deg the other way')
-                        sign, can = -sign, other
-                    else:
-                        self.get_logger().warn(f'junction: turn cut to {math.degrees(can):.0f} of '
-                                               f'{math.degrees(abs(want)):.0f} deg by a wall')
-            j['sent'] = True
-            if can >= math.radians(3):
-                self.send_spin(sign * can, 'junction')
-        elif j['phase'] == 'settle':
-            if now - j['t'] >= self.cfg['junction_settle']:
-                self.img_msg = None
-                self.img_subs = [
-                    self.create_subscription(CompressedImage, self.cfg['image_topic'],
-                                             self.on_image, qos_profile_sensor_data),
-                    self.create_subscription(Image, self.cfg['image_raw_topic'],
-                                             self.on_image, qos_profile_sensor_data)]
-                j['phase'], j['t'] = 'capture', now
-        elif j['phase'] == 'capture':
-            if self.img_msg is None and now - j['t'] < self.cfg['image_timeout']:
-                return
-            self.drop_image_subs()
-            pose = self.robot_pose()
-            name = f'j{j["n"]:02d}_{j["k"] + 1}_{math.degrees(heading):+04.0f}deg'
-            path = None
-            if self.img_msg is None:
-                self.get_logger().warn(f'junction {j["n"]}: no image within '
-                                       f'{self.cfg["image_timeout"]} s; going on without it')
-            else:
-                try:
-                    path = save_image(self.img_msg, self.run_dir, name)
-                    self.get_logger().info(f'junction {j["n"]}: picture {j["k"] + 1} -> {path}')
-                except Exception as e:              # never let a picture stop the run
-                    self.get_logger().error(f'junction {j["n"]}: image not saved: {e}')
-            j['records'].append({
-                'way': j['k'] + 1, 'heading_deg': round(math.degrees(heading), 1),
-                'facing_deg': None if pose is None else round(math.degrees(pose[1]), 1),
-                'frontier_goal': [round(f.goal[0], 3), round(f.goal[1], 3)],
-                'path_length_m': round(f.path_length, 2),
-                'image': None if path is None else os.path.basename(path),
-                'time': time.strftime('%Y-%m-%dT%H:%M:%S')})
-            j['k'] += 1
-            if j['k'] < len(j['ways']):
-                j['phase'], j['sent'] = 'turn', False
-                return
-            self.end_junction()
-
-    def on_image(self, msg):
-        if self.img_msg is None:
-            self.img_msg = msg
-
-    def drop_image_subs(self):
-        for sub in self.img_subs:
-            self.destroy_subscription(sub)
-        self.img_subs = []
-
-    def end_junction(self):
-        j, self.jn = self.jn, None
-        meta = {'junction': j['n'], 'frame': 'map',
-                'robot': {'x': round(j['xy'][0], 3), 'y': round(j['xy'][1], 3),
-                          'yaw_deg': round(math.degrees(j['yaw']), 1)},
-                'ways': j['records']}
-        try:
-            os.makedirs(self.run_dir, exist_ok=True)
-            path = os.path.join(self.run_dir, f'j{j["n"]:02d}.json')
-            with open(path, 'w') as fh:
-                json.dump(meta, fh, indent=2)
-            self.get_logger().info(f'junction {j["n"]}: saved {path}')
-        except Exception as e:
-            self.get_logger().error(f'junction {j["n"]}: metadata not saved: {e}')
-        self.set_state('EXPLORING', f'junction {j["n"]} photographed')
-
     def creep_tick(self):
-        if self.state == 'JUNCTION':
-            return self.junction_tick()
-        if self.state != 'CREEPING':
+        tc = self.turn_creep
+        if tc is not None and self.state != 'TURNING':
+            self.turn_creep = None                  # taken over (STAIRS) or finished
+            self.stop_robot()
             return
+        if self.state != 'CREEPING' and tc is None:
+            return
+        start, target, until = ((tc['from'], tc['target'], tc['until']) if tc is not None
+                                else (self.creep_from, self.creep_target, self.creep_until))
         pose = self.robot_pose()
         done, moved = None, 0.0
         if pose is not None:
-            moved = math.hypot(pose[0][0] - self.creep_from[0], pose[0][1] - self.creep_from[1])
-            if moved >= self.creep_target:
+            moved = math.hypot(pose[0][0] - start[0], pose[0][1] - start[1])
+            if moved >= target:
                 done = f'crept {moved * 100:.0f} cm'
-        if done is None and time.monotonic() > self.creep_until:
+        if done is None and time.monotonic() > until:
             done = f'creep timed out after {moved * 100:.0f} cm'
         if done is None:
             msg = Twist()
             msg.linear.x = float(self.cfg['creep_speed'])   # angular stays 0: no steering
             self.cmd_pub.publish(msg)
             return
+        if tc is not None:
+            return self.end_turn_creep(done)
         self.end_creep(done)
 
     def end_creep(self, why):
@@ -677,7 +891,7 @@ class Explorer(Node):
 
     def on_spin_accepted(self, future):
         handle = future.result()
-        if self.state not in ('SCANNING', 'JUNCTION'):   # stopped while being accepted
+        if self.state not in ('SCANNING', 'TURNING', 'LOOKING', 'FACING_QR'):   # stopped meanwhile
             if handle.accepted:
                 handle.cancel_goal_async()
             self.spin_busy = False
@@ -736,11 +950,9 @@ class Explorer(Node):
             self.goal_result_at = time.monotonic()
 
     def finish(self, state, why):
-        if self.state in ('CREEPING', 'JUNCTION'):
+        if self.state == 'CREEPING' or self.turn_creep is not None:
             self.stop_robot()
-        self.drop_image_subs()
-        if self.jn is not None and self.jn['records']:
-            self.end_junction()                     # keep the pictures already taken
+        self.turn_creep = None
         if self.spin_handle is not None:
             self.spin_handle.cancel_goal_async()
             self.spin_handle = None
@@ -765,30 +977,6 @@ class Explorer(Node):
             self.get_logger().info(f'map saved: {path}')
         except Exception as e:                      # never let saving stop the shutdown
             self.get_logger().error(f'map not saved: {e}')
-
-
-def save_image(msg, directory, name):
-    """Write a CompressedImage as-is (.jpg/.png) or a raw Image as PNG; return the path."""
-    os.makedirs(directory, exist_ok=True)
-    if isinstance(msg, CompressedImage):
-        ext = '.png' if 'png' in msg.format.lower() else '.jpg'
-        path = os.path.join(directory, name + ext)
-        with open(path, 'wb') as fh:
-            fh.write(bytes(msg.data))
-        return path
-    import numpy as np
-    from PIL import Image as PILImage
-    enc = msg.encoding.lower()
-    ch = {'rgb8': 3, 'bgr8': 3, 'rgba8': 4, 'bgra8': 4, 'mono8': 1}.get(enc)
-    if ch is None:
-        raise ValueError(f'unsupported image encoding {msg.encoding}')
-    a = np.frombuffer(bytes(msg.data), np.uint8).reshape(msg.height, msg.step)
-    a = a[:, :msg.width * ch].reshape(msg.height, msg.width, ch) if ch > 1 else a[:, :msg.width]
-    if enc.startswith('bgr'):
-        a = a[..., [2, 1, 0] + ([3] if ch == 4 else [])]
-    path = os.path.join(directory, name + '.png')
-    PILImage.fromarray(a).save(path)
-    return path
 
 
 def main():

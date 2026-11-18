@@ -2,16 +2,27 @@
 QR scanner node (robot build: no debug video).
 
 Subscribes to a colour (or left rectified) image, decodes QR codes in a background
-thread, optionally uses an aligned depth image to place each code in the map frame,
-and publishes/logs every NEW code once (with a saved snapshot as evidence).
+thread, and publishes/logs every NEW code once (with a saved snapshot as evidence). The
+codes' text is a hint to where other survivors are; it is logged as `QR hint: ...`.
+
+QR locations are not reported. A code only appears in a room with a survivor, though, so
+with depth the node works out the code's ROOM point (the code's spot pulled back from its
+wall towards the camera, like poster_detector does for posters) in odom and puts it in
+/qr/detections as `room_odom`: poster_detector uses it to find that room's survivor.
 
 Topics (all names are parameters - VERIFY on the robot with `ros2 topic list`):
   in : image_topic        sensor_msgs/Image, or <image_topic>/compressed
                           sensor_msgs/CompressedImage if image_transport:=compressed
   in : depth_topic        sensor_msgs/Image   (aligned to image_topic; optional)
   in : camera_info_topic  sensor_msgs/CameraInfo
-  out: /qr/detections     std_msgs/String     (JSON, one message per new code)
+  out: /qr/detections     std_msgs/String     (JSON {text, room_odom, stamp, snapshot}, one
+                                               message per new code, again every repeat_after_s)
   out: /found             std_msgs/String     "QR found", once per new code text
+  out: /qr/read           std_msgs/String     the text, EVERY time a code is read (<= 1 Hz each)
+  out: /qr/unread         geometry_msgs/PointStamped (track_frame = odom): a code that is
+                          located but can't be read, persistent over unread_need of the last
+                          unread_window frames (<= 1 Hz). maze_explorer turns to face it
+                          (FACING_QR) until /qr/read, so it is seen squarely and read.
 """
 import csv
 import json
@@ -35,7 +46,11 @@ import tf2_ros
 import tf2_geometry_msgs  # noqa: F401  (registers PointStamped with tf2)
 
 from team_perception import qr_utils
-from team_perception.qr_utils import DepthAlignState, decode_qr, deproject, draw_detections
+from team_perception import tf_pin
+from team_perception.poster_utils import pull_back
+from team_perception.qr_utils import (DepthAlignState, UnreadTracker, deproject, draw_detections,
+                                      scan_qr,
+                                      transform_first)
 
 
 class QrScanner(Node):
@@ -49,19 +64,35 @@ class QrScanner(Node):
         #                                already aligned to colour
         p('camera_info_topic', '/camera/color/camera_info')
         p('use_depth', True)
-        p('map_frame', 'map')
+        p('track_frame', 'odom')       # fixed frame of room_odom (Fast-LIO: there from launch)
+        p('room_pullback_m', 0.25)     # step back from the code's wall towards the camera
         p('rate_hz', 30.0)             # max decodes per second (0 = as fast as possible)
         p('full_scan_every', 5)        # every Nth decode also tries contrast boost + 2x
         #                                upscale (finds small/far codes, ~5x slower); 0 = never
         p('repeat_after_s', 30.0)      # re-report the same code after this long
+        # Codes located but not readable (zxing-cpp only): ask the explorer to face them.
+        p('unread_topic', '/qr/unread')   # '' = don't publish
+        p('unread_need', 3)            # frames with the code among ...
+        p('unread_window', 5)          # ... the last this many scanned frames
+        p('unread_period_s', 1.0)      # at most one /qr/unread a second
+        p('unread_range_m', 1.5)       # assumed distance along the ray when there's no depth
+        p('unread_full_scan_s', 3.0)   # after an unread sighting: full scans on every frame
         p('log_dir', os.path.expanduser('~/qr_logs'))
 
         def g(name):
             return self.get_parameter(name).value
 
         self.use_depth = g('use_depth')
-        self.map_frame = g('map_frame')
+        self.track_frame = g('track_frame')
+        self.pullback = g('room_pullback_m')
         self.repeat_after = g('repeat_after_s')
+        self.unread = UnreadTracker(g('unread_need'), g('unread_window'))
+        self.unread_period = g('unread_period_s')
+        self.unread_range = g('unread_range_m')
+        self.unread_full = g('unread_full_scan_s')
+        self.unread_last_pub = -1e9    # time of the last /qr/unread
+        self.unread_last_seen = -1e9   # time an unread code was last confirmed
+        self.read_last = {}            # text -> time of the last /qr/read
         self.full_every = int(g('full_scan_every'))
         rate = g('rate_hz')
         self.min_period = 1.0 / rate if rate > 0 else 0.0
@@ -91,10 +122,16 @@ class QrScanner(Node):
                                          self.on_depth_info, qos_profile_sensor_data)
 
         self.pub = self.create_publisher(String, '/qr/detections', 10)
+        self.read_pub = self.create_publisher(String, '/qr/read', 10)
+        self.unread_pub = (self.create_publisher(PointStamped, g('unread_topic'), 10)
+                           if g('unread_topic') else None)
         self.found_pub = self.create_publisher(String, '/found', 10)   # "QR found", once per code
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        # Robot-side /tf_static gives the depth camera a second, unpitched parent: keep the
+        # correct one (team_perception/tf_pin.py).
+        self.tf_pin = tf_pin.attach(self, self.tf_buffer)
 
         self.log_dir = g('log_dir')
         # Record of found codes (snapshot + CSV row per new code); the folder and file are
@@ -154,18 +191,72 @@ class QrScanner(Node):
 
             full = self.full_every > 0 and n % self.full_every == 0
             n += 1
+            # While an unreadable code is in view (robot turning to it / holding still),
+            # spend the extra time on every frame: contrast boost + 2x upscale.
+            full = full or time.time() - self.unread_last_seen < self.unread_full
             try:
-                codes = decode_qr(img, try_upscale=full, try_clahe=full)
+                codes, unread = scan_qr(img, try_upscale=full, try_clahe=full)
             except Exception as e:
                 self.get_logger().error(f'decode failed: {e}', throttle_duration_sec=5.0)
                 continue
 
             now = time.time()
             for text, corners in codes:
+                if now - self.read_last.get(text, -1e9) >= 1.0:
+                    self.read_last[text] = now
+                    self.read_pub.publish(String(data=text))
                 self.on_code(text, corners, img, header, now)
+            if codes:
+                self.unread.clear()    # something was read: follow a new unread from scratch
+            self.on_unread(unread, img, header, now)
 
             if self.min_period:
                 time.sleep(max(0.0, self.min_period - (time.time() - start)))
+
+    def on_unread(self, unread, img, header, now):
+        """Publish a persistent located-but-unread code's position for the explorer."""
+        if self.unread_pub is None:
+            return
+        centres = [(*c.mean(axis=0), cv2.contourArea(c)) for c in unread]
+        pick = self.unread.update(centres)
+        if pick is None:
+            return
+        self.unread_last_seen = now
+        if now - self.unread_last_pub < self.unread_period:
+            return
+        pt = self.point_at(pick[0], pick[1], header, img.shape)
+        if pt is None:
+            return
+        self.unread_last_pub = now
+        self.unread_pub.publish(pt)
+        self.get_logger().info(f'QR code in view but unreadable at {self.track_frame} '
+                               f'({pt.point.x:.2f}, {pt.point.y:.2f}): asking to face it',
+                               throttle_duration_sec=5.0)
+
+    def point_at(self, u, v, header, shape):
+        """
+        PointStamped in track_frame (odom) for colour pixel (u, v): from depth if there is
+        any there, else unread_range_m along the camera ray (enough to turn towards it).
+        """
+        if self.K is None:
+            return None
+        z = None
+        if self.use_depth and self.latest_depth is not None:
+            depth = self.bridge.imgmsg_to_cv2(self.latest_depth, desired_encoding='passthrough')
+            align = self.depth_align(depth.shape)
+            if align is not None:
+                found = align.depth_at(depth, u, v, image_size=(shape[1], shape[0]))
+                z = found[0] if found is not None else None
+        x, y, z = deproject(u, v, z if z else self.unread_range, *self.K)
+        pt = PointStamped()
+        pt.header = header
+        pt.point.x, pt.point.y, pt.point.z = x, y, z
+        out, errors = transform_first(self.tf_buffer, pt, [self.track_frame],
+                                      timeout=Duration(seconds=0.2))   # worker thread
+        if out is None:
+            self.get_logger().warn(f'unreadable QR code: no tf to {self.track_frame} '
+                                   f'({errors})', throttle_duration_sec=5.0)
+        return out
 
     def on_code(self, text, corners, img, header, now):
         if now - self.seen.get(text, -1e9) < self.repeat_after:
@@ -181,30 +272,25 @@ class QrScanner(Node):
 
     def report(self, text, corners, img, header):
         u, v = corners.mean(axis=0)
-        frame, xyz = 'none', None
-
-        point = self.locate(u, v, header, img.shape)
-        if point is not None:
-            frame, xyz = point.header.frame_id, (point.point.x, point.point.y, point.point.z)
-        where = f'{frame} ({xyz[0]:.2f}, {xyz[1]:.2f}, {xyz[2]:.2f})' if xyz else 'no position'
+        room = self.locate(u, v, header, img.shape)
 
         os.makedirs(self.log_dir, exist_ok=True)
         snap = os.path.join(self.log_dir, f'qr_{int(time.time() * 1000)}.jpg')
-        cv2.imwrite(snap, draw_detections(img.copy(), [(text, corners)], {text: [where]}))
+        cv2.imwrite(snap, draw_detections(img.copy(), [(text, corners)]))
 
-        result = {'text': text, 'pixel': [float(u), float(v)], 'frame': frame,
-                  'position': list(xyz) if xyz else None, 'snapshot': snap,
+        result = {'text': text, 'room_odom': room, 'snapshot': snap,
                   'stamp': Time.from_msg(header.stamp).nanoseconds * 1e-9}
         self.pub.publish(String(data=json.dumps(result)))
         new_file = not os.path.exists(self.csv_path)
         with open(self.csv_path, 'a', newline='') as f:
             if new_file:
-                csv.writer(f).writerow(['wall_time', 'text', 'frame', 'x', 'y', 'z', 'snapshot'])
-            csv.writer(f).writerow([time.time(), text, frame, *(xyz or ('', '', '')), snap])
-        self.get_logger().info(f'QR "{text}" at {where}')
+                csv.writer(f).writerow(['wall_time', 'text', 'snapshot'])
+            csv.writer(f).writerow([time.time(), text, snap])
+        self.get_logger().info(f'QR hint: "{text}"'
+                               + ('' if room else ' (no room point: no depth or TF)'))
 
     def locate(self, u, v, header, shape):
-        """Return a PointStamped in map frame (or camera frame if tf fails), else None."""
+        """The code's room point [x, y, z] in track_frame (odom), or None (no depth / TF)."""
         if not self.use_depth or self.latest_depth is None or self.K is None:
             return None
         depth = self.bridge.imgmsg_to_cv2(self.latest_depth, desired_encoding='passthrough')
@@ -214,18 +300,19 @@ class QrScanner(Node):
         found = align.depth_at(depth, u, v, image_size=(shape[1], shape[0]))
         if found is None:
             return None
-        z = found[0]
-        x, y, z = deproject(u, v, z, *self.K)
+        x, y, z = pull_back(deproject(u, v, found[0], *self.K), self.pullback)
 
         pt = PointStamped()
         pt.header = header                   # camera optical frame + image time
         pt.point.x, pt.point.y, pt.point.z = x, y, z
-        try:
-            return self.tf_buffer.transform(pt, self.map_frame, timeout=Duration(seconds=0.2))
-        except Exception as e:
-            self.get_logger().warn(f'No tf to {self.map_frame} ({e}); reporting camera frame',
-                                   throttle_duration_sec=5.0)
-            return pt
+        # Worker thread, so waiting briefly for TF is safe here (not in a callback).
+        out, errors = transform_first(self.tf_buffer, pt, [self.track_frame],
+                                      timeout=Duration(seconds=0.2))
+        if out is None:
+            self.get_logger().warn(f'No tf to {self.track_frame} ({errors}); code has no room '
+                                   'point', throttle_duration_sec=5.0)
+            return None
+        return [round(out.point.x, 3), round(out.point.y, 3), round(out.point.z, 3)]
 
     def depth_align(self, depth_shape):
         """Return the DepthAlign for this depth image, or None (looks up the sensor TF once)."""

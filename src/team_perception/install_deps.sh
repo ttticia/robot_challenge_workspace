@@ -45,10 +45,17 @@ pip3 install --user -r requirements.txt
 echo ">> removing pip setuptools (keeps colcon working)"
 pip3 uninstall -y setuptools || true
 
+# ultralytics pulls in pip opencv-python, which shadows apt's python3-opencv (the build
+# cv_bridge and the rest of ROS Humble use). Our code only needs what apt's 4.5.4 has.
+echo ">> removing pip opencv (keeps apt python3-opencv)"
+pip3 uninstall -y opencv-python opencv-python-headless opencv-contrib-python || true
+
 echo ">> checking imports, YOLO weights -> ~/.cache/team_perception/yolo11n.pt"
 python3 - <<'PY'
 import os
 import cv2, numpy, zxingcpp
+assert cv2.__file__.startswith('/usr/lib/'), f'pip opencv shadows apt: {cv2.__file__}'
+assert numpy.__version__.startswith('1.24.'), f'numpy {numpy.__version__}: want 1.24.x (apt scipy)'
 from pyzbar import pyzbar
 assert int(numpy.__version__.split('.')[0]) < 2, 'numpy must be < 2 for Humble cv_bridge'
 d = os.path.expanduser('~/.cache/team_perception')

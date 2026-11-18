@@ -383,20 +383,28 @@ def choose_frontier(frontiers, current=None, robot_yaw=None, robot_xy=None,
     return best
 
 
-def heading_towards(grid, robot_xy, goal, robot_radius=0.25, lookahead=0.3):
+def goal_distance_field(grid, goal, robot_radius=0.25):
+    """Path length (cells) to goal over cells with robot_radius clearance; for heading_towards."""
+    passable = grid.free & (clearance_map(grid) >= robot_radius)
+    gc = grid.cell(goal)
+    if not grid.contains(gc):
+        return None
+    return geodesic_distance(passable, gc)
+
+
+def heading_towards(grid, robot_xy, goal, robot_radius=0.25, lookahead=0.3, field=None):
     """Heading (rad, map frame) to drive off from robot_xy so as to follow free space to goal.
 
     Not the straight line to the goal, which can cross a wall: the direction to the cell about
     `lookahead` m away that is closest to the goal along free space. Falls back to the straight
-    line when no such cell is found (goal unreachable, robot off the map).
+    line when no such cell is found (goal unreachable, robot off the map). `field`: a
+    goal_distance_field(grid, goal, robot_radius) to reuse for several robot positions.
     """
     straight = math.atan2(goal[1] - robot_xy[1], goal[0] - robot_xy[0])
     res = grid.resolution
-    passable = grid.free & (clearance_map(grid) >= robot_radius)
-    gc = grid.cell(goal)
-    if not grid.contains(gc):
+    d = goal_distance_field(grid, goal, robot_radius) if field is None else field
+    if d is None:
         return straight
-    d = geodesic_distance(passable, gc)
     rows, cols = np.nonzero(np.isfinite(d))
     if len(rows) == 0:
         return straight
@@ -413,10 +421,19 @@ def heading_towards(grid, robot_xy, goal, robot_radius=0.25, lookahead=0.3):
 def footprint_hits(grid, xy, yaw, box, margin=0.0):
     """True if the robot's box (back, front, half_width; m, robot frame) plus margin covers
     an occupied map cell at pose (xy, yaw). Unknown counts as free."""
+    return footprint_overlap(grid, xy, yaw, box, margin) > 0
+
+
+def footprint_overlap(grid, xy, yaw, box, margin=0.0):
+    """How many sample points of the box (+ margin) at pose (xy, yaw) are on occupied cells:
+    0 = clear; compares 'less in the wall' when the robot already touches one."""
     back, front, half = box
     step = grid.resolution / 2
-    bx, by = np.meshgrid(np.arange(-back - margin, front + margin + 1e-9, step),
-                         np.arange(-half - margin, half + margin + 1e-9, step))
+
+    def samples(lo, hi):                    # both edges included (arange can stop a step short)
+        return np.linspace(lo, hi, int(math.ceil((hi - lo) / step - 1e-9)) + 1)
+    bx, by = np.meshgrid(samples(-back - margin, front + margin),
+                         samples(-half - margin, half + margin))
     c, s = math.cos(yaw), math.sin(yaw)
     wx = xy[0] + c * bx.ravel() - s * by.ravel()
     wy = xy[1] + s * bx.ravel() + c * by.ravel()
@@ -424,7 +441,7 @@ def footprint_hits(grid, xy, yaw, box, margin=0.0):
     row = np.floor((wy - grid.origin[1]) / grid.resolution).astype(np.int64)
     h, w = grid.data.shape
     ok = (col >= 0) & (col < w) & (row >= 0) & (row < h)
-    return bool(grid.occupied[row[ok], col[ok]].any())
+    return int(grid.occupied[row[ok], col[ok]].sum())
 
 
 def free_distance_ahead(grid, xy, yaw, box, max_d, margin=0.0, step=0.01):
@@ -451,32 +468,102 @@ def max_turn(grid, xy, yaw, box, direction, limit, margin=0.0, step=math.radians
     return limit
 
 
-def find_junction(grid, xy, yaw, frontiers, robot_radius=0.25, max_range=1.5, dist_tol=0.5,
-                  min_angle=math.radians(60), min_separation=0.6):
-    """Two ways on from here, about equally far: the robot is at a junction.
+def plan_turn(grid, xy, yaw, heading, box, margin=0.0, min_angle=0.6):
+    """Should the explorer turn the robot itself before driving off along `heading`?
 
-    Looks at the two nearest frontiers (along free space). A junction if both are within
-    max_range, their path lengths differ by <= dist_tol, their goals are >= min_separation
-    apart, and the ways to them leave the robot >= min_angle apart (heading_towards, so a
-    wall between doesn't count as a different direction). Returns
-    [(frontier, heading), (frontier, heading)] ordered so the first needs the smaller turn
-    from yaw, or None.
+    Nav2's path follower (RPP, use_rotate_to_heading) turns on the spot, always the short
+    way, whenever the path starts more than its rotate_to_heading_min_angle off the robot's
+    heading, even with the robot's rear next to a wall (sim 2026-11-16: an 80 deg turn at a
+    cell edge swung the rear corner into the wall). Returns (angle, why): angle is the signed
+    turn (rad, +left) to make first, or None to leave the turn to Nav2:
+      - the turn is under min_angle (RPP won't turn on the spot either), or
+      - the short way is clear of mapped walls (box + margin, the whole sweep), or
+      - the map shows a wall where the robot stands (an artefact; every check would fail), or
+      - both ways are blocked (Nav2's own collision checks are all that is left).
+    If only the short way is blocked and the long way round is clear, the long way.
     """
-    near = sorted(frontiers, key=lambda f: f.path_length)[:2]
-    if len(near) < 2:
-        return None
-    a, b = near
-    if b.path_length > max_range or b.path_length - a.path_length > dist_tol:
-        return None
-    if math.hypot(a.goal[0] - b.goal[0], a.goal[1] - b.goal[1]) < min_separation:
-        return None
-    ha = heading_towards(grid, xy, a.goal, robot_radius)
-    hb = heading_towards(grid, xy, b.goal, robot_radius)
-    if abs(math.atan2(math.sin(ha - hb), math.cos(ha - hb))) < min_angle:
-        return None
-    turn = lambda h: abs(math.atan2(math.sin(h - yaw), math.cos(h - yaw)))  # noqa: E731
-    ways = [(a, ha), (b, hb)]
-    return sorted(ways, key=lambda w: turn(w[1]))
+    want = math.atan2(math.sin(heading - yaw), math.cos(heading - yaw))
+    if abs(want) < min_angle:
+        return None, 'small turn'
+    if footprint_hits(grid, xy, yaw, box, margin):
+        return None, 'map shows a wall at the robot'
+    sign = 1.0 if want >= 0 else -1.0
+    if max_turn(grid, xy, yaw, box, sign, abs(want), margin) >= abs(want) - 1e-6:
+        return None, 'short way clear'
+    other = 2 * math.pi - abs(want)
+    if max_turn(grid, xy, yaw, box, -sign, other, margin) >= other - 1e-6:
+        return -sign * other, 'short way blocked, long way clear'
+    return None, 'blocked both ways'
+
+
+def plan_creep_turn(grid, xy, yaw, goal, box, margins=(0.03, 0.01), min_angle=0.6,
+                    max_creep=0.6, creep_margin=0.05, robot_radius=0.25, step=0.02, edge=0.05):
+    """Where to stop, straight ahead, to make the turn towards goal that is blocked here.
+
+    For when plan_turn says 'blocked both ways' (in a 0.9 m corridor the rear corners'
+    0.437 m turning circle doesn't fit). Candidates every `step` m straight ahead up to
+    max_creep, and no further than the footprint can go with creep_margin to a wall. At each
+    one the heading to the goal is recomputed; it qualifies if:
+      - the turn there is clear of mapped walls (short way, else long way; box + margin), or
+        too small to need one (< min_angle). Each margin in `margins` is tried in turn, the
+        first that finds a spot wins: a 0.9 m corridor corner only fits the turn with
+        <= 1 cm (the rear corners' 0.437 m circle vs 0.45 m to the walls),
+      - it doesn't lead away from the goal (path length to it grows less than the creep),
+      - it is not within `edge` m of the end of its clear stretch (the creep stops within a
+        cm or two, the map can be a cell off).
+    Of those, the one with the most room (distance to the nearest wall), the shortest creep
+    on a tie. Returns (distance, margin, why) or (None, None, why).
+    """
+    limit = free_distance_ahead(grid, xy, yaw, box, max_creep, creep_margin)
+    field = goal_distance_field(grid, goal, robot_radius)
+    if field is None:
+        return None, None, 'goal off the map'
+    clr = clearance_map(grid)
+
+    def path_left(p):
+        c = grid.cell(p)
+        return field[c[1], c[0]] * grid.resolution if grid.contains(c) else math.inf
+
+    start_left = path_left(xy)
+    ds = np.arange(0.0, limit + 1e-9, step)
+    for margin in margins:
+        best = _best_turn_spot(grid, xy, yaw, goal, box, margin, min_angle, robot_radius, field,
+                               clr, path_left, start_left, ds, step, edge)
+        if best is not None:
+            return (float(best[1]), margin,
+                    f'{best[0] * grid.resolution:.2f} m from the nearest wall there, '
+                    f'{margin * 100:.0f} cm margin')
+    return None, None, f'no clear spot within {limit:.2f} m ahead'
+
+
+def _best_turn_spot(grid, xy, yaw, goal, box, margin, min_angle, robot_radius, field, clr,
+                    path_left, start_left, ds, step, edge):
+    """plan_creep_turn for one margin: (room in cells, distance) or None."""
+    cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+    ok = []
+    for d in ds:
+        p = (xy[0] + d * cos_y, xy[1] + d * sin_y)
+        heading = heading_towards(grid, p, goal, robot_radius, field=field)
+        want = math.atan2(math.sin(heading - yaw), math.cos(heading - yaw))
+        if abs(want) < min_angle:
+            clear = True
+        else:
+            s = 1.0 if want >= 0 else -1.0
+            other = 2 * math.pi - abs(want)
+            clear = (max_turn(grid, p, yaw, box, s, abs(want), margin) >= abs(want) - 1e-6 or
+                     max_turn(grid, p, yaw, box, -s, other, margin) >= other - 1e-6)
+        closer = path_left(p) <= start_left + 0.05 if math.isfinite(start_left) else True
+        ok.append(clear and closer)
+    k = int(math.ceil(edge / step - 1e-9))          # samples that must be clear either side
+    best = None
+    for i, d in enumerate(ds):
+        if d < 1e-9 or not all(ok[max(0, i - k):i + k + 1]) or i + k >= len(ds):
+            continue                                # not well inside a clear stretch
+        c = grid.cell((xy[0] + d * cos_y, xy[1] + d * sin_y))
+        room = round(float(clr[c[1], c[0]]) / grid.resolution) if grid.contains(c) else -1
+        if best is None or room > best[0]:
+            best = (room, d)
+    return best
 
 
 # --------------------------------------------------------------------------- exit

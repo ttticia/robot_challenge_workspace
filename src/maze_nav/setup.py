@@ -7,7 +7,7 @@ package_name = 'maze_nav'
 setup(
     name=package_name,
     version='0.1.0',
-    packages=[package_name],
+    packages=[package_name, package_name + '.scene_understanding'],
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml', 'README.md']),
@@ -24,6 +24,9 @@ setup(
             'wall_scan = maze_nav.wall_scan:main',
             'maze_explorer = maze_nav.explorer:main',
             'cmd_vel_bridge = maze_nav.cmd_vel_bridge:main',
+            'scene_trigger = maze_nav.scene_understanding.scene_trigger:main',
+            'cpu_monitor = maze_nav.cpu_monitor:main',
+            'stair_detector = maze_nav.stair_detector:main',
         ],
     },
 )

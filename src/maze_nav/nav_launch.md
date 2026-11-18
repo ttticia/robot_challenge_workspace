@@ -47,7 +47,8 @@ when a run goes wrong. For the design and the example maze, see [README.md](READ
 
 ```bash
 cd ~/challenge_ws
-colcon build --symlink-install --packages-select maze_nav   # first time / after changes
+colcon build --symlink-install --packages-select maze_nav   # first time / after changes (without
+                                                             # --symlink-install: after EVERY change)
 source install/setup.bash
 ros2 launch maze_nav maze_nav.launch.py
 ```
@@ -95,8 +96,10 @@ relaunch without it.
 | `posters` | `true` | With `perception`: `false` = QR codes only (no `human_detector` / `poster_detector`; saves ~0.5 core). Other perception arguments: run `robot.launch.py` by hand with `perception:=false` |
 | `auto_stand` | `true` | Robot lying down at launch: send stand once, wait until it stands (15 s), then the gait. Never sent to a standing robot or if the posture is unknown. `false` = never |
 | `wait_for_start` | `true` | Hold still once everything is up until `/maze/start` is published. `false` = start right away (simulator) |
-| `junction_photos` | `true` | At a junction (2 frontiers about equally far), face each way and save a picture + JSON in `~/challenge_ws/logs/junctions/` |
 | `creep_distance` | `0.10` | m driven straight ahead (no steering) after `/maze/start`, before the scan: onto the SLAM map and off the start cell's back wall so the scan turns clear it. `0` = off |
+| `stairs` | `true` | `stair_detector`: stairs seen within 1.5 m, with the robot in front of them (≤ 0.35 m off their centre line) → explorer stops Nav2 (`STAIRS`), the robot faces them square and stops 0.45 m (`base_link`) from the first riser (`AT_STAIRS`), then holds until `/maze/start`. Every move is checked against walls on `/map`; blocked or over 45 s, it holds anyway as `AT_STAIRS: NOT LINED UP: <reason>` for a hand line-up. Follows `go` (`go:=false` = detect and log only). `false` = off, Nav2 drives over the stairs as floor |
+| `scene_trigger` | `true` | Scene understanding: `scene_trigger` publishes `/scene/trigger` (+ `/junction_detected`) the first time the robot reaches each cell, only while the explorer runs. `false` = not started |
+| `cpu_log` | `true` | `cpu_monitor`: CPU per process every 2 s to `~/challenge_ws/logs/cpu/`, summary on Ctrl+C |
 | `start_scan` | `true` | After the creep, turn 45° left, 90° right, 45° left (back to the heading before the scan). `false` = off |
 | `max_speed` | `0.15` | m/s for the path follower (the bridge clamps to 0.25 m/s, 0.5 rad/s anyway) |
 | `band_low` / `band_high` | `0.30` / `0.43` | Wall slice, metres above the floor. Below `band_low` = walkable (ramps, mats, stairs). `band_high` must stay below the wall top (0.45 m) |
@@ -104,9 +107,14 @@ relaunch without it.
 | `map_dir` | `~/challenge_ws/maps` | Where the final map is saved |
 | `udp_only` | `true` | UDP-only Fast DDS profile (Nav2 stalled on the robot with shared memory) |
 | `use_sim_time` | `false` | |
-| `domain_id` | `auto` | `auto`: a real run (`bringup:=true`) always uses `ROS_DOMAIN_ID=4` with `ROS_LOCALHOST_ONLY=0`, whatever the terminal is set to, so the robot bridge, RViz and the external computer see it. With `bringup:=false` (simulator) the terminal's domain is kept. A number forces that domain. The launch logs which one it uses |
+| `domain_id` | `auto` | `auto`: a real run (`bringup:=true`) always uses `ROS_DOMAIN_ID=4` with `ROS_LOCALHOST_ONLY=0`, whatever the terminal is set to, so the robot bridge and RViz see it. With `bringup:=false` (simulator) the terminal's domain is kept. A number forces that domain. The launch logs which one it uses |
 | `log_tags` | `false` | Terminal only: `false` drops `[INFO]` and the timestamps (`[WARN]`/`[ERROR]` tags stay, in yellow/red); `true` = ROS's full `[INFO] [<time>] [node]: msg`. Log files in `~/.ros/log` always keep the full prefix |
 | `verbose` | `true` | `false` = Nav2 and slam_toolbox log warnings and errors only (no lifecycle / per-goal chatter). `maze_explorer`, `wall_scan` and `cmd_vel_bridge` always log INFO |
+
+`stairs`, `perception` and `scene_trigger` are independent: switch off any combination.
+Navigation only: `ros2 launch maze_nav maze_nav.launch.py stairs:=false perception:=false
+scene_trigger:=false`. A switched-off part starts no nodes and is disconnected from the
+explorer (`stairs_topic` / `look_topic` / `qr_unread_topic` blanked), so a stray publisher can't stop the robot.
 
 ### Terminal output
 
@@ -120,35 +128,15 @@ ros2 launch maze_nav maze_nav.launch.py verbose:=false    # Nav2 / slam_toolbox:
 ```
 
 Both only change this launch. To make the full prefix the default, set `default_value='true'`
-on `log_tags` in `launch/maze_nav.launch.py` (symlink install, no rebuild needed). The log
+on `log_tags` in `launch/maze_nav.launch.py` (with a `--symlink-install` build no rebuild is needed; otherwise rebuild). The log
 files in `~/.ros/log` always keep the full prefix.
-
-### Junction photos
-
-When the two nearest frontiers are about equally far away (both within 1.5 m along free
-space, path lengths within 0.5 m of each other, the ways at least 60° apart), the robot is at
-a junction. It stops (`/maze/status` = `JUNCTION`), turns to face the first way (the smaller
-turn), waits 0.7 s, takes a picture from `/camera/color/image_raw/compressed` (or the raw
-image as PNG if no JPEG arrives), then does the same for the second way, and explores on.
-Each junction is photographed once.
-
-Files, per run: `~/challenge_ws/logs/junctions/run_<date>_<time>/`
-- `j01_1_+108deg.jpg`, `j01_2_-171deg.jpg`: junction 1, way 1 and 2, and the map heading of each way
-- `j01.json`: robot pose (map frame), and for each way the heading, the heading actually
-  faced, the frontier goal, its path length, the image file and the time
-
-Turns use Nav2's spin and are cut short where the footprint would hit a mapped wall (or go
-the long way round if that's clear). No picture within 3 s: logged, `"image": null`, the run
-goes on. `junction_photos:=false` turns it off; it's also off with `go:=false`. The thresholds
-are `maze_explorer` parameters (`junction_range`, `junction_dist_tol`, `junction_min_angle`,
-`junction_revisit`, `junction_settle`, `image_timeout`, `junction_dir`).
 
 ### Watching a run
 
 On a laptop on the same network with `ROS_DOMAIN_ID=4`:
 
 ```bash
-ros2 topic echo /maze/status          # STARTING → PAUSED → CREEPING → SCANNING → EXPLORING (⇄ JUNCTION) → EXITED | NO_EXIT | STOPPED
+ros2 topic echo /maze/status          # STARTING → PAUSED → CREEPING → SCANNING → EXPLORING (⇄ TURNING: turn, or creep ahead and turn, before a goal near a wall, ⇄ LOOKING: look-around in a QR room, ⇄ FACING_QR: turn to an unreadable QR code until it is read, ⇄ STAIRS → AT_STAIRS: stair line-up, hold until /maze/start) → EXITED | NO_EXIT | STOPPED
 
 # RViz with the maze_nav layout (config/maze_nav.rviz). If the laptop has this workspace built:
 rviz2 -d $(ros2 pkg prefix maze_nav)/share/maze_nav/config/maze_nav.rviz
@@ -207,13 +195,17 @@ pointing to the newest.
 | `odom_relay` | `lite3_launcher` | Re-expresses Fast-LIO's pose as `/odom` and TF `odom → base_link` (base_link at z = 0 at launch, floor about 0.35 m below) |
 | `wall_scan` | `maze_nav` | `/livox/points` → `/wall_scan` (LaserScan in `base_link`). Keeps only points 0.30–0.43 m above the floor, measured in `odom`, so walls (0.45 m) and hand rails are in, while ramps, mats and stairs (≤ 0.26 m) are out. Replaces the lab `/scan`, which starts at ~0.45 m and misses the maze walls |
 | `slam_toolbox` | `slam_toolbox` (online async) | Builds `/map` from `/wall_scan`, publishes `map → odom`. Config `config/slam_toolbox.yaml` |
-| `maze_explorer` | `maze_nav` | Every 1 s: finds frontiers (free cells next to unknown) on `/map`, sends the nearest reachable one (≥ 0.33 m from walls; frontiers narrower than 80 % of the robot width, 0.37 m, or not reachable along free space, e.g. seen through a slit, are ignored) to `/navigate_to_pose`, and blacklists each finished goal. Stops with **EXITED** when there is ≥ 1.1 m of seen-free floor within 0.8 m of the robot and ≥ 1.5 m from the start, held for 2 s. Stops with **NO_EXIT** when nothing is left to explore (cancels the running goal, sends a zero Twist and prints `nav stopped`) or 3 goals fail in a row, and with **STOPPED** after 15 min or on Ctrl+C. Publishes `/maze/status` and `/maze/goal` |
+| `maze_explorer` | `maze_nav` | Every 1 s: finds frontiers (free cells next to unknown) on `/map`, sends the nearest reachable one (≥ 0.33 m from walls; frontiers narrower than 80 % of the robot width, 0.37 m, or not reachable along free space, e.g. seen through a slit, are ignored) to `/navigate_to_pose`, and blacklists each finished goal. Stops with **EXITED** when there is ≥ 1.1 m of seen-free floor within 0.8 m of the robot and ≥ 1.5 m from the start, held for 2 s. Stops with **NO_EXIT** when nothing is left to explore (cancels the running goal, sends a zero Twist and prints `nav stopped`) or goals keep failing after 3 recovery rounds (`max_recoveries`), and with **STOPPED** after 15 min or on Ctrl+C. Before a goal whose first turn on the spot would hit a mapped wall it turns the robot itself (`TURNING`; blocked both ways: creeps up to 0.6 m ahead to the spot with the most room first, `pre_turn_max_creep`). Publishes `/maze/status` and `/maze/goal` |
 | `bt_navigator` | Nav2 | Runs `config/maze_bt.xml`: replan at 1 Hz → follow path. Recoveries: clear costmaps, spin 90°, wait 3 s (no BackUp, because the bridge never reverses) |
 | `planner_server` | Nav2, Smac Planner 2D | Plans on the global costmap (frame `map`) and **through unknown space** (`allow_unknown`), 0.25 m goal tolerance |
 | `controller_server` | Nav2, Regulated Pure Pursuit | Follows the path at `max_speed` and turns on the spot first when the heading is off by > 34°. Stops if the footprint would hit an obstacle within 1.5 s. Goal reached within 0.20 m, heading ignored |
 | `behavior_server` | Nav2 | `spin` and `wait` recoveries |
 | `velocity_smoother` | Nav2 | Limits acceleration, max 0.25 m/s and 0.5 rad/s, never backwards |
 | `lifecycle_manager_navigation` | Nav2 | Brings the five Nav2 servers up |
+| `stair_detector` | `maze_nav` | Detects stairs in the depth image (`/camera/depth_relay/image_raw` from `depth_relay`, or the raw depth if team_perception isn't built; 5 Hz, ~30 ms a frame, ~0.2 core) and, with the explorer's handshake on `/stairs/status` ↔ `/maze/status`, lines the robot up square in front of them on `nav_cmd_vel` (≤ 0.08 m/s, ≤ 0.35 rad/s), checking every move against walls on `/map`. Camera pose from `base_link → camera_link` (the robot's TF has a wrong second parent for the depth camera, `agent.md` §12). See `maze_nav/stair_detector.py` |
+| `depth_relay` | `team_perception` | Takes the raw depth from the robot bridge once and passes it on at 10 Hz on `/camera/depth_relay/*`, for `stair_detector` and perception. Runs when `stairs` or `perception` is on |
+| `scene_trigger` | `maze_nav` | `/scene/trigger` (JSON: cell, the way in, sides open on `/map`) + a `/junction_detected` pulse the first time the robot reaches each 1 m cell, while `/maze/status` says the run is under way. Grid from the robot's pose when Fast-LIO started: start the robot square on the start cell |
+| `cpu_monitor` | `maze_nav` | CPU per process every 2 s (`cpu_log`) |
 | `cmd_vel_bridge` | `maze_nav` | `nav_cmd_vel` → `/cmd_vel` with the QoS the robot bridge needs (RELIABLE + TRANSIENT_LOCAL). Clamps to 0.25 m/s and 0.5 rad/s, never backwards. Sends one stop when Nav2 goes quiet. Stops and blocks if `/livox/points` or `/odom` is silent for 0.5 s |
 
 ### Costmaps and footprint (`config/nav2_params.yaml`)
@@ -227,8 +219,11 @@ pointing to the newest.
 - **Footprint:** 0.64 × 0.46 m rectangle (Lite3 including moving feet), offset 5 cm behind
   `base_link`: x from −0.37 to +0.27 m, y ±0.23 m. In a 0.9 m maze corridor that leaves 0.22 m
   each side. The farthest corner is 0.44 m from `base_link`, so turning on the spot in a cell
-  centre leaves only about 1 cm to spare.
-- **Inflation:** radius 0.4 m, cost scaling 8. This keeps paths near the middle of the corridor.
+  centre leaves only about 1 cm to spare, and in a 0.9 m corridor it doesn't fit at all
+  (0.437 m vs 0.425 m to the wall). The explorer's `TURNING` handles that before goals.
+- **Inflation:** local 0.5 m / cost scaling 6, global 0.7 m / 3.5 (raised on 2026-11-16 after
+  one simulator run; still to be confirmed over more runs). This keeps paths near the middle
+  of the corridor.
 - **No-return beams** (`inf`) are ignored, because the lidar can't see behind the robot. They
   never clear walls.
 
@@ -245,6 +240,8 @@ pointing to the newest.
 | `/cmd_vel` | `geometry_msgs/Twist` | `cmd_vel_bridge` (only while Nav2 drives) |
 | `/maze/status` | `std_msgs/String`, latched | `maze_explorer` |
 | `/maze/goal` | `geometry_msgs/PoseStamped`, latched | `maze_explorer` |
+| `/stairs/status` | `std_msgs/String`, latched | `stair_detector` (`IDLE`, `HANDOVER`, `ALIGNING`, `APPROACHING`, `SQUARING`, `AT_STAIRS`, `ABORTED`) |
+| `/scene/trigger`, `/junction_detected` | `std_msgs/String` (JSON), `std_msgs/Bool` | `scene_trigger` |
 
 ## 4. When something goes wrong
 
@@ -256,10 +253,15 @@ pointing to the newest.
 | Walls missing or broken in `/map` | Band too high or floor wrong | Check the logged floor height. Try `band_low:=0.28` |
 | Ramps or stairs drawn as walls | Band too low | Raise `band_low` (the top stair tread is 0.26 m) |
 | Goals fail at once, planner log `Starting point in lethal space!` | The global costmap has an obstacle at the robot: its own legs (hips are in the wall band) were once mapped as a wall. `wall_scan` now drops points inside the body box (`body_back` 0.42, `body_front` 0.32, `body_half_width` 0.28 m). The explorer sets failed goals aside and, while frontiers are open, clears the costmaps and retries (`max_recoveries` 3) before `NO_EXIT` | Check `/wall_scan` in RViz for points next to the robot; widen the body box if the legs still show |
-| Robot rubs a wall on turns / cuts inside corners | Path or controller cuts the corner; footprint at the limit (1 cm margin turning on the spot) | Global costmap: larger `inflation_radius` / smaller `cost_scaling_factor` (now 0.6 / 4.0) pushes the path to the corridor centre. RPP: shorter `lookahead_dist` (now 0.35) cuts corners less. Check with `test/run_sim.sh`: the sim logs the footprint's min wall clearance and writes `track.csv` |
+| Robot rubs a wall on turns / cuts inside corners | Path or controller cuts the corner; footprint at the limit (1 cm margin turning on the spot) | Global costmap: larger `inflation_radius` / smaller `cost_scaling_factor` (now 0.7 / 3.5) pushes the path to the corridor centre. RPP: shorter `lookahead_dist` (now 0.35) cuts corners less. Check with `test/run_sim.sh`: the sim logs the footprint's min wall clearance and writes `track.csv` |
 | Robot stops at a goal and turns slowly, then the goal fails | Progress checker (0.15 m in 20 s) | Raise `movement_time_allowance` |
 | `SENSOR TIMEOUT` from cmd_vel_bridge, robot frozen | `/livox/points` or `/odom` stopped | Check Fast-LIO and the lidar. Restart the launch |
-| Robot stalls at the stairs | Gait, not Nav2 (Nav2 treats the stairs as floor) | Operator switches gait on the handheld controller |
+| Robot stalls at the stairs | Gait, not Nav2 (Nav2 treats the stairs as floor) | Operator switches gait on the handheld controller. With `stairs:=true` it waits in `AT_STAIRS` for that: switch gait, then `/maze/start` |
+| Explorer sits in `AT_STAIRS` | Waiting for the operator, on purpose | Switch gait, then `ros2 topic pub --once /maze/start std_msgs/msg/Empty` |
+| `AT_STAIRS: NOT LINED UP: …` | The line-up was blocked by walls (the cell before the stairs leaves the turning circle about 1 cm) or took over 45 s | Line the robot up by hand, switch gait, then `/maze/start` |
+| `TURNING … creeping … cm ahead to turn there` | A turn before a goal would hit a wall both ways; the robot creeps ahead to more room first | Normal. `… leaving it to Nav2` = no room found: watch that corner |
+| `/tf_static also has base_link -> camera_depth_optical_frame` (perception) | The robot's TF gives the depth camera a second, unpitched parent | Handled (`tf_pin`); report it to whoever runs the robot's driver container (`agent.md` §12) |
+| Ends `NO_EXIT` with the robot pinned on the stair handrail just past the stairs | Known since 2026-11-16 (open item in `agent.md` §12) | Take over with the handheld controller |
 
 ## 5. Without the robot
 
@@ -273,4 +275,7 @@ ros2 launch maze_nav maze_nav.launch.py bringup:=false udp_only:=false map_dir:=
 ```
 
 The simulator logs `OUT OF THE MAZE` once the robot is past the stairs, and `/maze/status` should end at `EXITED`.
+It publishes no depth image, so the stair line-up never runs there. `89` is for these
+simulator runs; other test setups (and other Claude sessions) need their own domain: check it
+is empty first (`ros2 node list`), and stop only your own processes (no `pkill -f <name>`).
 Unit tests: `cd src/maze_nav && python3 -m pytest -q test`.

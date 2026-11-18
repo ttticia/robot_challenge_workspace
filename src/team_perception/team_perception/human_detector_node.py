@@ -3,7 +3,7 @@ Human detector node (Ultralytics YOLO, 'person' class). poster_detector consumes
 
 Pulled from team_perception_external (Robot-Dog-Grp4) so it runs ON THE ROBOT next to
 poster_detector (robot.launch.py): it reads the camera's JPEG stream directly, with no
-image_throttle and no Wi-Fi hop. The stamp in each message lets poster_detector pair the
+Wi-Fi hop. The stamp in each message lets poster_detector pair the
 boxes with its depth image; positions are left to poster_detector (use_depth:=false here).
 
 Runs YOLO on a background thread on the newest camera frame, at most rate_hz times a second.
@@ -37,6 +37,7 @@ import tf2_ros
 import tf2_geometry_msgs  # noqa: F401  (registers PointStamped with tf2)
 
 from team_perception.human_utils import HumanDetector, box_depth_pixel
+from team_perception import tf_pin
 from team_perception.qr_utils import DepthAlignState, deproject
 
 
@@ -97,6 +98,9 @@ class HumanDetectorNode(Node):
                                          self.on_depth_info, qos_profile_sensor_data)
             self.tf_buffer = tf2_ros.Buffer()
             self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+            # Robot-side /tf_static gives the depth camera a second, unpitched parent: keep the
+            # correct one (team_perception/tf_pin.py).
+            self.tf_pin = tf_pin.attach(self, self.tf_buffer)
 
         self.pub = self.create_publisher(String, '/humans/detections', 10)
 

@@ -7,6 +7,7 @@
 #     pip3 install --user torch==2.14.1 torchvision==0.29.2 --index-url https://download.pytorch.org/whl/cpu
 #     pip3 install --user -r requirements.txt
 #     pip3 uninstall -y setuptools     # torch pulls in a setuptools that breaks colcon on Humble
+#     pip3 uninstall -y opencv-python  # ultralytics pulls it in; use apt python3-opencv
 #
 # torch: the CPU-only build (the robot computer has no CUDA GPU) keeps the download ~200 MB.
 # numpy must stay below 2: ROS Humble's cv_bridge is built against numpy 1.x.
@@ -18,4 +19,6 @@ zxing-cpp==2.3.0
 # Person detection (human_detector node), from team_perception_external
 ultralytics==8.4.210
 
-numpy<2
+# 1.24.x: below 2 for Humble's cv_bridge, and below 1.25 for apt's python3-scipy 1.8 (used by
+# maze_nav), which warns and is untested on newer numpy. ultralytics needs >= 1.23.
+numpy==1.24.4

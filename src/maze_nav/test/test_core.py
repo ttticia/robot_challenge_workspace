@@ -8,7 +8,8 @@ import pytest
 
 from maze_nav.core import (ExitDetector, StandSettle, Grid, body_height, choose_frontier, cloud_xyz,
                            estimate_floor, posture, find_frontiers, footprint_hits, free_distance_ahead,
-                           find_junction, geodesic_distance, heading_towards, max_turn,
+                           geodesic_distance, heading_towards, max_turn, plan_creep_turn,
+                           plan_turn,
                            wall_ranges)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -230,45 +231,6 @@ def test_creep_stops_short_of_a_wall_0_15_m_ahead():
     assert free_distance_ahead(walled_grid(), (0, 0), 0.0, FOOTPRINT, 0.10, 0.05) == 0.10
 
 
-def t_junction_grid():
-    """T junction: robot at (0, 0) facing +x at the end of a corridor that splits into a
-    left (+y) and a right (-y) branch, both unknown beyond 0.9 m. 5 cm cells, origin (-2, -2)."""
-    res = 0.05
-    data = np.full((80, 80), 100, np.int16)
-    cell = lambda x, y: (int((y + 2) / res), int((x + 2) / res))  # noqa: E731
-    def free(x0, x1, y0, y1, v=0):
-        r0, c0 = cell(x0, y0)
-        r1, c1 = cell(x1, y1)
-        data[r0:r1, c0:c1] = v
-    free(-1.0, 0.45, -0.45, 0.45)            # corridor + junction cell
-    free(-0.45, 0.45, 0.45, 0.9)             # left branch, known
-    free(-0.45, 0.45, 0.9, 1.6, -1)          # ... then unknown
-    free(-0.45, 0.45, -0.9, -0.45)           # right branch, known
-    free(-0.45, 0.45, -1.6, -0.9, -1)        # ... then unknown
-    return Grid(data, res, (-2.0, -2.0))
-
-
-def test_junction_found_at_a_t_and_nearer_turn_first():
-    g = t_junction_grid()
-    fs = find_frontiers(g, (0.0, 0.0), 0.25, 0.33, 4)
-    assert len(fs) == 2
-    j = find_junction(g, (0.0, 0.0), math.radians(-10), fs)     # facing slightly right
-    assert j is not None
-    (f1, h1), (f2, h2) = j
-    assert h1 == pytest.approx(-math.pi / 2, abs=0.5)          # right branch first
-    assert h2 == pytest.approx(math.pi / 2, abs=0.5)
-    # One branch already explored (blacklisted): no junction.
-    fs1 = find_frontiers(g, (0.0, 0.0), 0.25, 0.33, 4, blacklist=[f2.goal])
-    assert find_junction(g, (0.0, 0.0), 0.0, fs1) is None
-    # Too far away to be "at" it.
-    assert find_junction(g, (0.0, 0.0), 0.0, fs, max_range=0.3) is None
-
-
-def test_no_junction_for_a_corridor_end():
-    fs = find_frontiers(corridor_grid(), (0.3, 0.0))
-    assert find_junction(corridor_grid(), (0.3, 0.0), 0.0, fs) is None
-
-
 def test_blacklisted_frontier_is_skipped():
     g = corridor_grid()
     goal = find_frontiers(g, (0.3, 0.0))[0].goal
@@ -419,3 +381,92 @@ def test_blacklisted_start_pose_keeps_the_rest_of_its_frontier(xy):
     assert fs, 'no frontier left: explorer would stop with NO_EXIT'
     for f in fs:
         assert math.hypot(*f.goal) >= 0.4                  # never back to the start pose
+
+
+# ------------------------------------------------------------------ plan_turn
+
+def test_plan_turn_leaves_clear_and_small_turns_to_nav2():
+    g = walled_grid()                                      # no walls
+    assert plan_turn(g, (0, 0), 0.0, math.radians(90), FOOTPRINT, 0.03) == (None, 'short way clear')
+    assert plan_turn(g, (0, 0), 0.0, math.radians(20), FOOTPRINT, 0.03) == (None, 'small turn')
+
+
+def test_plan_turn_blocked_both_ways_next_to_a_side_wall():
+    g = walled_grid(wall_y=-0.38)        # body 0.15 m from a wall on the right
+    angle, why = plan_turn(g, (0, 0), 0.0, math.radians(90), FOOTPRINT, 0.03)
+    assert (angle, why) == (None, 'blocked both ways')
+
+
+def test_plan_turn_goes_the_long_way_round_a_post():
+    # A post 0.42 m from the centre at -102 deg: only the rear corners reach it, at yaw ~46
+    # and ~110 deg, both inside a 150 deg left turn; the 210 deg right turn misses it.
+    g = walled_grid()
+    px, py = 0.42 * math.cos(math.radians(-102)), 0.42 * math.sin(math.radians(-102))
+    c = g.cell((px, py))
+    g.data[c[1] - 1:c[1] + 2, c[0] - 1:c[0] + 2] = 100
+    angle, why = plan_turn(g, (0, 0), 0.0, math.radians(150), FOOTPRINT, 0.03)
+    assert why == 'short way blocked, long way clear'
+    assert angle == pytest.approx(-math.radians(210))
+
+
+def test_plan_turn_ignores_a_wall_mapped_on_the_robot():
+    g = walled_grid()
+    g.data[200, 200] = 100                                 # (0, 0): under the robot
+    assert plan_turn(g, (0, 0), 0.0, math.radians(90), FOOTPRINT, 0.03) == \
+        (None, 'map shows a wall at the robot')
+
+
+# ------------------------------------------------------------------ plan_creep_turn
+
+def corner_grid(width=0.90, dead_end=True):
+    """1 cm grid, origin (-2, -2): a corridor of `width` along +x (centre line y = 0) into a
+    corner cell centred at (1, 0), whose way on is a side corridor up +y. Not dead_end: the
+    main corridor carries on past the corner (a T)."""
+    res, n = 0.01, 400
+    data = np.full((n, n), 100, np.int16)
+
+    def free(x0, x1, y0, y1):
+        data[int(round((y0 + 2) / res)):int(round((y1 + 2) / res)),
+             int(round((x0 + 2) / res)):int(round((x1 + 2) / res))] = 0
+    h = width / 2
+    free(-2.0, 1.0 + h if dead_end else 2.0, -h, h)
+    free(1.0 - h, 1.0 + h, h, 2.0)
+    return Grid(data, res, (-2.0, -2.0))
+
+
+def test_creep_turn_finds_room_in_the_corner_cell():
+    # Stopped at the cell edge before the corner (as in the sim): the 90 deg turn up the side
+    # corridor is blocked both ways here; a bit into the corner cell it fits.
+    g = corner_grid()
+    goal = (1.0, 1.6)
+    assert plan_turn(g, (0.45, 0.0), 0.0, math.pi / 2, FOOTPRINT, 0.03) == \
+        (None, 'blocked both ways')
+    d, margin, why = plan_creep_turn(g, (0.45, 0.0), 0.0, goal, FOOTPRINT)
+    assert d is not None, why
+    assert 0.08 <= d <= 0.45, d                 # into the corner cell, short of its end wall
+    assert margin == 0.01                       # 0.9 m corridors: only fits with <= 1 cm
+    # and the turn really is clear there, with that margin
+    p = (0.45 + d, 0.0)
+    assert max_turn(g, p, 0.0, FOOTPRINT, +1, math.pi / 2, margin) >= math.pi / 2 - 1e-6 or \
+        max_turn(g, p, 0.0, FOOTPRINT, -1, 1.5 * math.pi, margin) >= 1.5 * math.pi - 1e-6
+
+
+def test_creep_turn_uses_the_full_margin_when_it_fits():
+    d, margin, _ = plan_creep_turn(corner_grid(width=0.95), (0.45, 0.0), 0.0, (1.0, 1.6),
+                                   FOOTPRINT)
+    assert d is not None and margin == 0.03
+
+
+def test_creep_turn_never_drives_past_the_free_distance():
+    # Dead end right ahead: the corner cell's end wall limits the creep.
+    g = corner_grid()
+    d, _, _ = plan_creep_turn(g, (0.45, 0.0), 0.0, (1.0, 1.6), FOOTPRINT, max_creep=2.0)
+    front_at_stop = 0.45 + d + FOOTPRINT[1]
+    assert front_at_stop <= 1.45 - 0.05 + 0.02, front_at_stop   # creep_margin to the end wall
+
+
+def test_creep_turn_none_in_a_plain_corridor():
+    # No side opening anywhere ahead: the goal is behind, every spot is blocked both ways.
+    g = corner_grid(dead_end=False)
+    d, margin, why = plan_creep_turn(g, (-1.0, 0.0), 0.0, (-1.8, 0.0), FOOTPRINT)
+    assert (d, margin) == (None, None) and why.startswith('no clear spot'), why
