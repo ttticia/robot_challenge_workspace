@@ -139,6 +139,10 @@ class StairDetector(Node):
         p('vote_window', 6)
         p('vote_need', 3)
         p('vote_pos_tol', 0.08)                # m; one tread off (0.15) must not agree
+        p('vote_nearer_need', 2)               # this many frames 0.1-0.5 m nearer than the
+        #                                        largest group win (bottom riser missed = one
+        #                                        tread late = front on the step); 0 = off
+        p('infer_bottom', True)                # riser below the view, on evidence (stairs.py)
         p('vote_yaw_tol_deg', 8.0)
         p('handover_timeout', 3.0)             # s for the explorer to stop Nav2
         p('manoeuvre_timeout', 45.0)           # s for the whole line-up
@@ -169,10 +173,12 @@ class StairDetector(Node):
 
         self.params = StairParams(standing_height=float(g('standing_height')),
                                   min_risers=int(g('min_risers')),
-                                  max_range=float(g('max_range')))
+                                  max_range=float(g('max_range')),
+                                  infer_bottom=bool(g('infer_bottom')))
         self.tracker = StairTracker(window=int(g('vote_window')), need=int(g('vote_need')),
                                     pos_tol=float(g('vote_pos_tol')),
-                                    yaw_tol=math.radians(g('vote_yaw_tol_deg')))
+                                    yaw_tol=math.radians(g('vote_yaw_tol_deg')),
+                                    nearer_need=int(g('vote_nearer_need')))
         self.cfg = {n: g(n) for n in ('trigger_distance', 'trigger_max_offset',
                                       'stop_distance', 'freeze_distance',
                                       'centre', 'max_speed', 'max_turn_rate', 'min_turn_rate',
@@ -290,8 +296,9 @@ class StairDetector(Node):
             return False
         return not self.status_topic or self.explorer in self.trigger_states
 
-    def pose(self, stamp=None):
-        """((x, y), yaw, R) of base_link in odom; stamp None = latest. Never blocks."""
+    def pose(self, stamp=None, with_z=False):
+        """((x, y), yaw, R) of base_link in odom (+ z with_z); stamp None = latest. Never
+        blocks."""
         tf = None
         for t in ((stamp, Time()) if stamp is not None else (Time(),)):
             try:
@@ -302,7 +309,8 @@ class StairDetector(Node):
         if tf is None:
             return None
         r, a = matrix_of(tf)
-        return (a[0], a[1]), math.atan2(r[1, 0], r[0, 0]), r
+        out = (a[0], a[1]), math.atan2(r[1, 0], r[0, 0]), r
+        return out + (a[2],) if with_z else out
 
     def camera(self, frame):
         """Depth optical frame's pose in base_link, looked up once.
@@ -369,14 +377,17 @@ class StairDetector(Node):
                                     '(want 16UC1 mm or 32FC1 m)', throttle_duration_sec=10.0)
             return
         cam = self.camera(msg.header.frame_id)
-        pose = self.pose(Time.from_msg(msg.header.stamp))
+        pose = self.pose(Time.from_msg(msg.header.stamp), with_z=True)
         if cam is None or pose is None:
             self.get_logger().info(f'waiting for TF {self.odom_frame} -> {self.base_frame} -> '
                                    f'{msg.header.frame_id}', throttle_duration_sec=10.0)
             return
-        xy, yaw, r_ob = pose
+        xy, yaw, r_ob, z = pose
         r, t, _ = level_transform(r_ob, *cam)
-        det = detect_stairs(depth, self.k, r, t, self.params)
+        # The lidar map's floor (odom z) in the level frame at base_link: close up the camera
+        # no longer sees the floor, the map remembers it (bottom-riser inference needs it).
+        floor = None if self.floor_z is None else self.floor_z - z
+        det = detect_stairs(depth, self.k, r, t, self.params, floor_z=floor)
         now = time.monotonic()
         est = to_odom(det, xy, yaw) if det is not None else None
         handled = est is not None and self.is_handled(est)
@@ -521,6 +532,8 @@ class StairDetector(Node):
             'angle_deg': round(math.degrees(det.yaw), 1), 'lateral': round(det.lateral, 3),
             'centre_ok': det.centre_ok, 'front_seen': det.front_seen, 'risers': det.risers,
             'rise': round(det.rise, 3), 'tread': round(det.tread, 3),
+            'first_rise': round(det.first_rise, 3), 'floor_measured': det.floor_measured,
+            'inferred_bottom': det.inferred_bottom,
             'width': round(det.width, 3), 'edge': [round(e[0], 3), round(e[1], 3)],
             'heading_deg': round(math.degrees(est.heading), 1),
             'confirmed': confirmed, 'handled': handled,

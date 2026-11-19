@@ -20,7 +20,7 @@ def detect(boxes, base, yaw, **kw):
     depth, r_ob = render(boxes, base, yaw, **{k: v for k, v in kw.items()
                                               if k in ('seed', 'pitch', 'roll', 'noise')})
     r, t, _ = level_transform(r_ob, R_BASE_CAM, T_BASE_CAM)
-    return detect_stairs(depth, K, r, t, kw.get('params'))
+    return detect_stairs(depth, K, r, t, kw.get('params'), floor_z=kw.get('floor_z'))
 
 
 @pytest.fixture(scope='module')
@@ -125,6 +125,17 @@ def test_chain_rules():
     assert find_chain(apart, p) == []
     uneven = good + [face(1.45, 0.42, 0.56)]                               # 4th rise 0.18 vs 0.12
     assert len(find_chain(uneven, p)) == 3
+    # A weak smear (13 points) on the tread behind the bottom riser is skipped, not the end
+    # of the chain (it started the stairs one tread late at 1.5 m); a strong face is not.
+    smear = face(1.11, 0.01, 0.06)
+    smear.n = 13
+    assert [f.u for f in find_chain(good[:1] + [smear] + good[1:], p)] == [1.0, 1.15, 1.30]
+    smear.n = 60
+    assert [f.u for f in find_chain(good[:1] + [smear] + good[1:], p)] == [1.15, 1.30]
+    # A low bottom step (10 cm under 12 cm ones) doesn't break the rise rules.
+    low = [face(1.0, 0.02, 0.08), face(1.15, 0.12, 0.20), face(1.30, 0.24, 0.32),
+           face(1.45, 0.36, 0.44)]
+    assert len(find_chain(low, p)) == 4
     # The tread between two faces must be at the lower one's top.
     assert find_chain(good, p, lambda a, b: a.hi + 0.10) == []
 
@@ -148,6 +159,21 @@ def test_tracker_votes_and_rejects_one_tread_off():
     assert got is not None
     assert got.distance(np.array([-2.0, 0.0])) == pytest.approx(0.625, abs=0.01)
     assert tr.estimate(10.0) is None       # too old
+
+
+def test_tracker_prefers_a_group_one_tread_nearer():
+    """3 frames one tread late (bottom riser missed) and 2 at the bottom riser: with
+    nearer_need=2 the nearer group wins; without, the larger one."""
+    for need, edge in ((2, -2.625), (0, -2.825)):
+        tr = StairTracker(window=6, need=3, pos_tol=0.08, nearer_need=need)
+        for i, x in enumerate((-2.825, -2.625, -2.83, -2.62, -2.82)):
+            tr.add(0.1 * i, est_at(x))
+        got = tr.estimate(0.5)
+        assert got.distance(np.array([-2.0, 0.0])) == pytest.approx(-2.0 - edge, abs=0.01)
+    tr = StairTracker(window=6, need=3, pos_tol=0.08, nearer_need=2)
+    for i, x in enumerate((-2.825, -2.625, -2.83, -2.82)):     # one nearer frame: not enough
+        tr.add(0.1 * i, est_at(x))
+    assert tr.estimate(0.4).distance(np.array([-2.0, 0.0])) == pytest.approx(0.825, abs=0.01)
 
 
 def test_refine_lock_freezes_close_up():
@@ -387,6 +413,47 @@ def test_low_risers_are_not_stairs():
     assert detect(staircase(1.2, rise=0.065, tread=0.25, width=1.0), (0, 0, 0.35), 0.0) is None
     det = detect(staircase(1.2, rise=0.08, tread=0.30, width=1.0), (0, 0, 0.35), 0.0)
     assert det is not None and det.distance == pytest.approx(1.2, abs=0.03)
+
+
+LOW_FIRST = dict(risers=4, rise=0.13, tread=0.20, first_rise=0.10)   # the challenge stairs
+
+
+@pytest.mark.parametrize('seed', [0, 1, 2])
+@pytest.mark.parametrize('dist', [0.55, 0.9, 1.2, 1.5, 1.8])
+@pytest.mark.parametrize('rise', [0.10, 0.13, 0.17])
+def test_low_first_step_starts_at_the_bottom_riser(dist, rise, seed):
+    """10 cm bottom step under 10-17 cm steps: the stairs start at the bottom riser, never a
+    tread late (1.5 m: a smear behind the bottom riser cut the chain; 1.2 m: a 4-face ghost
+    direction beat the real stairs). The rise is the upper steps', first_rise the bottom's
+    (info only; a floor that reads high never adds a step)."""
+    det = detect(staircase(dist, **dict(LOW_FIRST, rise=rise)) + SIDE_WALLS, (0, 0, 0.35), 0.0,
+                 seed=seed)
+    assert det is not None and not det.inferred_bottom
+    assert det.distance == pytest.approx(dist, abs=0.03)
+    assert abs(math.degrees(det.yaw)) < 1.5
+    assert det.rise == pytest.approx(rise, abs=0.015)
+    if dist >= 0.9:     # nearer, the camera's floor is the 10 cm tread (floor_band): reads ~0
+        assert det.first_rise == pytest.approx(0.10, abs=0.025)
+
+
+@pytest.mark.parametrize('dist', [0.35, 0.40, 0.45])
+@pytest.mark.parametrize('floor_err', [-0.02, 0.0, 0.02])
+def test_bottom_riser_below_the_view_is_inferred_on_a_measured_floor(dist, floor_err):
+    """Close up the bottom riser is below the view. With the floor measured (lidar map) and
+    the 10 cm tread seen in front of the 2nd riser, the bottom riser is put one tread
+    nearer; without a measured floor it isn't (the first face found is the 2nd riser)."""
+    boxes = staircase(dist, **LOW_FIRST) + SIDE_WALLS
+    det = detect(boxes, (0, 0, 0.35), 0.0, floor_z=-0.35 + floor_err)
+    assert det is not None and det.inferred_bottom
+    assert det.distance == pytest.approx(dist, abs=0.03)
+    blind = detect(boxes, (0, 0, 0.35), 0.0)
+    assert not blind.inferred_bottom and blind.distance == pytest.approx(dist + 0.20, abs=0.03)
+
+
+@pytest.mark.parametrize('dist', [0.6, 1.0, 1.5])
+def test_no_bottom_riser_inferred_when_it_is_in_view(dist):
+    det = detect(staircase(dist, **LOW_FIRST) + SIDE_WALLS, (0, 0, 0.35), 0.0, floor_z=-0.35)
+    assert not det.inferred_bottom and det.distance == pytest.approx(dist, abs=0.03)
 
 
 def test_in_front_with_centre():

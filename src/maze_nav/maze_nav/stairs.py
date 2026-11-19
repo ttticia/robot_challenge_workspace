@@ -112,6 +112,14 @@ class StairParams:
     min_distance: float = 0.30          # m; nearer is under the robot's own front (0.27 m)
     edge_margin: float = 0.03           # fraction of image width counted as the image edge
     refine_deg: float = 6.0
+    stray_frac: float = 0.25            # a face with < this x the points of the face before it
+    #                                     that doesn't fit the chain is skipped, not the end of
+    #                                     it (a ~15-point smear behind the bottom riser's top
+    #                                     at 1.5 m started the stairs one tread late)
+    min_support_frac: float = 0.3       # directions with < this x the points of the best are
+    #                                     dropped (a 190-point 4-face ghost beat 2300 points)
+    infer_bottom: bool = True           # a riser below the view, see detect_stairs
+    missing_lo: float = 0.06            # m: first face starts this far above a MEASURED floor
 
 
 @dataclass
@@ -153,12 +161,18 @@ class Detection:
     span_hi: float = 0.0                #   the stair direction: 0 inside = stairs straight ahead
     front_seen: bool = True             # ground seen just in front of the first riser (info only:
     #                                     often false close up, where the floor leaves the view)
+    first_rise: float = 0.0             # m, bottom step's rise (from the 2nd face; 0 = unknown)
+    floor_measured: bool = False        # floor_z measured (camera floor points or given), not
+    #                                     the standing_height default
+    inferred_bottom: bool = False       # distance is a riser below the view (detect_stairs)
+    support: int = 0                    # face points in the chain
     faces: list = field(repr=False, default_factory=list)
 
     def summary(self):
         return (f'{self.risers} risers {self.rise * 100:.0f} cm / {self.tread * 100:.0f} cm, '
                 f'{self.distance:.2f} m at {math.degrees(self.yaw):+.0f} deg, '
-                f'{self.width:.2f} m wide' + ('' if self.centre_ok else ' (edge cut off)'))
+                f'{self.width:.2f} m wide' + ('' if self.centre_ok else ' (edge cut off)')
+                + (' (bottom riser inferred)' if self.inferred_bottom else ''))
 
 
 # ---------------------------------------------------------------- geometry
@@ -319,6 +333,31 @@ def find_chain(faces, p, tread_check=None):
 
     tread_check(a, b) -> tread height between faces a and b, or None if unknown.
     """
+    def fits(chain, f):
+        prev = chain[-1]
+        # Face heights come out a few cm short at both ends (normals are smoothed over the
+        # step's corners), so the rise is the spacing of the face middles, and a face
+        # may start up to chain_gap above where the one below ends.
+        step = f.mid - prev.mid
+        if not (p.first_rise_min <= f.rise <= p.rise_max) or \
+                not (p.rise_min <= step <= p.rise_max):
+            return False
+        if not (-p.chain_tol <= f.lo - prev.hi <= p.chain_gap):
+            return False
+        # The first step is left out: its rise may differ (a 10 cm bottom step under 13 cm
+        # ones) and face 0 may be cut off by the view.
+        steps = [b.mid - a.mid for a, b in zip(chain[1:], chain[2:])]
+        if steps and abs(step - float(np.mean(steps))) > p.rise_tol:
+            return False
+        overlap = min(f.vhi, prev.vhi) - max(f.vlo, prev.vlo)
+        if overlap < 0.5 * min(f.vhi - f.vlo, prev.vhi - prev.vlo):
+            return False
+        if tread_check is not None:
+            t = tread_check(prev, f)
+            if t is not None and abs(t - (prev.hi + f.lo) / 2) > p.tread_tol:
+                return False
+        return True
+
     best = []
     for i, f0 in enumerate(faces):
         if not (p.first_rise_min <= f0.rise <= p.rise_max):
@@ -331,25 +370,10 @@ def find_chain(faces, p, tread_check=None):
                 continue                        # a stray cluster too close behind: skip it
             if gap > p.tread_max:
                 break
-            # Face heights come out a few cm short at both ends (normals are smoothed over the
-            # step's corners), so the rise is the spacing of the face middles, and a face
-            # may start up to chain_gap above where the one below ends.
-            step = f.mid - prev.mid
-            if not (p.first_rise_min <= f.rise <= p.rise_max) or \
-                    not (p.rise_min <= step <= p.rise_max):
+            if not fits(chain, f):
+                if f.n < p.stray_frac * prev.n:
+                    continue                    # a weak stray cluster (smear on a tread edge)
                 break
-            if not (-p.chain_tol <= f.lo - prev.hi <= p.chain_gap):
-                break
-            steps = [b.mid - a.mid for a, b in zip(chain[1:], chain[2:])]   # first: may be partial
-            if steps and abs(step - float(np.mean(steps))) > p.rise_tol:
-                break
-            overlap = min(f.vhi, prev.vhi) - max(f.vlo, prev.vlo)
-            if overlap < 0.5 * min(f.vhi - f.vlo, prev.vhi - prev.vlo):
-                break
-            if tread_check is not None:
-                t = tread_check(prev, f)
-                if t is not None and abs(t - (prev.hi + f.lo) / 2) > p.tread_tol:
-                    break
             chain.append(f)
         if len(chain) > len(best):
             best = chain
@@ -375,25 +399,40 @@ class Cloud:
         self.xyz, self.nrm, self.cols = self.xyz[keep], self.nrm[keep], self.cols[keep]
 
 
-def estimate_floor(cloud, p):
-    """Level-frame z of the floor near the robot (default: -standing_height)."""
+def estimate_floor(cloud, p, measured=False):
+    """Level-frame z of the floor near the robot (default: -standing_height).
+    measured=True: (z, True if floor points were found rather than the default)."""
     z0 = -p.standing_height
     z = cloud.xyz[:, 2]
     sel = (cloud.nrm[:, 2] > math.cos(math.radians(p.horizontal_max_tilt_deg))) & \
         (cloud.xyz[:, 0] < p.floor_max_x) & (np.abs(z - z0) < p.floor_band)
     if sel.sum() < p.min_floor_points:
-        return z0
-    return float(np.median(z[sel]))
+        return (z0, False) if measured else z0
+    f = float(np.median(z[sel]))
+    return (f, True) if measured else f
 
 
-def detect_stairs(depth, k, r, t, p=None, cloud=None):
+def detect_stairs(depth, k, r, t, p=None, cloud=None, floor_z=None):
     """Detection or None. depth: HxW uint16 mm or float m; k = (fx, fy, cx, cy);
-    (r, t): camera optical -> level frame (level_transform)."""
+    (r, t): camera optical -> level frame (level_transform).
+
+    floor_z: level-frame z of a measured floor (stair_detector: the lidar height map's floor,
+    which remembers the floor close up where the camera no longer sees it); None = from this
+    frame's floor points, else -standing_height.
+
+    Bottom riser below the view (p.infer_bottom): close up the first face found can be the
+    2nd riser. It is inferred one tread nearer only on evidence: the floor is measured, the
+    first face starts >= missing_lo above it, and a tread is seen in front of that face at the
+    height where it starts (>= rise_min above the floor). Body height alone never decides (on
+    2026-11-18 that added a step that wasn't there)."""
     p = p or StairParams()
     cloud = cloud or Cloud(depth, k, r, t, p)
     if len(cloud.xyz) == 0:
         return None
-    floor = estimate_floor(cloud, p)
+    if floor_z is not None and abs(floor_z + p.standing_height) <= 2 * p.floor_band:
+        floor, measured = float(floor_z), True
+    else:
+        floor, measured = estimate_floor(cloud, p, measured=True)
     xyz, nrm = cloud.xyz, cloud.nrm
     h = xyz[:, 2] - floor
     nz = nrm[:, 2]
@@ -415,7 +454,7 @@ def detect_stairs(depth, k, r, t, p=None, cloud=None):
     vi = np.where(vert)[0]
     hi_ = np.where(horiz)[0]
 
-    best = None
+    dets = []
     for c in cands:
         theta = math.radians(c + 0.5 - p.max_yaw_deg)
         det = _try_direction(theta, xyz, h, nrm, vi, hi_, cloud, floor, p)
@@ -438,14 +477,43 @@ def detect_stairs(depth, k, r, t, p=None, cloud=None):
             if refined is None or refined.risers < det.risers:
                 break
             det = refined
-        if det is None:
-            continue
-        # Most risers; then the sharpest faces. Not the most points: a direction a few deg off
-        # still collects the real risers (facing_tol), but smears them along u.
-        key = (det.risers, -det.thickness)
-        if best is None or key > best[0]:
-            best = (key, det)
-    return None if best is None else best[1]
+        if det is not None:
+            dets.append(det)
+    if not dets:
+        return None
+    # Most risers; then the sharpest faces. Not the most points: a direction a few deg off
+    # still collects the real risers (facing_tol), but smears them along u. Directions with
+    # only a fraction of the best one's points are ghosts (riser ends seen obliquely).
+    top = max(d.support for d in dets)
+    dets = [d for d in dets if d.support >= p.min_support_frac * top]
+    det = max(dets, key=lambda d: (d.risers, -d.thickness))
+    det.floor_measured = measured
+    return _infer_bottom(det, xyz, h, nrm, p) if measured and p.infer_bottom else det
+
+
+def _infer_bottom(det, xyz, h, nrm, p):
+    """det with the bottom riser added one tread nearer if a tread is seen in front of its
+    first face at the height that face starts (see detect_stairs), else det unchanged."""
+    f0 = det.faces[0]
+    if f0.lo < p.missing_lo or len(det.faces) < 2:
+        return det
+    ct, st = math.cos(det.yaw), math.sin(det.yaw)
+    horiz = nrm[:, 2] > math.cos(math.radians(p.horizontal_max_tilt_deg))
+    u = xyz[:, 0] * ct + xyz[:, 1] * st
+    v = -xyz[:, 0] * st + xyz[:, 1] * ct
+    sel = horiz & (u > f0.u - det.tread + 0.03) & (u < f0.u - 0.03) & \
+        (v > f0.vlo) & (v < f0.vhi)
+    if sel.sum() < p.min_tread_points:
+        return det
+    t = float(np.median(h[sel]))
+    if t < p.rise_min or abs(t - f0.lo) > p.tread_tol or t > p.rise_max:
+        return det
+    det.distance = f0.u - det.tread
+    det.risers += 1
+    det.first_rise = t
+    det.inferred_bottom = True
+    det.front_seen = False
+    return det
 
 
 def _try_direction(theta, xyz, h, nrm, vi, hi_, cloud, floor, p):
@@ -470,11 +538,15 @@ def _try_direction(theta, xyz, h, nrm, vi, hi_, cloud, floor, p):
     if not chain:
         return None
     steps = [b.mid - a.mid for a, b in zip(chain, chain[1:])]
+    # Rise from the steps above the bottom one when there are any: face 0's middle mixes the
+    # bottom step's rise (it may be lower, e.g. 10 cm under 13 cm steps) with the next one's.
+    upper = steps[1:] or steps
+    rise = float(np.mean(upper))
     vlo = float(np.median([f.vlo for f in chain]))
     vhi = float(np.median([f.vhi for f in chain]))
     width = vhi - vlo
     if width < p.min_stair_width or chain[0].u < p.min_distance or \
-            abs(theta) > math.radians(p.max_yaw_deg) or float(np.mean(steps)) < p.mean_rise_min:
+            abs(theta) > math.radians(p.max_yaw_deg) or rise < p.mean_rise_min:
         return None
     m = p.edge_margin * cloud.width
     cut = any(f.col_min <= m or f.col_max >= cloud.width - 1 - m for f in chain)
@@ -482,13 +554,16 @@ def _try_direction(theta, xyz, h, nrm, vi, hi_, cloud, floor, p):
     front = (hu > f0.u - p.front_depth) & (hu < f0.u - 0.03) & (hv > f0.vlo) & (hv < f0.vhi) & \
         (hh < f0.lo + p.chain_gap)
     front_seen = int(front.sum()) >= p.min_tread_points
-    rise, tread = float(np.mean(steps)), float(np.mean(np.diff([f.u for f in chain])))
+    tread = float(np.mean(np.diff([f.u for f in chain])))
+    # Face 1 spans [r1, r1 + r2] above the floor: its middle less half a rise is r1.
+    first_rise = chain[1].mid - rise / 2 if len(steps) >= 2 else 0.0
     return Detection(yaw=wrap(theta), distance=f0.u, lateral=(vlo + vhi) / 2,
                      centre_ok=(not cut) and width >= p.min_width, risers=len(chain),
                      rise=rise, tread=tread,
                      width=width, floor_z=floor, faces=chain,
                      thickness=float(np.mean([f.spread for f in chain])),
-                     front_seen=front_seen, span_lo=vlo, span_hi=vhi)
+                     front_seen=front_seen, span_lo=vlo, span_hi=vhi,
+                     first_rise=first_rise, support=int(sum(f.n for f in chain)))
 
 
 # ---------------------------------------------------------------- odom bookkeeping
@@ -544,9 +619,16 @@ class StairTracker:
     """Confirms stairs once vote_need of the last vote_window detections (within max_age s)
     agree, and fuses those."""
 
-    def __init__(self, window=6, need=3, pos_tol=0.15, yaw_tol=math.radians(10), max_age=3.0):
+    def __init__(self, window=6, need=3, pos_tol=0.15, yaw_tol=math.radians(10), max_age=3.0,
+                 nearer_need=0, nearer_range=(0.10, 0.50)):
+        """nearer_need > 0: a group of >= nearer_need detections nearer_range m nearer than
+        the largest group (same direction) wins over it. Missing the bottom riser (out of
+        view, or a short 10 cm step) starts the stairs one tread late; the reverse (a riser
+        that isn't there, in front of real stairs) needs a whole extra riser chain. Stopping
+        early is the safe mistake: one tread late puts the robot's front on the bottom step."""
         self.window, self.need = window, need
         self.pos_tol, self.yaw_tol, self.max_age = pos_tol, yaw_tol, max_age
+        self.nearer_need, self.nearer_range = nearer_need, nearer_range
         self.hist = []                  # (t, StairEstimate or None)
 
     def add(self, t, est):
@@ -564,6 +646,20 @@ class StairTracker:
                 best = group
         if len(best) < self.need:
             return None
+        if self.nearer_need:
+            ref = best[0]
+            near = None
+            for e in recent:
+                ahead = ref.along - float(np.dot(e.d() * e.along, ref.d()))
+                if abs(wrap(e.heading - ref.heading)) > self.yaw_tol or \
+                        not self.nearer_range[0] <= ahead <= self.nearer_range[1]:
+                    continue
+                group = [g for g in recent if e.close_to(g, self.pos_tol, self.yaw_tol)]
+                key = (len(group), ahead)
+                if len(group) >= self.nearer_need and (near is None or key > near[0]):
+                    near = (key, group)
+            if near is not None:
+                best = near[1]
         hd = math.atan2(sum(math.sin(e.heading) for e in best),
                         sum(math.cos(e.heading) for e in best))
         out = StairEstimate(heading=hd, along=0.0,

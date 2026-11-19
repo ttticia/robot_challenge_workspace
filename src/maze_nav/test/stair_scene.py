@@ -18,11 +18,14 @@ R_BASE_CAM = quat_to_matrix(0.0, 0.1736, 0.0, 0.9848) @ quat_to_matrix(-0.5, 0.5
 STANDING = 0.35
 
 
-def staircase(x0, y_c=0.0, risers=3, rise=0.12, tread=0.15, width=0.9, base=0.0, top=0.3):
+def staircase(x0, y_c=0.0, risers=3, rise=0.12, tread=0.15, width=0.9, base=0.0, top=0.3,
+              first_rise=None):
     """Boxes for stairs going up along +x, first riser at x = x0, centred on y = y_c. Other
-    stair directions are tested by turning the robot instead."""
+    stair directions are tested by turning the robot instead. first_rise: the bottom step's
+    rise if it differs (the challenge stairs: 10 cm under the others)."""
     end = x0 + (risers - 1) * tread + top
-    return [((x0 + i * tread, y_c - width / 2, base), (end, y_c + width / 2, base + (i + 1) * rise))
+    r0 = rise if first_rise is None else first_rise
+    return [((x0 + i * tread, y_c - width / 2, base), (end, y_c + width / 2, base + r0 + i * rise))
             for i in range(risers)]
 
 
