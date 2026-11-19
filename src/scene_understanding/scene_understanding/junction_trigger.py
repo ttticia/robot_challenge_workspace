@@ -27,6 +27,7 @@ Behaviour:
 
 from datetime import datetime
 import json
+import math
 import os
 import threading
 import time
@@ -34,6 +35,8 @@ import time
 import cv2
 import rclpy
 from rclpy.executors import ExternalShutdownException
+from rclpy.time import Time
+from tf2_ros import Buffer, TransformException, TransformListener
 from std_msgs.msg import Bool, String
 
 from scene_understanding.image_subscriber import ImageSubscriber
@@ -188,6 +191,11 @@ class JunctionTrigger(ImageSubscriber):
         self.declare_parameter('junction_scan_enabled', False)
         self.declare_parameter('junction_scan_angle_deg', 30.0)
         self.declare_parameter('junction_spin_action', '/spin')
+        self.map_frame = self.declare_parameter('map_frame', 'map').value
+        self.odom_frame = self.declare_parameter('odom_frame', 'odom').value
+        self.base_frame = self.declare_parameter('base_frame', 'base_link').value
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         self.scan = None
         if self.get_parameter('junction_scan_enabled').value:
             from scene_understanding.junction_scan import JunctionScan
@@ -372,15 +380,11 @@ class JunctionTrigger(ImageSubscriber):
     def junction_callback(self, msg):
         """Handle messages received on /junction_detected."""
 
-        should_trigger = self.logic.update(
-            msg.data,
-            time.monotonic()
-        )
+        triggered_at = time.monotonic()
+        if self.logic.update(msg.data, triggered_at):
+            self.capture(triggered_at)
 
-        if should_trigger:
-            self.capture()
-
-    def capture(self):
+    def capture(self, triggered_at):
         """Take a copy of the latest camera frame."""
 
         if self.latest_frame is None:
@@ -432,7 +436,8 @@ class JunctionTrigger(ImageSubscriber):
             frame,
             stamp,
             index,
-            source_file
+            source_file,
+            triggered_at,
         )
 
     # ================================================================
@@ -444,7 +449,8 @@ class JunctionTrigger(ImageSubscriber):
         frame,
         stamp,
         index,
-        source_file
+        source_file,
+        triggered_at,
     ):
         """Run processing without blocking ROS callbacks."""
 
@@ -464,11 +470,35 @@ class JunctionTrigger(ImageSubscriber):
                 stamp,
                 index,
                 source_file,
+                triggered_at,
             ),
             daemon=True
         )
 
         thread.start()
+
+    def _robot_position(self):
+        """Read the latest robot position available in TF."""
+        latest = Time()
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.map_frame, self.base_frame, latest,
+            )
+        except TransformException as map_error:
+            try:
+                transform = self.tf_buffer.lookup_transform(
+                    self.odom_frame, self.base_frame, latest,
+                )
+            except TransformException as odom_error:
+                return None, f'Map TF: {map_error}; odom TF: {odom_error}'
+        translation = transform.transform.translation
+        transform_stamp = transform.header.stamp
+        return {
+            'frame_id': transform.header.frame_id,
+            'stamp': {'sec': transform_stamp.sec, 'nanosec': transform_stamp.nanosec},
+            'x': translation.x,
+            'y': translation.y,
+        }, None
 
     def _run_vlm(
         self,
@@ -476,6 +506,7 @@ class JunctionTrigger(ImageSubscriber):
         stamp,
         index,
         source_file,
+        triggered_at,
     ):
         """
         Save the image first.
@@ -489,6 +520,7 @@ class JunctionTrigger(ImageSubscriber):
             'junction': index,
             'stamp': stamp_key(stamp),
             'source_file': source_file,
+            'view_yaw_offsets_deg': {'center': 0.0},
             'time': datetime.now().isoformat(
                 timespec='seconds'
             ),
@@ -505,7 +537,7 @@ class JunctionTrigger(ImageSubscriber):
                 started = time.monotonic()
                 composite = None
                 try:
-                    composite = self.scan.capture()
+                    composite = self.scan.capture(frame)
                 except Exception as exc:
                     scan_error = exc
                 finally:
@@ -521,6 +553,8 @@ class JunctionTrigger(ImageSubscriber):
                     frame = composite
                     three_view = True
                     record['view_layout'] = ['left', 'center', 'right']
+                    angle_deg = round(math.degrees(self.scan.angle), 6)
+                    record['view_yaw_offsets_deg'].update(left=angle_deg, right=-angle_deg)
 
             # ========================================================
             # STEP 1: SAVE TRIGGERED IMAGE FIRST
@@ -616,6 +650,9 @@ class JunctionTrigger(ImageSubscriber):
             )
 
         finally:
+            record['total_latency_sec'] = round(time.monotonic() - triggered_at, 2)
+            record['robot_position'], record['robot_position_error'] = self._robot_position()
+
             # ========================================================
             # STEP 4: ALWAYS SAVE results.jsonl
             # ========================================================
@@ -682,7 +719,7 @@ class JunctionTrigger(ImageSubscriber):
                 )
                 self.get_logger().info(
                     f'Junction #{index}: {summary} '
-                    f'({record.get("latency_sec")}s)'
+                    f'({record.get("latency_sec")}s VLM, {record["total_latency_sec"]}s total)'
                 )
 
             else:

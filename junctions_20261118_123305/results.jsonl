@@ -1,1 +1,0 @@
-{"junction": 1, "stamp": "1795005231.709881000", "source_file": null, "time": "2026-11-18T12:33:52", "scene": null, "ok": false, "response": null, "error": "Nav2 Spin aborted for +30.0° (0.0° reported)", "scan_latency_sec": 15.06, "view_layout": ["center"], "saved_frame": "/home/user/test_scene_understanding/junctions_20261118_123305/junction_001.jpg"}

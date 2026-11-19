@@ -3,7 +3,8 @@ import math
 import re
 
 SCENE_PROMPT = """Return one compact JSON observation of the camera frame, even if no mission matches.
-Describe forward, left and right relative to the camera. Use open only for a
+For a single camera frame, describe forward, left and right from the robot's
+perspective. For a three-panel image, use the panel mapping above. Use open only for a
 visible continuing route, partially_blocked or blocked for visible obstructions,
 and unknown when the route cannot be seen. In notes, name only the decisive
 visible cue in at most six words, or use "" if status is self-explanatory.
@@ -71,10 +72,14 @@ def build_prompt(three_view=False):
     """Build the automatic scene observation prompt."""
     if three_view:
         return (
-            "The image is three equal-width panels ordered left, center, right. "
-            "They show separate headings from one junction. Assess directions "
-            "relative to the original center heading and use all three panels for "
-            "mission evidence. Panel edges are camera boundaries.\n" + SCENE_PROMPT
+            'The image contains three equal-width panels from the same junction.\n'
+            'For paths, use this fixed mapping by position in the stitched image:\n'
+            '- Leftmost third: direction="left" (robot turned left).\n'
+            '- Middle third: direction="forward" (original robot heading).\n'
+            '- Rightmost third: direction="right" (robot turned right).\n'
+            'Use only the corresponding panel for each path status and note. '
+            'Do not mirror or swap the panel labels. Panel edges are camera boundaries. '
+            'Use all panels for mission evidence.\n' + SCENE_PROMPT
         )
     return SCENE_PROMPT
 

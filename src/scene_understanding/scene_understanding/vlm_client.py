@@ -41,7 +41,7 @@ DEFAULT_PROMPT = 'Describe the image'
 MAX_WIDTH = 1024
 MAX_HEIGHT = 768
 # Where the camera tests save the frames they send (one subfolder per run).
-DEFAULT_SAVE_DIR = '~/test_scene_understanding'
+DEFAULT_SAVE_DIR = '~/test_scene_understanding/src/scene_understanding/junction_test_results'
 
 
 class VLMError(Exception):

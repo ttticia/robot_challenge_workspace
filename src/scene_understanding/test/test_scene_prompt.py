@@ -22,6 +22,14 @@ def test_build_prompt_detects_mission_clues_automatically():
     assert 'M01' not in prompt
 
 
+def test_three_view_prompt_maps_each_direction_to_its_image_third():
+    prompt = build_prompt(three_view=True)
+    assert 'Leftmost third: direction="left"' in prompt
+    assert 'Middle third: direction="forward"' in prompt
+    assert 'Rightmost third: direction="right"' in prompt
+    assert 'Leftmost third' not in build_prompt()
+
+
 def test_parse_plain_and_fenced():
     assert parse_scene_json('{"scene_type": "junction"}') == {
         'scene_type': 'junction'}

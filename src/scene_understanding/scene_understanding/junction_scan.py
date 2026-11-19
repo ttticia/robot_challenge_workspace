@@ -92,19 +92,19 @@ class JunctionScan:
             time.sleep(0.02)
         raise TimeoutError('No fresh camera image during junction scan')
 
-    def capture(self):
+    def capture(self, center):
         """Return a three-view strip, or None if no turn server is ready."""
         if not self.spin.server_is_ready():
             return None
-        center = self._fresh_frame()
+        # The trigger frame defines the center heading for this scan.
         self._turn(self.angle)
         try:
             left = self._fresh_frame(0.3)
-        except TimeoutError:
+        finally:
             if self.node.context.ok():
                 self._turn(-self.angle)
-            raise
-        self._turn(-2 * self.angle)
+
+        self._turn(-self.angle)
         try:
             right = self._fresh_frame(0.3)
         finally:
