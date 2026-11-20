@@ -9,6 +9,21 @@ The maze sits in a 10 x 8 m lab room. The robot starts in the closed start cell,
 only opening. The exit is the stair block on the far side; the run counts as out once the
 robot is past the stairs (logged as "OUT OF THE MAZE").
 
+Other mazes (parameter maze:=<json>, same format as example_maze.json) may add optional keys:
+"room": [x0, x1, y0, y1], "start": [x, y, yaw], "exit": {"axis": "x" or "y", "below" or
+"above": value}, and "curtain" solids (min/max boxes, plus "travel": [nx, ny], the way the
+robot walks through). A curtain is seen by the lidar but the body walks through it, and
+while the lidar is 0..`drape_depth` m past it the curtain lies over the lidar (returns
+within 0.2 m in front, none beyond). A maze with a curtain turns on lidar occlusion
+(walls and curtains hide what is behind them; parameter occlusion), which the plain sim
+leaves out. test/curtain_maze.json: a straight corridor with a curtain in it.
+A wall solid with "style": "extru" is the aluminium-frame wall (resource/extru wall.stl,
+test/extru_wall.py): its lidar points come from the frame and board, so the 10 x 37 cm side
+windows at each end are see-through (only with occlusion on: the plain sim sees through every
+wall), and "board_side" (-1/+1, default -1) puts the board on the min or max face. The body
+still collides with the whole bounding box. A maze with an extru wall turns occlusion on too.
+test/extru_maze.json: the curtain corridor built from extru walls.
+
 Always run it on a spare domain so it cannot meet the real robot:
 
     export ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1
@@ -24,6 +39,7 @@ import os
 os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
 
 import numpy as np  # noqa: E402
+from scipy import ndimage  # noqa: E402
 import rclpy
 from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
@@ -32,6 +48,8 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
+
+from extru_wall import extru_boxes  # noqa: E402  (test/, next to this script)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STAND = 0.35                       # base_link above the feet
@@ -72,7 +90,16 @@ class Maze:
     """Example maze geometry: points for the lidar and a height map for the feet."""
 
     def __init__(self, path):
-        self.solids = json.load(open(path))['solids']
+        d = json.load(open(path))
+        self.solids = d['solids']
+        self.room = tuple(d.get('room', ROOM))
+        self.start = tuple(d.get('start', START))
+        self.exit = d.get('exit', {'axis': 'x', 'below': EXIT_X})
+        self.curtains = [s for s in self.solids if s['kind'] == 'curtain']
+
+    def is_out(self, x, y):
+        v = x if self.exit['axis'] == 'x' else y
+        return v < self.exit['below'] if 'below' in self.exit else v > self.exit['above']
 
     def wall_boxes(self):
         """(N, 4) x0, y0, x1, y1 of everything the body can hit (walls, stair rails)."""
@@ -103,35 +130,49 @@ class Maze:
                 h = max(h, 0.12 * n)
         return h
 
-    def points(self):
-        pts = []
-        x0, x1, y0, y1 = ROOM
-        g = np.stack(np.meshgrid(np.arange(x0, x1, 0.08), np.arange(y0, y1, 0.08), [0.0],
+    def points(self, dense=False):
+        """(world points (N, 3), occluder mask): walls, rails, curtains, lab walls and
+        furniture hide what is behind them when occlusion is on; floor and terrain don't.
+        dense: 4 cm floor and 1 cm walls (for occlusion, and floor seen under curtains)."""
+        fs, ws = (0.04, 0.01) if dense else (0.08, 0.02)
+        pts, occ = [], []
+
+        def add(a, o):
+            pts.append(a)
+            occ.append(np.full(len(a), o))
+        x0, x1, y0, y1 = self.room
+        g = np.stack(np.meshgrid(np.arange(x0, x1, fs), np.arange(y0, y1, fs), [0.0],
                                  indexing='ij'), -1).reshape(-1, 3)
-        pts.append(g)                                                     # lab floor
+        add(g, False)                                                     # lab floor
         for lo, hi in (((x0, y0, 0), (x1, y0, 1)), ((x0, y1, 0), (x1, y1, 1)),
                        ((x0, y0, 0), (x0, y1, 1)), ((x1, y0, 0), (x1, y1, 1))):
-            pts.append(surface(lo, hi, 0.05, 'all'))                      # lab walls
-        pts.append(surface((-5.5, 2.0, 0), (-4.8, 2.6, 0.75), 0.04))      # a table-ish box
+            add(surface(lo, hi, 0.05, 'all'), True)                       # lab walls
+        if self.room == ROOM:
+            add(surface((-5.5, 2.0, 0), (-4.8, 2.6, 0.75), 0.04), True)   # a table-ish box
         for s in self.solids:
             k, lo, hi = s['kind'], s['min'], s['max']
-            if k in ('wall', 'rail'):
-                pts.append(surface(lo, hi, 0.02, 'all'))
+            if k == 'wall' and s.get('style') == 'extru':
+                for b in extru_boxes(lo, hi, s.get('board_side', -1)):
+                    add(surface(b[:3], b[3:], ws, 'all'), True)
+            elif k in ('wall', 'rail'):
+                add(surface(lo, hi, ws, 'all'), True)
+            elif k == 'curtain':
+                add(surface(lo, hi, 0.01, 'all'), True)
             elif k in ('tile', 'mat', 'block'):
-                pts.append(surface(lo, hi, 0.04, 'top'))
+                add(surface(lo, hi, 0.04, 'top'), False)
             elif k == 'wedge':
                 xs, ys = np.arange(lo[0], hi[0], 0.03), np.arange(lo[1], hi[1], 0.03)
                 xx, yy = np.meshgrid(xs, ys)
                 zz = np.vectorize(self.height)(xx, yy)
-                pts.append(np.stack([xx.ravel(), yy.ravel(), zz.ravel()], 1))
+                add(np.stack([xx.ravel(), yy.ravel(), zz.ravel()], 1), False)
             elif k == 'stairs':
                 xs, zs = np.arange(lo[0], hi[0], 0.02), np.arange(0, hi[2], 0.03)
                 ys = np.arange(lo[1], hi[1], 0.03)
                 tread = [(x, y, self.height(x, y)) for x in xs for y in ys]
                 rise = [(x, y, z) for x in xs for z in zs for y in ys[::3]
                         if abs(z - self.height(x, y)) < 0.015]
-                pts.append(np.array(tread + rise))
-        return np.concatenate(pts)
+                add(np.array(tread + rise), False)
+        return np.concatenate(pts), np.concatenate(occ)
 
 
 class FakeMazeLite3(Node):
@@ -140,10 +181,18 @@ class FakeMazeLite3(Node):
         self.declare_parameter('maze', os.path.join(HERE, 'example_maze.json'))
         self.declare_parameter('yaw_drift', 0.02)   # rad/s uncommanded turn while walking
         self.declare_parameter('track_csv', '')     # write t, x, y, yaw, clearance per step
+        self.declare_parameter('occlusion', 'auto')  # auto = on with a curtain or extru wall
+        self.declare_parameter('drape_depth', 0.45)  # m past a curtain the lidar is covered
         self.maze = Maze(self.get_parameter('maze').value)
-        self.world = self.maze.points()
+        occ = str(self.get_parameter('occlusion').value).lower()
+        extru = any(s.get('style') == 'extru' for s in self.maze.solids)
+        self.occlusion = (bool(self.maze.curtains) or extru) if occ == 'auto' \
+            else occ in ('true', '1')
+        self.world, self.occluder = self.maze.points(dense=self.occlusion)
+        self.drape_depth = float(self.get_parameter('drape_depth').value)
+        self.draped = False
         self.drift = self.get_parameter('yaw_drift').value
-        self.x, self.y, self.th = START
+        self.x, self.y, self.th = self.maze.start
         self.z0 = self.maze.height(self.x, self.y) + STAND
         self.cmd = Twist()
         self.out = False
@@ -166,7 +215,10 @@ class FakeMazeLite3(Node):
         self.create_timer(self.dt, self.step)
         self.create_timer(0.1, self.publish_cloud)
         self.create_timer(2.0, self.report)
-        self.get_logger().info(f'{len(self.world)} world points; start {START}')
+        self.get_logger().info(f'{len(self.world)} world points; start {self.maze.start}'
+                               + ('; lidar occlusion on' if self.occlusion else '')
+                               + (f'; {len(self.maze.curtains)} curtain(s)'
+                                  if self.maze.curtains else ''))
         # Wall clearance of the footprint (true pose), to tune how close Nav2 drives to walls.
         self.boxes = self.maze.wall_boxes()
         x0, x1, y0, y1 = FOOTPRINT
@@ -195,10 +247,11 @@ class FakeMazeLite3(Node):
 
     def odom_pose(self):
         """Pose relative to the start pose (what Fast-LIO + odom_relay would report)."""
-        dx, dy = self.x - START[0], self.y - START[1]
-        c, s = math.cos(-START[2]), math.sin(-START[2])
+        st = self.maze.start
+        dx, dy = self.x - st[0], self.y - st[1]
+        c, s = math.cos(-st[2]), math.sin(-st[2])
         z = self.maze.height(self.x, self.y) + STAND - self.z0
-        return c * dx - s * dy, s * dx + c * dy, z, self.th - START[2]
+        return c * dx - s * dy, s * dx + c * dy, z, self.th - st[2]
 
     def step(self):
         v, w = self.cmd.linear.x, self.cmd.angular.z
@@ -229,14 +282,15 @@ class FakeMazeLite3(Node):
             self.track.write(f'{self.get_clock().now().nanoseconds * 1e-9:.2f},{self.x:.3f},'
                              f'{self.y:.3f},{self.th:.3f},{self.clear:.3f}\n')
         # The start cell is a dead end the robot only turns in: score the drive after it.
-        self.left_start = self.left_start or self.y > 0.6
+        self.left_start = self.left_start or math.hypot(self.x - self.maze.start[0],
+                                                        self.y - self.maze.start[1]) > 0.6
         if self.left_start and self.clear < self.min_clear:
             self.min_clear, self.min_clear_at = self.clear, (self.x, self.y)
             if self.clear < 0.05:
                 self.get_logger().warn(f'{self.clear * 100:.0f} cm from a wall at maze '
                                        f'({self.x:.2f}, {self.y:.2f})'
                                        + (' - TOUCHING' if self.clear <= 0 else ''))
-        if not self.out and self.x < EXIT_X:
+        if not self.out and self.maze.is_out(self.x, self.y):
             self.out = True
             self.get_logger().info(f'OUT OF THE MAZE at maze ({self.x:.2f}, {self.y:.2f}); '
                                    + self.clear_summary())
@@ -263,7 +317,23 @@ class FakeMazeLite3(Node):
         lid = (base - LIDAR_T) @ R_LIDAR
         rng = np.linalg.norm(lid, axis=1)
         elev = np.degrees(np.arcsin(lid[:, 2] / np.maximum(rng, 1e-9)))
-        lid = lid[(rng > 0.1) & (rng < 40) & (elev > -7) & (elev < 52)].astype(np.float32)
+        keep = (rng > 0.1) & (rng < 40) & (elev > -7) & (elev < 52)
+        if self.occlusion:
+            keep &= self.visible(lid, rng, elev)
+        lid = lid[keep]
+        draped = self.drape_check(c, s)
+        if draped:   # fabric over the front of the lidar: near returns, nothing beyond
+            lid = lid[lid[:, 0] < 0.0]
+            rnd = np.random.default_rng()
+            d = rnd.normal(size=(3000, 3))
+            d[:, 0] = np.abs(d[:, 0])
+            d /= np.linalg.norm(d, axis=1, keepdims=True)
+            lid = np.concatenate([lid, d * rnd.uniform(0.11, 0.2, (3000, 1))])
+        if draped != self.draped:
+            self.draped = draped
+            self.get_logger().info('curtain lies over the lidar' if draped else
+                                   'lidar clear of the curtain')
+        lid = lid.astype(np.float32)
         # Same mixed-type layout as the robot's /livox/points (point_step 22), so readers that
         # assume one field type fail here and not first on the robot.
         out = np.zeros(len(lid), LIVOX_DTYPE)
@@ -280,6 +350,35 @@ class FakeMazeLite3(Node):
         # (~65 ms for this cloud, most of the sim's CPU); an array('B') is taken as is (~0.3 ms).
         msg.data = array.array('B', out.tobytes())
         self.cloud_pub.publish(msg)
+
+
+    def visible(self, lid, rng, elev, res=0.5):
+        """Points not hidden behind an occluder (wall, rail, curtain) in 0.5 deg bins. The
+        occluders' nearest range per bin is spread to the neighbouring bins (min filter),
+        since their 1 cm point spacing leaves gaps of ~1 deg within 0.6 m."""
+        az = np.degrees(np.arctan2(lid[:, 1], lid[:, 0]))
+        ia = ((az + 180.0) / res).astype(int) % int(360 / res)
+        ie = np.clip(((elev + 10.0) / res).astype(int), 0, int(65 / res) - 1)
+        depth = np.full((int(360 / res), int(65 / res)), np.inf)
+        o = self.occluder & (rng > 0.1)
+        np.minimum.at(depth, (ia[o], ie[o]), rng[o])
+        depth = ndimage.grey_erosion(depth, size=(3, 3), mode='wrap')
+        return rng <= depth[ia, ie] + 0.04
+
+    def drape_check(self, c, s):
+        """True while the lidar is 0..drape_depth m past a curtain, inside its span."""
+        lx = self.x + c * LIDAR_T[0]
+        ly = self.y + s * LIDAR_T[0]
+        for k in self.maze.curtains:
+            lo, hi = k['min'], k['max']
+            nx, ny = k.get('travel', (0.0, 1.0))
+            cx, cy = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2
+            past = (lx - cx) * nx + (ly - cy) * ny
+            along = abs(-(lx - cx) * ny + (ly - cy) * nx)
+            span = abs(-(hi[0] - lo[0]) * ny + (hi[1] - lo[1]) * nx) / 2
+            if 0.0 <= past <= self.drape_depth and along <= span + 0.1:
+                return True
+        return False
 
 
 def main():

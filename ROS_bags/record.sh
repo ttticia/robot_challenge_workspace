@@ -35,7 +35,9 @@ MIN_FREE_GB=5
 A="/tf /tf_static /rosout"
 B="/camera/color/image_raw/compressed /camera/color/camera_info"
 C="/camera/depth/image_raw /camera/depth/camera_info"
-D="/livox/points /livox/lidar /livox/imu /imu/data /leg_odom2"
+# Lidar: /livox/points_local = maze_nav lidar_relay's local copy of /livox/points (same
+# messages, no second bridge copy). RAW_LIDAR=1 records raw /livox/points (teleop, no maze_nav).
+D="/livox/points_local /livox/lidar /livox/imu /imu/data /leg_odom2"
 E="/odom /scan /map"
 F="/plan /cmd_vel_nav /cmd_vel_smoothed /nav_cmd_vel /cmd_vel /simple_cmd /handle_state"
 G="/found /qr/detections /posters/detections /humans/detections /camera/color/image_offboard/compressed"
@@ -48,8 +50,8 @@ preset_topics() {
     maze)       echo "$A $B $D $E $F $G $H" ;;
     perception) echo "$A /map $B $C $G" ;;
     detections) echo "$A /map /camera/color/camera_info $G" ;;
-    navdebug)   echo "$A /livox/points /odom /scan /map /leg_odom2 $F" ;;
-    lidar)      echo "$A /livox/lidar /livox/imu /livox/points /imu/data /leg_odom2" ;;
+    navdebug)   echo "$A /livox/points_local /odom /scan /map /leg_odom2 $F" ;;
+    lidar)      echo "$A /livox/lidar /livox/imu /livox/points_local /imu/data /leg_odom2" ;;
     video)      echo "/camera/color/image_raw/compressed" ;;
     *)          return 1 ;;
   esac
@@ -197,6 +199,27 @@ if [[ " $TOPICS " == *" /camera/depth/image_raw "* ]] \
   echo "Nav2 is running and preset '$PRESET' records raw depth, which stalls the lidar." >&2
   echo "Use 'nav' instead, or set ALLOW_DEPTH_WITH_NAV2=1 to record anyway." >&2
   [[ "${ALLOW_DEPTH_WITH_NAV2:-0}" == 1 ]] || exit 1
+fi
+
+# maze_nav's lidar_relay takes /livox/points across the bridge once and republishes the same
+# messages as /livox/points_local. Recording the raw topic too pulls a second full copy across
+# the bridge and makes the lidar and Fast-LIO odom late (run 2026-11-20 05:29: worst 0.67 s,
+# the old "swap if lidar_relay is listed" check missed it). So every preset records
+# /livox/points_local (ros2 bag record subscribes once it appears: starting before maze_nav is
+# fine). RAW_LIDAR=1 = raw /livox/points instead (teleop bags without maze_nav).
+if [[ "${RAW_LIDAR:-0}" == 1 ]]; then
+  TOPICS=" $TOPICS "
+  TOPICS="${TOPICS// \/livox\/points_local / \/livox\/points }"
+  echo "RAW_LIDAR=1: recording raw /livox/points (a second bridge copy if maze_nav runs)."
+elif [[ " $TOPICS " == *" /livox/points_local "* ]] \
+   && ! timeout 5 ros2 node list 2>/dev/null | grep -qx "/lidar_relay"; then
+  echo "Note: /livox/points_local comes from maze_nav's lidar_relay, not seen yet. It is" \
+       "recorded once maze_nav starts; for a teleop bag without maze_nav use RAW_LIDAR=1." >&2
+fi
+if [[ " ${EXTRA[*]} " == *" /livox/points "* ]] \
+   && timeout 5 ros2 node list 2>/dev/null | grep -qx "/lidar_relay"; then
+  echo "Warning: you added /livox/points; with lidar_relay running that is a second bridge" \
+       "copy (lidar and odom late). Use /livox/points_local." >&2
 fi
 
 # ---- record ------------------------------------------------------------------------------

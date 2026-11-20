@@ -470,3 +470,81 @@ def test_creep_turn_none_in_a_plain_corridor():
     g = corner_grid(dead_end=False)
     d, margin, why = plan_creep_turn(g, (-1.0, 0.0), 0.0, (-1.8, 0.0), FOOTPRINT)
     assert (d, margin) == (None, None) and why.startswith('no clear spot'), why
+
+
+# --- turning about the real pivot (core.pivot_pose; explorer pivot_x / pivot_y) ----------
+
+PIVOT = (0.025, -0.04)   # explorer defaults: measured in the 11-15 bags
+
+
+def test_pivot_pose_keeps_the_pivot_fixed():
+    from maze_nav.core import pivot_pose
+    assert pivot_pose((1.0, 2.0), 0.3, 1.0, None) == (1.0, 2.0)
+    assert pivot_pose((1.0, 2.0), 0.3, 1.0, (0.0, 0.0)) == (1.0, 2.0)
+    xy, yaw = (1.0, 2.0), 0.3
+    for turned in (0.5, -1.2, math.pi):
+        x, y = pivot_pose(xy, yaw, turned, PIVOT)
+        # the pivot, seen from the new pose, is the same map point as from the old one
+        def pv(px, py, a):
+            return (px + math.cos(a) * PIVOT[0] - math.sin(a) * PIVOT[1],
+                    py + math.sin(a) * PIVOT[0] + math.cos(a) * PIVOT[1])
+        assert pv(x, y, yaw + turned) == pytest.approx(pv(*xy, yaw))
+    # half a turn moves base_link twice the pivot offset
+    x, y = pivot_pose((0.0, 0.0), 0.0, math.pi, PIVOT)
+    assert (x, y) == pytest.approx((2 * PIVOT[0], 2 * PIVOT[1]))
+
+
+def test_max_turn_without_pivot_unchanged():
+    g = walled_grid(wall_y=-0.38)
+    for d in (+1, -1):
+        assert max_turn(g, (0, 0), 0.0, FOOTPRINT, d, math.radians(45), 0.03) == \
+            max_turn(g, (0, 0), 0.0, FOOTPRINT, d, math.radians(45), 0.03, pivot=None)
+
+
+def test_pivot_turn_sweeps_wider_in_a_corridor():
+    # Centred in a 0.9 m corridor (walls 0.45 m either side): about base_link the rear
+    # corners reach 0.436 m and a 90 deg turn fits with 1 cm; about the real pivot the
+    # rear-left corner reaches ~0.48 m and it doesn't.
+    res = 0.01
+    data = np.zeros((400, 400), np.int8)
+    data[:int(round((2 - 0.45) / res)), :] = 100           # wall y <= -0.45
+    data[int(round((2 + 0.45) / res)):, :] = 100           # wall y >= +0.45
+    g = Grid(data, res, (-2.0, -2.0))
+    q = math.pi / 2
+    assert max_turn(g, (0, 0), 0.0, FOOTPRINT, +1, q, 0.01) == pytest.approx(q)
+    assert max_turn(g, (0, 0), 0.0, FOOTPRINT, +1, q, 0.01, pivot=PIVOT) < q - 0.1
+    assert plan_turn(g, (0, 0), 0.0, q, FOOTPRINT, 0.01, 0.35, pivot=PIVOT) == \
+        (None, 'blocked both ways')
+
+
+def test_floor_accepted_standing_heights():
+    from maze_nav.core import floor_accepted
+    # 2026-11-19 11:54: standing at 0.29 m (expected 0.35) was rejected by the old +-0.06 rule
+    assert floor_accepted(-0.03, -0.32)            # 0.29 m
+    assert floor_accepted(0.0, -0.35)              # nominal 0.35 m
+    assert floor_accepted(0.0, -0.41)              # 0.41 m = drop + tolerance
+    assert not floor_accepted(0.0, -0.45)          # 0.45 m: floor seen too low
+    # 11:57: robot still rising, 0.26 m: not believable, retry instead
+    assert not floor_accepted(0.304, 0.040)
+    assert not floor_accepted(0.0, None)
+
+
+def test_lidar_self_returns_dropped_but_walls_kept():
+    # Run 2026-11-20 01:28 (bag maze_20261120_012913): a streak 0.16-0.29 m from the lidar
+    # (livox at base_link (0.187, 0, 0.125)), 0.40-0.44 m above the floor, ahead of the body
+    # box's front (0.32 m). It became lethal cells in the footprint after the creep.
+    floor, base_z = -0.32, 0.0
+    sensor = (0.187, 0.0, base_z + 0.125)
+    streak = [(0.354, -0.203, floor + 0.411), (0.367, -0.216, floor + 0.403),
+              (0.329, -0.181, floor + 0.418)]
+    side_wall = [(x, -0.5, floor + 0.40) for x in np.arange(-0.2, 0.4, 0.02)]
+    body = (0.42, 0.32, 0.28)
+    args = ((0.0, 0.0), 0.0, floor, (0.30, 0.45), -math.pi, INC, N, 0.25, 12.0)
+    pts = np.array(streak + side_wall, float)
+    before = wall_ranges(pts, *args, body=body)
+    after = wall_ranges(pts, *args, body=body, sensor=sensor, sensor_min=0.32)
+    b = int((math.atan2(-0.203, 0.354) + math.pi) / INC)  # streak bearing (~-30 deg)
+    assert np.isfinite(before[b]) and before[b] < 0.45        # leaked without the filter
+    assert not np.isfinite(after[b])                          # gone with it
+    right = int((-math.pi / 2 + math.pi) / INC)
+    assert after[right - 3:right + 4].min() == pytest.approx(0.5, abs=0.03)  # side wall kept

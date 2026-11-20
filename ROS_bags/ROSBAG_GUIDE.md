@@ -27,7 +27,9 @@ Check that the sensors are publishing:
 ```bash
 ros2 topic list | grep -i -e image -e camera_info -e depth -e livox -e scan
 ros2 topic hz /camera/color/image_raw/compressed     # Ctrl+C after a few lines
-ros2 topic hz /livox/points
+ros2 topic hz /livox/points                          # before maze_nav only; stop it (Ctrl+C)
+#                                                      before launching: once lidar_relay runs,
+#                                                      check /livox/points_local instead
 ```
 
 If a topic is missing, its driver isn't running, so start the robot first.
@@ -44,7 +46,7 @@ of [record.sh](record.sh); change topics there.
 | **A. Always** | `/tf`, `/tf_static`, `/rosout` | small | Frames between map, odom, base, lidar and camera. Warnings from every node |
 | **B. Colour camera** | `/camera/color/image_raw/compressed`, `/camera/color/camera_info` | 30 Hz | QR/poster replay, `.mp4` video, 3-D positions |
 | **C. Depth** (large) | `/camera/depth/image_raw`, `/camera/depth/camera_info` | 30 Hz | Dense per-pixel depth, poster flatness test. **Teleop runs only** |
-| **D. Lidar and IMU** | `/livox/points`, `/livox/lidar`, `/livox/imu`, `/imu/data`, `/leg_odom2` | 10 Hz / ~190 Hz | Re-running Fast-LIO (needs `/livox/lidar` + `/livox/imu`), rebuilding `/scan`, comparing with leg odometry |
+| **D. Lidar and IMU** | `/livox/points_local` (lidar_relay's copy of `/livox/points`), `/livox/lidar`, `/livox/imu`, `/imu/data`, `/leg_odom2` | 10 Hz / ~190 Hz | Re-running Fast-LIO (needs `/livox/lidar` + `/livox/imu`), rebuilding `/scan`, comparing with leg odometry |
 | **E. Localization and map** | `/odom`, `/scan`, `/map` | 10 Hz, `/map` occasional | Positions in `map`, the static-map poster test, Nav2 replay. `/map` needs the QoS override below |
 | **F. Navigation and commands** | `/plan`, `/cmd_vel_nav`, `/cmd_vel_smoothed`, `/nav_cmd_vel`, `/cmd_vel`, `/simple_cmd`, `/handle_state` | ≤ 20 Hz | Why the robot moved or didn't: planner → controller → smoother → collision_monitor → bridge |
 | **G. Perception results** | `/found`, `/qr/detections`, `/posters/detections`, `/humans/detections`, `/camera/color/image_offboard/compressed` | small | What the robot decided live. `/camera/color/image_offboard/compressed` is left over from the removed external-computer mode: nothing publishes it any more, so it records nothing |
@@ -96,7 +98,7 @@ play the bag.
 ```bash
 ros2 topic info /map --verbose | grep -E "Publisher count|Durability"  # >= 1, TRANSIENT_LOCAL
 ros2 run tf2_ros tf2_echo map camera_color_optical_frame               # prints a transform each second
-ros2 topic hz /livox/points                                            # ~10 Hz
+ros2 topic hz /livox/points_local                                      # ~10 Hz (lidar_relay)
 ```
 
 If `tf2_echo` says the `map` frame doesn't exist, SLAM isn't running and the bag will have no
@@ -199,9 +201,17 @@ The same as `rec_full` without depth, so the lidar isn't delayed and collision_m
 doesn't stop the robot. Navigation and perception are recorded together in one bag: lidar,
 localization, map, plan and velocity chain, plus the colour camera and every detection.
 `rec_maze` is `rec_nav` plus the `maze_nav` explorer topics (group H); use it for maze runs.
+**Lidar topic (all presets).** Every preset records `/livox/points_local` (maze_nav
+`lidar_relay`'s copy, same messages), never the raw `/livox/points`: a second subscriber on the
+raw topic pulls another full copy across the bridge and makes the lidar and Fast-LIO odom late
+(2026-11-20 05:29: worst 0.67 s). The recorder subscribes once the topic appears, so starting
+the recording before maze_nav is fine. Teleop bags **without maze_nav** have no
+`/livox/points_local`: record those with `RAW_LIDAR=1 rec_...` (raw topic). Replaying for tools
+that expect the raw name: `ros2 bag play <bag> --remap /livox/points_local:=/livox/points`.
 
 Untested whether this keeps the lidar lag under 0.5 s. Check during the recording with
-`ros2 topic delay /livox/points` (should stay around 0.1–0.3 s). If it doesn't, use
+`ros2 topic delay /livox/points_local` (should stay around 0.1–0.3 s; not the raw topic: that
+is one more bridge copy while it runs). If it doesn't, use
 `rec_navdebug` instead, which leaves out the camera and the raw lidar/IMU.
 
 ##### Full maze run, step by step
@@ -229,7 +239,7 @@ records it all. Use three terminals on the robot computer.
 
 3. **Terminal 3: check the lidar delay, then start the run.**
    ```bash
-   ros2 topic delay /livox/points        # ~0.1-0.3 s; Ctrl+C after a few lines
+   ros2 topic delay /livox/points_local  # ~0.1-0.3 s; Ctrl+C after a few lines
    ros2 topic pub --once /maze/start std_msgs/msg/Empty
    ```
    If the delay stays above 0.5 s, stop the recording and use
@@ -309,7 +319,7 @@ rec_last                                       # newest bag
 ros2 bag info ~/challenge_ws/ROS_bags/<name>   # any bag
 ```
 
-Every recorded topic should have a **count above 0**. As a rough guide, the camera and depth counts should be about 30 × duration in seconds, and `/livox/points` about 10 × duration. A topic with `Count: 0` had the wrong name or wasn't publishing.
+Every recorded topic should have a **count above 0**. As a rough guide, the camera and depth counts should be about 30 × duration in seconds, and `/livox/points_local` (or `/livox/points` with `RAW_LIDAR=1`) about 10 × duration. A topic with `Count: 0` had the wrong name or wasn't publishing.
 
 Forgot the folder name? List recordings, newest first:
 

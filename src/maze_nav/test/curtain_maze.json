@@ -1,0 +1,13 @@
+{
+ "source": "hand-made for curtain_detector tests: 0.9 m corridor, curtain 2 m ahead of the start, opens into the room",
+ "units": "m",
+ "room": [-3.5, 3.5, -1.0, 8.5],
+ "start": [0.0, 0.0, 1.5707963267948966],
+ "exit": {"axis": "y", "above": 5.2},
+ "solids": [
+  {"kind": "wall", "min": [-0.45, -0.5, 0.0], "max": [0.45, -0.45, 0.45]},
+  {"kind": "wall", "min": [-0.5, -0.5, 0.0], "max": [-0.45, 4.5, 0.45]},
+  {"kind": "wall", "min": [0.45, -0.5, 0.0], "max": [0.5, 4.5, 0.45]},
+  {"kind": "curtain", "min": [-0.45, 2.0, 0.08], "max": [0.45, 2.02, 0.8], "travel": [0.0, 1.0]}
+ ]
+}

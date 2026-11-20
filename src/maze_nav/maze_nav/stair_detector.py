@@ -24,6 +24,17 @@ Detection is in maze_nav/stairs.py (risers in the depth image) and maze_nav/stai
      has, so Nav2's
      velocity_smoother and this node never both drive nav_cmd_vel. No STAIRS within
      `handover_timeout` -> back to IDLE.
+  2b. CHECKING (`check`, user 2026-11-20; stair_check.py): stair-like evidence that doesn't
+     trigger 2. - a single camera frame with a riser chain, a lidar height-map estimate,
+     stairs found but further than trigger_distance or seen from beside, anything seen
+     while maze_explorer is in a junction / dead-end / start look (`detect_states`: it
+     detects there now, but never hands over: stair checks come after junction checking) -
+     is a CANDIDATE within `check_distance` m. Once the explorer is back in trigger_states
+     (candidate <= `check_max_age` s old): HANDOVER, then turn on the spot to face its first
+     riser and hold still `check_hold` s, detecting: camera frames with a chain of discrete
+     risers near it (and lidar estimates, half weight) are hits. Confirmed by the trackers,
+     or `check_need` hits -> 3. (line up); else IDLE (explorer explores on) and the spot is
+     left alone for `check_forget` s.
   3. ALIGNING: turn on the spot to face the stop point (on the stairs' centre line,
      `stop_distance` before the first riser). If the stairs' sides weren't both in view, it
      faces the stairs straight on instead and doesn't centre.
@@ -57,7 +68,8 @@ Topics
        /maze/status (std_msgs/String, latched), TF odom -> base_link -> camera,
        /map (nav_msgs/OccupancyGrid, latched) + TF map -> odom for the wall checks
   out: /stairs/status    std_msgs/String latched: "STATE: why", STATE one of IDLE,
-                         HANDOVER, ALIGNING, APPROACHING, SQUARING, AT_STAIRS, ABORTED
+                         HANDOVER, CHECKING, ALIGNING, APPROACHING, SQUARING, AT_STAIRS,
+                         ABORTED
        /stairs/detection std_msgs/String JSON per frame with stairs (distance, angle, rise,
                          risers, edge point and heading in odom, confirmed, handled,
                          source camera/lidar/both, fusion: what the lidar said)
@@ -90,6 +102,7 @@ from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from maze_nav import stairs_lidar
+from maze_nav.stair_check import CheckParams, StairCheck
 from maze_nav.core import Grid, cloud_xyz
 from maze_nav.stairs import (Approach, StairParams, StairTracker, WallCheck, camera_from_link,
                              detect_stairs, in_front, level_transform, mount_disagreement,
@@ -98,6 +111,7 @@ from maze_nav.stairs import (Approach, StairParams, StairTracker, WallCheck, cam
 LATCHED = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
 DRIVING = ('ALIGNING', 'APPROACHING', 'SQUARING')
+CHECK_STATES = ('CHECKING',)        # possible stairs: turning to face them / holding still
 PHASE_STATE = {'ALIGN': 'ALIGNING', 'MAKE_ROOM': 'ALIGNING', 'APPROACH': 'APPROACHING',
                'FINAL_ALIGN': 'SQUARING', 'DONE': 'AT_STAIRS', 'BLOCKED': 'AT_STAIRS'}
 ENCODINGS = {'16UC1': np.uint16, 'mono16': np.uint16, '32FC1': np.float32}
@@ -169,6 +183,17 @@ class StairDetector(Node):
         p('lidar_stop_margin', 0.10)           # m further back when only the lidar saw the stairs
         p('lidar_alone_trigger', True)         # lidar-only stairs (anchored on the floor) may
         #                                        start a line-up (camera blind or looking away)
+        # Possible-stairs check (user 2026-11-20, stair_check.py): candidates also from single
+        # frames, lidar, far / beside stairs and the explorer's looks; checked after them.
+        p('check', True)
+        p('detect_states', ['JUNCTION', 'DEAD_END', 'SCANNING'])   # detect, never hand over
+        p('check_distance', 2.5)               # m: candidates nearer than this get checked
+        p('check_max_age', 20.0)               # s a candidate stays worth checking
+        p('check_hold', 3.0)                   # s still, facing it
+        p('check_need', 3)                     # camera hits (lidar half) during the hold
+        p('check_hit_radius', 0.5)             # m: a hit's first riser this near the candidate
+        p('check_forget', 120.0)               # s a rejected spot is left alone
+        p('check_forget_radius', 0.8)          # m
         g = lambda n: self.get_parameter(n).value  # noqa: E731
 
         self.params = StairParams(standing_height=float(g('standing_height')),
@@ -241,6 +266,19 @@ class StairDetector(Node):
         self.announced = []             # StairEstimates "stairs detected" was printed for
         self.cooldown_until = 0.0       # after a refused handover
         self.stop_xy = None             # where AT_STAIRS was reached (standalone re-arm)
+        self.check_on = bool(g('check'))
+        self.detect_states = tuple(g('detect_states'))
+        self.check_cfg = {n: float(g(n)) for n in (
+            'check_distance', 'check_max_age', 'check_hit_radius', 'check_forget',
+            'check_forget_radius')}
+        self.check_params = CheckParams(hold=float(g('check_hold')), need=int(g('check_need')),
+                                        turn_rate=float(g('max_turn_rate')),
+                                        min_turn_rate=float(g('min_turn_rate')))
+        self.candidate = None           # (StairEstimate odom, monotonic time, what)
+        self.checking = False           # the pending HANDOVER is for a check
+        self.check = None               # StairCheck while CHECKING
+        self.rejected = []              # (xy odom, monotonic time): checked, not stairs
+        self.create_timer(0.2, self.check_tick)
         self.set_state('IDLE', 'looking for stairs' + (
             f' while {self.status_topic} is {"/".join(self.trigger_states)}'
             if self.status_topic else ' (no explorer handshake: drives on its own)')
@@ -287,14 +325,146 @@ class StairDetector(Node):
     def on_explorer(self, msg):
         self.explorer = msg.data.split(':', 1)[0].strip()
         if self.state == 'HANDOVER' and self.explorer == 'STAIRS':
-            self.start_manoeuvre()
+            self.start_check() if self.checking else self.start_manoeuvre()
 
     def looking(self):
-        if self.state in ('HANDOVER', 'ALIGNING', 'APPROACHING'):
+        if self.state in ('HANDOVER', 'ALIGNING', 'APPROACHING') + CHECK_STATES:
             return True                 # keep refining until freeze_distance
         if self.state != 'IDLE':
             return False
-        return not self.status_topic or self.explorer in self.trigger_states
+        return not self.status_topic or self.explorer in self.trigger_states + (
+            self.detect_states if self.check_on else ())
+
+    # ------------------------------------------------------------------ possible stairs
+    def in_look(self):
+        """maze_explorer is in a junction / dead-end / start look: detect, don't hand over."""
+        return bool(self.status_topic) and self.explorer in self.detect_states
+
+    def is_rejected(self, est, xy):
+        now = time.monotonic()
+        self.rejected = [r for r in self.rejected
+                         if now - r[1] < self.check_cfg['check_forget']]
+        pt = np.asarray(est.edge_point(np.asarray(xy, float)), float)
+        return any(np.linalg.norm(pt - r[0]) < self.check_cfg['check_forget_radius']
+                   for r in self.rejected)
+
+    def note_candidate(self, est, xy, what):
+        """Remember stair-like evidence to check (nearest within check_distance)."""
+        if not self.check_on or est is None or self.is_handled(est) or \
+                self.is_rejected(est, xy):
+            return
+        if self.state in CHECK_STATES and self.check is not None:
+            near = np.linalg.norm(np.asarray(est.edge_point(np.asarray(xy, float))) -
+                                  self.check.target) < self.check_cfg['check_hit_radius']
+            if near:
+                self.check.add_hit('lidar' if est.source == 'lidar' else 'camera')
+            return
+        d = abs(est.distance(np.asarray(xy, float)))
+        if d > self.check_cfg['check_distance']:
+            return
+        now = time.monotonic()
+        old = self.candidate
+        if old is None or now - old[1] > 1.0 or d < abs(old[0].distance(np.asarray(xy))):
+            if old is None or now - old[1] > self.check_cfg['check_max_age']:
+                self.get_logger().info(f'possible stairs {d:.2f} m away ({what}); checked '
+                                       + ('after the explorer\'s look' if self.in_look()
+                                          else 'now'), throttle_duration_sec=3.0)
+            self.candidate = (est, now, what)
+
+    def check_tick(self):
+        """5 Hz: IDLE, the explorer exploring again, a fresh candidate -> HANDOVER to check."""
+        now = time.monotonic()
+        if not self.check_on or not self.cfg['drive'] or self.state != 'IDLE' or \
+                self.candidate is None or now < self.cooldown_until:
+            return
+        if self.status_topic and self.explorer not in self.trigger_states:
+            return                      # junction / dead-end / start looks come first
+        est, t, what = self.candidate
+        if now - t > self.check_cfg['check_max_age']:
+            self.candidate = None
+            return
+        pose = self.pose()
+        if pose is None:
+            return
+        xy = pose[0]
+        if self.is_handled(est) or self.is_rejected(est, xy):
+            self.candidate = None
+            return
+        d = abs(est.distance(np.asarray(xy)))
+        if d > self.check_cfg['check_distance'] + 0.5:
+            return                      # drove away from it meanwhile
+        self.checking = True
+        self.set_state('HANDOVER', f'possible stairs {d:.2f} m away ({what}): asking '
+                       'maze_explorer to stop Nav2 so the robot can face them and check')
+        if not self.status_topic or self.explorer == 'STAIRS':
+            self.start_check()
+
+    def start_check(self):
+        est = self.candidate[0]
+        pose = self.pose()
+        if pose is None:
+            return self.end_check(False, 'no TF')
+        self.checking = False
+        self.check = StairCheck(est, pose[0], time.monotonic(), self.check_params)
+        self.tracker.clear()            # fresh votes, facing them
+        self.lidar_tracker.clear()
+        self.set_state('CHECKING', f'turning to face the possible stairs, then '
+                       f'{self.check_params.hold:.0f} s still looking for discrete steps')
+
+    def end_check(self, stairs, why, found=None):
+        """Check done: stairs -> line up (start_manoeuvre); else reject the spot."""
+        chk, self.check = self.check, None
+        cand = self.candidate
+        self.candidate = None
+        if stairs and found is not None:
+            self.lock = found
+            pose = self.pose()
+            if pose is not None:
+                self.announce(found, found.distance(np.asarray(pose[0])))
+            self.get_logger().info(f'stair check: stairs ({why}); lining up')
+            return self.start_manoeuvre()
+        if cand is not None:
+            pose = self.pose()
+            xy = pose[0] if pose is not None else (0.0, 0.0)
+            pt = chk.target if chk is not None else cand[0].edge_point(np.asarray(xy))
+            self.rejected.append((np.asarray(pt, float), time.monotonic()))
+        self.cooldown_until = time.monotonic() + 3.0
+        self.set_state('IDLE', f'stair check: not stairs ({why}); left alone for '
+                       f'{self.check_cfg["check_forget"]:.0f} s')
+
+    def check_control(self, now):
+        if self.status_topic and self.explorer != 'STAIRS':
+            self.stop_robot()
+            self.check = None
+            self.cooldown_until = now + 5.0
+            return self.set_state('IDLE', f'stair check stopped: maze_explorer is '
+                                  f'{self.explorer}')
+        pose = self.pose()
+        if pose is None:
+            self.cmd_pub.publish(Twist())
+            return
+        xy, yaw, _ = pose
+        w, phase = self.check.tick(now, xy, yaw)
+        if phase == 'DONE':
+            self.stop_robot()
+            found, why = self.fused(now, xy)
+            chk = self.check
+            hits = (f'{chk.cam_hits} camera / {chk.lidar_hits} lidar hits in '
+                    f'{chk.p.hold:.0f} s')
+            if found is not None and not self.is_handled(found):
+                return self.end_check(True, f'confirmed: {found.risers} risers of '
+                                      f'{found.rise * 100:.0f} cm, {why}; {hits}', found)
+            if chk.passed():
+                est = chk.est
+                return self.end_check(True, f'{hits}', est)
+            return self.end_check(False, hits)
+        if w:
+            walls = self.walls()
+            if walls is not None:
+                _, w, _ = walls.safe(xy, yaw, 0.0, w)
+        msg = Twist()
+        msg.angular.z = float(w)
+        self.cmd_pub.publish(msg)
 
     def pose(self, stamp=None, with_z=False):
         """((x, y), yaw, R) of base_link in odom (+ z with_z); stamp None = latest. Never
@@ -392,6 +562,8 @@ class StairDetector(Node):
         est = to_odom(det, xy, yaw) if det is not None else None
         handled = est is not None and self.is_handled(est)
         self.tracker.add(now, None if handled else est)
+        if est is not None and not handled:
+            self.note_candidate(est, xy, f'camera: {det.risers} risers')
         found, why = self.fused(now, xy)
         if det is not None:
             self.publish_detection(msg, det, est, found, why, handled)
@@ -409,7 +581,7 @@ class StairDetector(Node):
                 tf_b = self.tf.lookup_transform(self.odom_frame, self.base_frame, stamp)
             except TransformException:
                 age = (self.get_clock().now() - stamp).nanoseconds * 1e-9
-                if age < 0.5:
+                if age < 0.8:                   # = wall_scan max_cloud_age (odom often late)
                     keep.append(msg)
                 continue
             r_l, t_l = matrix_of(tf_l)
@@ -435,8 +607,10 @@ class StairDetector(Node):
         ests = [e for e in stairs_lidar.detect(self.hmap, a, self.floor_z)
                 if not self.is_handled(e)]
         xy = (a[0], a[1])
-        self.lidar_tracker.add(now, min(ests, key=lambda e: e.distance(np.asarray(xy)))
-                               if ests else None)
+        near = min(ests, key=lambda e: e.distance(np.asarray(xy))) if ests else None
+        self.lidar_tracker.add(now, near)
+        if near is not None:
+            self.note_candidate(near, xy, 'lidar height map')
         found, why = self.fused(now, xy)
         self.decide(now, xy, math.atan2(r[1, 0], r[0, 0]), found, why, None)
 
@@ -466,14 +640,22 @@ class StairDetector(Node):
             return
         self.publish_pose(found, xy)
         dist = found.distance(np.asarray(xy))
+        if self.state in CHECK_STATES:
+            return                      # check_control decides at the end of the hold
+        if self.state == 'IDLE' and self.check_on and self.in_look():
+            self.note_candidate(found, xy, f'confirmed, {found.risers} risers, seen during '
+                                f'{self.explorer}')
+            return                      # stair checks come after junction checking
         if self.state == 'IDLE':
             if dist > self.cfg['trigger_distance'] or now < self.cooldown_until:
+                self.note_candidate(found, xy, f'{found.risers} risers, {dist:.1f} m away')
                 self.get_logger().info(f'stairs {dist:.2f} m ahead ({found.risers} risers, '
                                        f'{found.rise * 100:.0f} cm; {why})',
                                        throttle_duration_sec=3.0)
                 return
             front, off = in_front(found, xy, det, self.cfg['trigger_max_offset'])
             if not front:
+                self.note_candidate(found, xy, 'seen from beside')
                 self.get_logger().info(
                     f'stairs {dist:.2f} m ahead but the robot is beside them ('
                     + (f'{off:.2f} m off their centre line' if off is not None else
@@ -579,10 +761,12 @@ class StairDetector(Node):
 
     def control(self):
         now = time.monotonic()
+        if self.state in CHECK_STATES:
+            return self.check_control(now)
         if self.state == 'HANDOVER':
             if now - self.since > self.cfg['handover_timeout']:
                 self.cooldown_until = now + 10.0
-                self.lock = None
+                self.lock, self.checking = None, False
                 self.set_state('IDLE', f'maze_explorer did not stop Nav2 within '
                                f'{self.cfg["handover_timeout"]:.0f} s (it is {self.explorer}); '
                                'not driving')

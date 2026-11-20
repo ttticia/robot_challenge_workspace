@@ -23,6 +23,13 @@ Topics (all names are parameters - VERIFY on the robot with `ros2 topic list`):
                           located but can't be read, persistent over unread_need of the last
                           unread_window frames (<= 1 Hz). maze_explorer turns to face it
                           (FACING_QR) until /qr/read, so it is seen squarely and read.
+
+When it runs (user 2026-11-20): QR READING is always on - plain decodes at roam_rate_hz,
+so a code passed in a corridor is still read, reported (/found, /qr/detections, CSV) and
+given a room point. QR DETECTION - /qr/unread (FACING_QR) and the slow contrast-boost +
+upscale full scans - only inside maze_explorer's dead-end window (/maze/perceive,
+run_gate.py), at rate_hz. Both stop in run_gate's pause_states (stairs, curtains, start-up).
+read_everywhere:=false = the old rule (nothing outside the window).
 """
 import csv
 import json
@@ -46,6 +53,7 @@ import tf2_ros
 import tf2_geometry_msgs  # noqa: F401  (registers PointStamped with tf2)
 
 from team_perception import qr_utils
+from team_perception import run_gate
 from team_perception import tf_pin
 from team_perception.poster_utils import pull_back
 from team_perception.qr_utils import (DepthAlignState, UnreadTracker, deproject, draw_detections,
@@ -67,6 +75,9 @@ class QrScanner(Node):
         p('track_frame', 'odom')       # fixed frame of room_odom (Fast-LIO: there from launch)
         p('room_pullback_m', 0.25)     # step back from the code's wall towards the camera
         p('rate_hz', 30.0)             # max decodes per second (0 = as fast as possible)
+        #                                inside the dead-end window
+        p('read_everywhere', True)     # outside the window still read codes (plain decodes)
+        p('roam_rate_hz', 5.0)         # ... at most this many frames a second (0 = rate_hz)
         p('full_scan_every', 5)        # every Nth decode also tries contrast boost + 2x
         #                                upscale (finds small/far codes, ~5x slower); 0 = never
         p('repeat_after_s', 30.0)      # re-report the same code after this long
@@ -96,6 +107,10 @@ class QrScanner(Node):
         self.full_every = int(g('full_scan_every'))
         rate = g('rate_hz')
         self.min_period = 1.0 / rate if rate > 0 else 0.0
+        self.read_everywhere = bool(g('read_everywhere'))
+        roam = g('roam_rate_hz')
+        self.roam_period = 1.0 / roam if roam > 0 else 0.0
+        self.last_taken = -1e9         # time the last frame was handed to the decoder
 
         self.bridge = CvBridge()
         self.latest_img = None
@@ -138,6 +153,9 @@ class QrScanner(Node):
         # only created when the first code is found, so startup touches no files.
         self.csv_path = os.path.join(self.log_dir, time.strftime('qr_%Y%m%d_%H%M%S.csv'))
 
+        # gate.active: QR detection (dead-end window); gate.running: reading (run_gate.py)
+        self.gate = run_gate.attach(self, 'qr_scanner detection')
+
         self.running = True
         self.worker = threading.Thread(target=self.decode_loop, daemon=True)
         self.worker.start()
@@ -145,7 +163,18 @@ class QrScanner(Node):
                                f'logging to {self.csv_path}')
 
     # --- callbacks ---------------------------------------------------------------
+    def detecting(self):
+        """Dead-end window: full scans + /qr/unread (FACING_QR)."""
+        return self.gate.active
+
     def on_image(self, msg):
+        if not self.detecting():
+            if not (self.read_everywhere and self.gate.running):
+                return                 # paused: frames not even decoded
+            now = time.time()
+            if now - self.last_taken < self.roam_period:
+                return                 # reading only: roam_rate_hz
+            self.last_taken = now
         try:
             img = self.to_bgr(msg)     # converted once here, shared with the decode thread
         except Exception as e:  # e.g. unexpected encoding or corrupt JPEG
@@ -189,11 +218,12 @@ class QrScanner(Node):
             img, header = frame
             start = time.time()
 
+            detect = self.detecting()
             full = self.full_every > 0 and n % self.full_every == 0
             n += 1
             # While an unreadable code is in view (robot turning to it / holding still),
             # spend the extra time on every frame: contrast boost + 2x upscale.
-            full = full or time.time() - self.unread_last_seen < self.unread_full
+            full = detect and (full or time.time() - self.unread_last_seen < self.unread_full)
             try:
                 codes, unread = scan_qr(img, try_upscale=full, try_clahe=full)
             except Exception as e:
@@ -206,9 +236,10 @@ class QrScanner(Node):
                     self.read_last[text] = now
                     self.read_pub.publish(String(data=text))
                 self.on_code(text, corners, img, header, now)
-            if codes:
-                self.unread.clear()    # something was read: follow a new unread from scratch
-            self.on_unread(unread, img, header, now)
+            if codes or not detect:
+                self.unread.clear()    # something was read / reading only: start afresh
+            if detect:
+                self.on_unread(unread, img, header, now)
 
             if self.min_period:
                 time.sleep(max(0.0, self.min_period - (time.time() - start)))
@@ -338,6 +369,7 @@ class QrScanner(Node):
 
 
 def main():
+    cv2.setNumThreads(1)               # OpenCV's pool would spin on every core per frame
     rclpy.init()
     node = QrScanner()
     try:

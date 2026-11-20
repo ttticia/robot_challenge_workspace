@@ -5,7 +5,9 @@ import numpy as np
 import pytest
 
 from maze_nav.core import Grid
-from maze_nav.scene_understanding.scene_cells import CellGrid, NewCellTrigger, opening, run_active
+from maze_nav.scene_understanding.scene_cells import (CellGrid, DeadEndDetector, JunctionDetector,
+                                                      NewCellTrigger, opening, run_active,
+                                                      side_heading, side_walls)
 
 RES = 0.05
 
@@ -141,10 +143,182 @@ def test_rotated_grid_directions():
 def test_run_active_follows_explorer_status():
     for status in ('CREEPING: 10 cm straight ahead, no steering', 'SCANNING: turning',
                    'EXPLORING: go', 'EXPLORING', 'TURNING: x', 'LOOKING: QR room',
-                   'FACING_QR: unreadable code'):
+                   'FACING_QR: unreadable code', 'JUNCTION: cell [1, 0]',
+                   'DEAD_END: dead end at cell [2, 0]'):
         assert run_active(status), status
     for status in ('', None, 'STARTING: waiting for /map', 'PAUSED: ready; holding still',
                    'EXITED: open space', 'NO_EXIT: all frontiers mapped', 'STOPPED: Ctrl+C',
                    'EXPLORINGX'):
         assert not run_active(status), status
     assert run_active('PAUSED: x', active_states=('PAUSED',))
+
+
+# ------------------------------------------------------------------ junctions and dead ends
+
+def draw_wall_y(grid, y, x_from, x_to):
+    """Occupied cells along the line y = const (a wall across a +j / -j side)."""
+    for x in np.arange(x_from, x_to, RES / 2):
+        c = grid.cell((x, y))
+        if grid.contains(c):
+            grid.data[c[1], c[0]] = 100
+
+
+def maze_grid():
+    """Free floor over cells i = -1..3, j = -1..1 with the walls drawn by the tests."""
+    return Grid(np.zeros((int(3.0 / RES), int(5.0 / RES)), dtype=np.int16), RES, (-1.5, -1.5))
+
+
+def openings_on(grid, cells):
+    return lambda cell, d: opening(grid, cells, cell, d)
+
+
+def test_junction_t_from_the_corridor():
+    # Corridor (0,0) -> (1,0); (1,0) is a T: walls ahead (+i), open to +j and -j.
+    cells = CellGrid()
+    g = maze_grid()
+    draw_wall_x(g, 1.5, -0.5, 0.5)
+    draw_wall_y(g, 0.5, -0.5, 0.5)           # (0,0) sides closed: a corridor
+    draw_wall_y(g, -0.5, -0.5, 0.5)
+    jd = JunctionDetector(cells, centre_radius=0.25)
+    op = openings_on(g, cells)
+    assert jd.update((1.3, 0.0), (1, 0), (0, 0), op) is None     # 0.3 m from centre: not yet
+    assert jd.update((1.2, 0.0), (1, 0), (0, 0), op) == ['+j', '-j']
+    assert jd.update((1.0, 0.0), (1, 0), (0, 0), op) is None     # once per cell
+    # The corridor cell itself: one way on (+i) -> not a junction.
+    assert JunctionDetector(cells).update((0.0, 0.0), (0, 0), (-1, 0), op) is None
+    # No way in known (start / jump): skipped.
+    assert JunctionDetector(cells).update((1.0, 0.0), (1, 0), None, op) is None
+
+
+def test_unknown_sides_are_not_ways_on():
+    cells = CellGrid()
+    g = maze_grid()
+    g.data[:, :] = -1
+    jd = JunctionDetector(cells)
+    assert jd.update((1.0, 0.0), (1, 0), (0, 0), openings_on(g, cells)) is None
+
+
+def dead_end_grid():
+    """(0,0) -> (1,0) -> (2,0): (2,0) closed on +i, +j, -j; (1,0) open to +j too."""
+    g = maze_grid()
+    draw_wall_x(g, 2.5, -0.5, 0.5)
+    draw_wall_y(g, 0.5, 1.5, 2.5)
+    draw_wall_y(g, -0.5, 1.5, 2.5)
+    return g
+
+
+def test_dead_end_fires_from_the_cell_before_while_facing_it():
+    cells = CellGrid()
+    g = dead_end_grid()
+    op = openings_on(g, cells)
+    de = DeadEndDetector(cells, heading_tol=math.radians(25))
+    assert de.update((1.0, 0.0), math.radians(90), (1, 0), op) is None    # facing +j: open
+    assert de.update((1.0, 0.0), math.radians(40), (1, 0), op) is None    # not facing anything
+    hit = de.update((1.0, 0.0), math.radians(-20), (1, 0), op)
+    assert hit is not None
+    cell, d, sides = hit
+    assert (cell, d) == ((2, 0), '+i')
+    assert sides == {'+i': 'wall', '+j': 'wall', '-i': 'open', '-j': 'wall'}
+    assert de.update((1.0, 0.0), 0.0, (1, 0), op) is None                 # once per cell
+
+
+def test_dead_end_not_from_inside_nor_visited_nor_half_seen():
+    cells = CellGrid()
+    g = dead_end_grid()
+    op = openings_on(g, cells)
+    # base_link already over the edge in the dead end (cell hysteresis still says (1, 0)).
+    assert DeadEndDetector(cells).update((1.55, 0.0), 0.0, (1, 0), op) is None
+    assert DeadEndDetector(cells).update((1.0, 0.0), 0.0, (1, 0), op, skip={(2, 0)}) is None
+    # Far side unknown: not a dead end yet.
+    g2 = dead_end_grid()
+    for y in np.arange(-0.5, 0.5, RES / 2):
+        for x in np.arange(2.4, 2.6, RES / 2):
+            c = g2.cell((x, y))
+            g2.data[c[1], c[0]] = -1
+    assert DeadEndDetector(cells).update((1.0, 0.0), 0.0, (1, 0), openings_on(g2, cells)) is None
+    # The side between robot cell and dead end walled: nothing to face.
+    g3 = dead_end_grid()
+    draw_wall_x(g3, 1.5, -0.5, 0.5)
+    assert DeadEndDetector(cells).update((1.0, 0.0), 0.0, (1, 0), openings_on(g3, cells)) is None
+
+
+def test_new_cell_trigger_tracks_previous():
+    tr = NewCellTrigger(CellGrid())
+    run(tr, line(0, 0, 1, 0, 0) + line(1, 0, 0, 0, 180))
+    assert (tr.current, tr.previous) == ((0, 0), (1, 0))
+
+
+def test_side_walls_left_and_right_seen_from_the_way_in():
+    cells = CellGrid()
+    w = side_walls(cells, (2, 0), (1, 0))          # dead end (2, 0), entered along +i
+    assert w['left'] == pytest.approx((2.0, 0.5))
+    assert w['right'] == pytest.approx((2.0, -0.5))
+    w = side_walls(cells, (0, -2), (0, -1))        # along -j: left is +i
+    assert w['left'] == pytest.approx((0.5, -2.0))
+    assert w['right'] == pytest.approx((-0.5, -2.0))
+    rot = CellGrid(1.0, (0.3, -0.2), math.radians(90))   # rotated, offset grid
+    w = side_walls(rot, (1, 0), (1, 0))            # +i = map +y here
+    assert w['left'] == pytest.approx((0.3 - 0.5, -0.2 + 1.0))
+    assert w['right'] == pytest.approx((0.3 + 0.5, -0.2 + 1.0))
+
+
+def test_side_heading_aims_at_the_wall_middle_and_is_capped():
+    # From the centre of the cell before: the wall middles are 1 m on, 0.5 m aside.
+    assert side_heading((1.0, 0.0), (2.0, 0.5), 0.0) == pytest.approx(math.atan2(0.5, 1.0))
+    assert side_heading((1.0, 0.0), (2.0, -0.5), 0.0) == pytest.approx(-math.atan2(0.5, 1.0))
+    # Standing close to the dead end and off to the right: the left wall would be far round.
+    assert side_heading((1.45, -0.3), (2.0, 0.5), 0.0, math.radians(40)) == \
+        pytest.approx(math.radians(40))
+    assert side_heading((1.0, 0.0), (2.0, 0.5)) == pytest.approx(math.atan2(0.5, 1.0))
+    # Facing -i (yaw pi): the cap wraps round correctly.
+    h = side_heading((-1.0, 0.0), (-2.0, -0.5), math.pi)
+    assert h == pytest.approx(math.atan2(-0.5, -1.0))
+
+
+def _maze_openings(open_edges, known=None):
+    """openings() for a toy maze: open_edges = set of frozenset({cell_a, cell_b}); every
+    other side is a wall, or 'unknown' for cells not in `known` (when given)."""
+    def openings(cell, d):
+        n = (cell[0] + d[0], cell[1] + d[1])
+        if known is not None and (cell not in known or n not in known):
+            return 'unknown'
+        return 'open' if frozenset((cell, n)) in open_edges else 'wall'
+    return openings
+
+
+def _edges(*pairs):
+    return {frozenset(p) for p in pairs}
+
+
+def test_trace_way_dead_end_next_door():
+    from maze_nav.scene_understanding.scene_cells import trace_way
+    op = _maze_openings(_edges(((0, 0), (1, 0))))
+    t = trace_way(op, (0, 0), (1, 0))
+    assert t['kind'] == 'dead_end'
+    assert t['cell'] == (1, 0) and t['before'] == (0, 0) and t['dir'] == (1, 0)
+    assert t['length'] == 1
+
+
+def test_trace_way_dead_end_round_a_bend():
+    from maze_nav.scene_understanding.scene_cells import trace_way
+    # (0,0) -> (1,0) -> (1,1) -> (1,2) dead end
+    op = _maze_openings(_edges(((0, 0), (1, 0)), ((1, 0), (1, 1)), ((1, 1), (1, 2))))
+    t = trace_way(op, (0, 0), (1, 0))
+    assert t['kind'] == 'dead_end'
+    assert t['cell'] == (1, 2) and t['before'] == (1, 1) and t['dir'] == (0, 1)
+    assert t['length'] == 3
+
+
+def test_trace_way_junction_unknown_and_long():
+    from maze_nav.scene_understanding.scene_cells import trace_way
+    # a T at (1,0): not a dead end
+    op = _maze_openings(_edges(((0, 0), (1, 0)), ((1, 0), (1, 1)), ((1, 0), (1, -1))))
+    assert trace_way(op, (0, 0), (1, 0))['kind'] == 'junction'
+    # not seen yet beyond (1,0): unknown, never a dead end
+    op = _maze_openings(_edges(((0, 0), (1, 0))), known={(0, 0), (1, 0)})
+    t = trace_way(op, (0, 0), (1, 0))
+    assert t['kind'] == 'unknown' and t['cell'] == (1, 0)
+    # a long straight corridor: open after max_cells
+    op = _maze_openings(_edges(*[((k, 0), (k + 1, 0)) for k in range(20)]))
+    t = trace_way(op, (0, 0), (1, 0), max_cells=5)
+    assert t['kind'] == 'open' and t['length'] == 5

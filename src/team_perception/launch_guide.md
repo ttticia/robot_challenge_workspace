@@ -4,6 +4,13 @@ How to start perception on the Lite3: QR codes (`qr_scanner`) and person posters
 (`human_detector` YOLO boxes, judged by `poster_detector`). Inputs and fallbacks are in
 [data_required.md](data_required.md).
 
+> **2026-11-19: human / survivor poster detection is off.** `robot.launch.py` (and so
+> `maze_nav`) now starts `qr_scanner` only. With `human_detector` and `poster_detector`
+> running, the extra camera copies from the robot bridge slowed it down (IMU 23 Hz instead of 200,
+> lidar 1.1 s late, SLAM never built a map). The `posters` argument is gone. The node code
+> is still here (`ros2 run team_perception human_detector` / `poster_detector`), so the
+> poster sections below describe how they work if they are run by hand.
+
 Everything runs on the **robot computer** (`192.168.10.74`), on its CPU:
 
 | Launch | Nodes |
@@ -54,8 +61,7 @@ YOLO is capped (`yolo_threads:=2`, `yolo_rate_hz:=5.0`) so it leaves the CPU to 
 
 ### Robot computer
 
-**`maze_nav` starts this for you** (`perception:=true`, the default; `posters:=false` = QR
-codes only). Launch it by hand only when you're not running maze_nav, or with
+**`maze_nav` starts this for you** (`perception:=true`, the default; QR codes only). Launch it by hand only when you're not running maze_nav, or with
 `perception:=false`, for example to change the camera topics. Don't run both: every code and
 poster would be reported twice.
 
@@ -82,7 +88,6 @@ being worked around. It goes away when the robot side is fixed.
 Common variants:
 
 ```bash
-ros2 launch team_perception robot.launch.py posters:=false          # QR codes only, no YOLO
 ros2 launch team_perception robot.launch.py yolo_rate_hz:=3.0       # less CPU if navigation struggles
 ros2 launch team_perception robot.launch.py --show-args             # list every argument
 ```
@@ -121,7 +126,7 @@ ros2 launch team_perception robot.launch.py \
 
 | # | Where | Command | Expect |
 |---|---|---|---|
-| 1 | robot | `ros2 node list \| grep -E "qr_scanner\|human_detector\|poster_detector"` | all three (only `qr_scanner` with `posters:=false`) |
+| 1 | robot | `ros2 node list \| grep -E "qr_scanner\|human_detector\|poster_detector"` | `qr_scanner` only (the detectors are no longer launched) |
 | 2 | robot | `ros2 topic hz /humans/detections` (someone in front of the camera) | up to `yolo_rate_hz` |
 | 3 | robot | `ros2 topic echo /found` | `QR found` when a code is shown; `Human found` a few seconds after a person poster is shown |
 
@@ -177,7 +182,7 @@ Ctrl+C in each launch terminal. The CSV logs are already on disk (written per de
 | `depth not used: ...` | Depth or depth `camera_info` missing, wrong topic | Check `depth_topic` / `depth_camera_info_topic` with `ros2 topic hz`, and `/camera/depth_relay/image_raw` (≈ 10 Hz) |
 | `[depth_relay] no depth images for 5 s` | Camera driver or bridge down, or wrong `depth_topic` | `ros2 topic hz /camera/depth/image_raw` (expect ~30 Hz) |
 | `could not start YOLO (...)` | torch / ultralytics or the weights missing | `bash src/team_perception/install_deps.sh --no-apt` |
-| Check 2 shows nothing with a person in view | `posters:=false`, or `human_detector` died | Look for its error in the launch output |
+| Check 2 shows nothing with a person in view | `human_detector` is no longer launched (2026-11-19); run it by hand | Look for its error in the launch output |
 | `no depth image within max_dt_s of the detection (closest ..., waited ...)` | Depth for that frame never arrived within `depth_wait_s` (0.5 s): depth stopped, or YOLO is more than 2 s behind (CPU overloaded). Detections whose depth is merely late (`depth_relay` is sometimes ~0.3 s late) are held and paired, not dropped | Check `ros2 topic hz /camera/depth_relay/image_raw`; lower `yolo_rate_hz` if CPU is short |
 | People detected but never `Human found` | No TF to `map`, poster more than 4 m away, or not enough votes yet | Start localisation, get closer, hold the view for a few seconds |
 | Real people reported as posters | Map test off, or the map has a wall where they stand | Keep `map_mode:=veto` (or `require`); the static map must be built **without people in it** |

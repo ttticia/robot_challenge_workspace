@@ -52,14 +52,15 @@ def cloud_xyz(data, fields, point_step, row_step, width, height, big_endian=Fals
 
 
 def wall_ranges(points_odom, robot_xy, robot_yaw, floor_z, band, angle_min, angle_inc,
-                n_beams, range_min, range_max, voxel=0.0, body=None):
+                n_beams, range_min, range_max, voxel=0.0, body=None, sensor=None,
+                sensor_min=0.0):
     """Flatten a point cloud to a LaserScan that sees maze walls and nothing else.
 
     points_odom: (N, 3) points in a gravity-aligned frame (odom). The height band is measured
     from the maze floor (floor_z, odom), not from the robot, so the band stays put while the
     robot's body rises and tilts on ramps, mats and stairs.
     band: (low, high) metres above the floor. Example maze: walls 0..0.45 m, terrain <= 0.15 m,
-    stair treads <= 0.26 m, hand rails <= 0.535 m -> (0.30, 0.43) sees walls and rails only.
+    stair treads <= 0.26 m, hand rails <= 0.535 m -> (0.30, 0.45) sees walls and rails only.
     voxel: > 0 thins the wall points to one per voxel x voxel m cell (horizontal grid in
     odom), keeping the one nearest the robot, so a range is never longer than the nearest
     real point in that cell.
@@ -68,6 +69,12 @@ def wall_ranges(points_odom, robot_xy, robot_yaw, floor_z, band, angle_min, angl
     alone (a circle) misses them: the 0.64 x 0.46 m body reaches 0.44 m from base_link, and
     the hips are ~0.3 m above the floor, inside the wall band. Seen live: the front-right leg
     marked as a wall during the start scan put the robot "in lethal space" for the planner.
+    sensor, sensor_min: lidar origin (x, y, z in odom) and a 3D radius around it: closer
+    points are the lidar's own near/self returns and are dropped. The lidar sits 0.19 m ahead
+    of base_link, so its near returns poke past the body box's front. Seen live (bag
+    maze_20261120_012913): a streak 0.16-0.29 m from the lidar, 0.40-0.44 m above the floor,
+    at base_link (0.29..0.37, -0.13..-0.22); after the creep it sat inside the footprint and
+    RPP and Spin reported "collision" for the whole run.
     Returns ranges (n_beams,) with +inf where nothing was hit; beam angles are in the robot's
     heading frame (yaw only).
     """
@@ -77,6 +84,8 @@ def wall_ranges(points_odom, robot_xy, robot_yaw, floor_z, band, angle_min, angl
     p = np.asarray(points_odom, dtype=np.float64)
     h = p[:, 2] - floor_z
     p = p[(h >= band[0]) & (h <= band[1])]
+    if sensor is not None and sensor_min > 0 and len(p):
+        p = p[np.sum((p - np.asarray(sensor, dtype=np.float64)) ** 2, axis=1) >= sensor_min ** 2]
     if len(p) == 0:
         return ranges
     dx, dy = p[:, 0] - robot_xy[0], p[:, 1] - robot_xy[1]
@@ -148,6 +157,24 @@ def posture(height):
     if height <= LYING_MAX_HEIGHT:
         return 'lying'
     return None
+
+
+FLOOR_MIN_BODY_HEIGHT = 0.27   # m: lowest base_link height a measured floor may imply
+
+
+def floor_accepted(base_z, seen, expected_drop=0.35, tolerance=0.06,
+                   min_height=FLOOR_MIN_BODY_HEIGHT):
+    """Is a measured floor (odom z) believable for a standing robot at odom z `base_z`?
+
+    Judged by the body height it implies, not by its distance to `expected_drop` alone: the
+    Lite3 stood at 0.29 m on 2026-11-19 (RUG gait), 0.06 m under the nominal 0.35 m, so a
+    +-0.06 m window round 0.35 threw away a correct floor. Below `min_height` the robot is
+    still getting up (a floor measured there puts the wall band above the 0.45 m wall tops).
+    """
+    if seen is None:
+        return False
+    h = base_z - seen
+    return min_height <= h <= expected_drop + tolerance
 
 
 class StandSettle:
@@ -456,19 +483,38 @@ def free_distance_ahead(grid, xy, yaw, box, max_d, margin=0.0, step=0.01):
     return max_d
 
 
-def max_turn(grid, xy, yaw, box, direction, limit, margin=0.0, step=math.radians(2)):
+def pivot_pose(xy, yaw, turned, pivot=None):
+    """base_link (x, y) after turning `turned` rad on the spot about `pivot`.
+
+    pivot = (x, y) in base_link of the point the robot actually rotates about (None or
+    (0, 0) = base_link itself). The Lite3 turns about a point ~2.5 cm ahead of and ~4 cm
+    right of base_link (fitted on 6 in-place turns in the 11-15 bags), so base_link itself
+    swings on a small circle and the rear corners sweep ~0.48 m, not 0.44 m."""
+    if not pivot or (pivot[0] == 0.0 and pivot[1] == 0.0):
+        return xy
+    px, py = pivot
+    c0, s0 = math.cos(yaw), math.sin(yaw)
+    cx, cy = xy[0] + c0 * px - s0 * py, xy[1] + s0 * px + c0 * py      # pivot in the map
+    c1, s1 = math.cos(yaw + turned), math.sin(yaw + turned)
+    return cx - (c1 * px - s1 * py), cy - (s1 * px + c1 * py)
+
+
+def max_turn(grid, xy, yaw, box, direction, limit, margin=0.0, step=math.radians(2),
+             pivot=None):
     """Largest turn on the spot (rad, <= limit) towards direction (+1 left, -1 right) whose
-    whole sweep keeps the box clear of walls. 0 if even the first step hits."""
+    whole sweep keeps the box clear of walls. 0 if even the first step hits. pivot: the
+    point (base_link frame) the robot rotates about (pivot_pose); None = base_link."""
     a = 0.0
     while a + step <= limit + 1e-9:
         n = a + step
-        if footprint_hits(grid, xy, yaw + direction * n, box, margin):
+        if footprint_hits(grid, pivot_pose(xy, yaw, direction * n, pivot), yaw + direction * n,
+                          box, margin):
             return a
         a = n
     return limit
 
 
-def plan_turn(grid, xy, yaw, heading, box, margin=0.0, min_angle=0.6):
+def plan_turn(grid, xy, yaw, heading, box, margin=0.0, min_angle=0.6, pivot=None):
     """Should the explorer turn the robot itself before driving off along `heading`?
 
     Nav2's path follower (RPP, use_rotate_to_heading) turns on the spot, always the short
@@ -488,16 +534,17 @@ def plan_turn(grid, xy, yaw, heading, box, margin=0.0, min_angle=0.6):
     if footprint_hits(grid, xy, yaw, box, margin):
         return None, 'map shows a wall at the robot'
     sign = 1.0 if want >= 0 else -1.0
-    if max_turn(grid, xy, yaw, box, sign, abs(want), margin) >= abs(want) - 1e-6:
+    if max_turn(grid, xy, yaw, box, sign, abs(want), margin, pivot=pivot) >= abs(want) - 1e-6:
         return None, 'short way clear'
     other = 2 * math.pi - abs(want)
-    if max_turn(grid, xy, yaw, box, -sign, other, margin) >= other - 1e-6:
+    if max_turn(grid, xy, yaw, box, -sign, other, margin, pivot=pivot) >= other - 1e-6:
         return -sign * other, 'short way blocked, long way clear'
     return None, 'blocked both ways'
 
 
 def plan_creep_turn(grid, xy, yaw, goal, box, margins=(0.03, 0.01), min_angle=0.6,
-                    max_creep=0.6, creep_margin=0.05, robot_radius=0.25, step=0.02, edge=0.05):
+                    max_creep=0.6, creep_margin=0.05, robot_radius=0.25, step=0.02, edge=0.05,
+                    pivot=None):
     """Where to stop, straight ahead, to make the turn towards goal that is blocked here.
 
     For when plan_turn says 'blocked both ways' (in a 0.9 m corridor the rear corners'
@@ -528,7 +575,7 @@ def plan_creep_turn(grid, xy, yaw, goal, box, margins=(0.03, 0.01), min_angle=0.
     ds = np.arange(0.0, limit + 1e-9, step)
     for margin in margins:
         best = _best_turn_spot(grid, xy, yaw, goal, box, margin, min_angle, robot_radius, field,
-                               clr, path_left, start_left, ds, step, edge)
+                               clr, path_left, start_left, ds, step, edge, pivot)
         if best is not None:
             return (float(best[1]), margin,
                     f'{best[0] * grid.resolution:.2f} m from the nearest wall there, '
@@ -537,7 +584,7 @@ def plan_creep_turn(grid, xy, yaw, goal, box, margins=(0.03, 0.01), min_angle=0.
 
 
 def _best_turn_spot(grid, xy, yaw, goal, box, margin, min_angle, robot_radius, field, clr,
-                    path_left, start_left, ds, step, edge):
+                    path_left, start_left, ds, step, edge, pivot=None):
     """plan_creep_turn for one margin: (room in cells, distance) or None."""
     cos_y, sin_y = math.cos(yaw), math.sin(yaw)
     ok = []
@@ -550,8 +597,10 @@ def _best_turn_spot(grid, xy, yaw, goal, box, margin, min_angle, robot_radius, f
         else:
             s = 1.0 if want >= 0 else -1.0
             other = 2 * math.pi - abs(want)
-            clear = (max_turn(grid, p, yaw, box, s, abs(want), margin) >= abs(want) - 1e-6 or
-                     max_turn(grid, p, yaw, box, -s, other, margin) >= other - 1e-6)
+            clear = (max_turn(grid, p, yaw, box, s, abs(want), margin, pivot=pivot)
+                     >= abs(want) - 1e-6 or
+                     max_turn(grid, p, yaw, box, -s, other, margin, pivot=pivot)
+                     >= other - 1e-6)
         closer = path_left(p) <= start_left + 0.05 if math.isfinite(start_left) else True
         ok.append(clear and closer)
     k = int(math.ceil(edge / step - 1e-9))          # samples that must be clear either side

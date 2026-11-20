@@ -7,10 +7,20 @@ base_link within a few cm of the start cell's centre), and +i points along `yaw`
 robot's heading at bringup, so a robot placed square in the start cell lines the grid up
 with the maze).
 
-NewCellTrigger: returns one SceneEvent the first time the robot enters each cell, including
+NewCellTrigger: tracks which cell the robot is in (`current`, and `previous`: the cell it
+came from) and returns one SceneEvent the first time the robot enters each cell, including
 the start cell (`trigger_at_start`). Going back into a cell entered before never fires.
 "Entered" uses hysteresis: base_link must be `enter_margin` m inside a cell (away from all
 its edges), so straddling a boundary doesn't flip cells or fire early.
+
+JunctionDetector: once per cell, when the robot first gets within `centre_radius` of a
+cell's centre, the cell's open sides other than the way in; two or more = a junction (the
+explorer then faces each way, left to right). DeadEndDetector: the robot faces (within
+`heading_tol`) a neighbouring cell whose three other sides are all walls on /map: a dead
+end, reported once per cell while the robot is still in the cell before it (that is what
+fires scene understanding).
+side_walls(): the middles of a dead end's left and right walls, which the explorer turns
+the camera to from the cell before it (posters and QR codes on the side walls).
 
 run_active() reads maze_explorer's /maze/status, so the node only fires while the robot is
 actually running the maze (not while it holds still before /maze/start, nor after the end).
@@ -110,7 +120,8 @@ def opening(grid, cells, cell, d, half_width=0.35, depth=0.1, min_blocked=0.3,
 
 
 # maze_explorer states (/maze/status, "STATE" or "STATE: why") in which the run is under way.
-ACTIVE_STATES = ('CREEPING', 'SCANNING', 'EXPLORING', 'TURNING', 'LOOKING', 'FACING_QR')
+ACTIVE_STATES = ('CREEPING', 'SCANNING', 'EXPLORING', 'TURNING', 'LOOKING', 'FACING_QR',
+                 'JUNCTION', 'DEAD_END')
 
 
 def run_active(status, active_states=ACTIVE_STATES):
@@ -136,6 +147,7 @@ class NewCellTrigger:
         self.enter_margin = enter_margin
         self.trigger_at_start = trigger_at_start
         self.current = None          # cell the robot is in (last one entered)
+        self.previous = None         # the cell it entered `current` from (None at the start)
         self.visited = set()
 
     def update(self, xy, yaw):
@@ -146,6 +158,7 @@ class NewCellTrigger:
         if self.current is not None and self.cells.depth_inside(xy, c) < self.enter_margin:
             return None              # near the edge: not entered yet
         prev, self.current = self.current, c
+        self.previous = prev
         if c in self.visited:
             return None
         self.visited.add(c)
@@ -154,3 +167,135 @@ class NewCellTrigger:
         step = None if prev is None else (c[0] - prev[0], c[1] - prev[1])
         name = next((n for n, d in DIRECTIONS.items() if d == step), '')
         return SceneEvent(c, prev, name, yaw)
+
+
+def opposite(d):
+    return (-d[0], -d[1])
+
+
+def name_of(d):
+    return next(n for n, v in DIRECTIONS.items() if v == d)
+
+
+def trace_way(openings, cell, d, max_cells=10):
+    """Where does the way out of `cell` towards d lead? Follows it cell by cell on the map
+    while each cell has exactly one way on (corridors, bends included).
+
+    `openings(cell, d)` -> 'open' / 'wall' / 'unknown' (opening() on /map). Returns a dict:
+      {'kind': 'dead_end', 'cell': dead-end cell, 'before': the cell before it (`cell` itself
+       when the dead end is next door), 'dir': the direction from 'before' into it, 'length':
+       cells walked to reach it}
+      {'kind': 'junction' | 'unknown' | 'open', 'cell': where the trace stopped, 'length'}
+    'unknown': a side not yet seen (so it may still be a dead end); 'open': longer than
+    `max_cells` without an end.
+    """
+    prev, cur, into = cell, (cell[0] + d[0], cell[1] + d[1]), d
+    for n in range(1, max_cells + 1):
+        back = opposite(into)
+        sides = {v: openings(cur, v) for v in DIRECTIONS.values() if v != back}
+        if any(s == 'unknown' for s in sides.values()):
+            return {'kind': 'unknown', 'cell': cur, 'length': n}
+        ways = [v for v, s in sides.items() if s == 'open']
+        if not ways:
+            return {'kind': 'dead_end', 'cell': cur, 'before': prev, 'dir': into, 'length': n}
+        if len(ways) > 1:
+            return {'kind': 'junction', 'cell': cur, 'length': n}
+        prev, into = cur, ways[0]
+        cur = (cur[0] + into[0], cur[1] + into[1])
+    return {'kind': 'open', 'cell': cur, 'length': max_cells}
+
+
+def side_walls(cells, cell, d):
+    """Map (x, y) of the middles of `cell`'s left and right sides, seen looking along d (the
+    way in): where the explorer points the camera to scan a dead end's side walls."""
+    left = (-d[1], d[0])
+    return {'left': cells.world((cell[0] + 0.5 * left[0], cell[1] + 0.5 * left[1])),
+            'right': cells.world((cell[0] - 0.5 * left[0], cell[1] - 0.5 * left[1]))}
+
+
+def side_heading(xy, point, facing=None, max_off=math.radians(60)):
+    """Map yaw from xy to a side-wall point; with `facing` (the dead end's heading) given, at
+    most `max_off` rad either side of it (a robot standing well off-centre would otherwise
+    turn round to a wall it can't see past the corner)."""
+    h = math.atan2(point[1] - xy[1], point[0] - xy[0])
+    if facing is None:
+        return h
+    off = max(-max_off, min(max_off, wrap(h - facing)))
+    return wrap(facing + off)
+
+
+class JunctionDetector:
+    """Once per cell: is it a junction (2+ open ways on besides the way in)?
+
+    `openings(cell, d)` -> 'open' / 'wall' / 'unknown' (scene_cells.opening on /map). The
+    check runs the first time base_link is within `centre_radius` m (in both axes) of the
+    cell's centre, so the explorer's turns happen near the middle of the cell, and only
+    when the way in is known (not the start cell, not after a pose jump). Unknown sides
+    don't count as open. Returns the open direction names (sorted), or None.
+    """
+
+    def __init__(self, cells, centre_radius=0.25, min_paths=2):
+        self.cells = cells
+        self.centre_radius = centre_radius
+        self.min_paths = min_paths
+        self.checked = set()
+
+    def update(self, xy, cell, came_from, openings):
+        if cell is None or cell in self.checked or self.cells.cell(xy) != cell:
+            return None
+        if self.cells.depth_inside(xy, cell) < 0.5 * self.cells.size - self.centre_radius:
+            return None
+        self.checked.add(cell)
+        if came_from is None:
+            return None
+        back = (came_from[0] - cell[0], came_from[1] - cell[1])
+        if back not in DIRECTIONS.values():
+            return None                              # jumped: no single way in
+        ways = sorted(n for n, d in DIRECTIONS.items()
+                      if d != back and openings(cell, d) == 'open')
+        return ways if len(ways) >= self.min_paths else None
+
+
+class DeadEndDetector:
+    """The robot, in `cell`, faces a neighbouring dead end: report it once.
+
+    Facing = the robot's yaw within `heading_tol` rad of a grid direction d. The dead end is
+    the neighbour n = cell + d: the side between the two must be open and n's other three
+    sides (its left, right and far side seen from the robot) all 'wall' (a large obstacle
+    across a side reads as a wall too; 'unknown' doesn't count). base_link must not be in n
+    yet. Cells in `skip` (e.g. already visited) are never reported. Returns
+    (n, d_name, {side name: opening}) or None.
+    """
+
+    def __init__(self, cells, heading_tol=math.radians(25)):
+        self.cells = cells
+        self.heading_tol = heading_tol
+        self.reported = set()
+
+    def facing(self, yaw):
+        for name, d in DIRECTIONS.items():
+            if abs(wrap(yaw - self.cells.heading(d))) <= self.heading_tol:
+                return name, d
+        return None, None
+
+    def update(self, xy, yaw, cell, openings, skip=()):
+        if cell is None:
+            return None
+        name, d = self.facing(yaw)
+        if d is None:
+            return None
+        n = (cell[0] + d[0], cell[1] + d[1])
+        if n in self.reported or n in skip or self.cells.cell(xy) == n:
+            return None
+        if openings(cell, d) != 'open':
+            return None
+        sides = {}
+        for k, v in DIRECTIONS.items():
+            if v == opposite(d):
+                sides[k] = 'open'
+                continue
+            sides[k] = openings(n, v)
+            if sides[k] != 'wall':
+                return None
+        self.reported.add(n)
+        return n, name, sides

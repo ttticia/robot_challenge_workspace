@@ -64,6 +64,10 @@ os.chdir(d)                      # ultralytics downloads bare names into the cur
 import torch
 from ultralytics import YOLO
 YOLO('yolo11n.pt')
+# OpenVINO copy for human_detector (default model): fixed 320x416 input = the 640x480
+# camera's 4:3 frame letterboxed at 416, so no padding is computed.
+if not os.path.isdir('yolo11n_openvino_model'):
+    YOLO('yolo11n.pt').export(format='openvino', imgsz=(320, 416), half=False, dynamic=False)
 print(f'OK: opencv {cv2.__version__}, numpy {numpy.__version__}, zxing-cpp, pyzbar, '
       f'torch {torch.__version__}, weights in {d}')
 PY

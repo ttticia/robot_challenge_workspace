@@ -39,7 +39,7 @@ LAUNCH_PACKAGES = {'maze_nav', 'lite3_launcher', 'nav2_bringup', 'slam_toolbox'}
 # ROS node names that clash with ours
 NODES = {'slam_toolbox', 'planner_server', 'controller_server', 'behavior_server',
          'bt_navigator', 'velocity_smoother', 'lifecycle_manager_navigation',
-         'maze_explorer', 'wall_scan', 'cmd_vel_bridge', 'twist_mux', 'stair_detector',
+         'maze_explorer', 'wall_scan', 'cmd_vel_bridge', 'twist_mux', 'stair_detector', 'curtain_detector',
          'depth_relay', 'scene_trigger'}   # depth_relay: a second one = a second 18 MB/s copy from the bridge
 BRINGUP_NODES = {'laser_mapping', 'odom_relay'}
 # team_perception (perception:=true): a second copy would report every QR code twice

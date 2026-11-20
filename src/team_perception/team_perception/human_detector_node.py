@@ -10,6 +10,11 @@ Runs YOLO on a background thread on the newest camera frame, at most rate_hz tim
 Frames are decoded on that thread, only when used: the subscription callback only stores the
 message, so the 30 Hz stream is not decoded 30 times a second for 5 inferences.
 
+CPU (shared with navigation): the default model is the OpenVINO export
+(yolo11n_openvino_model, ~36 ms CPU a frame vs ~124 ms for torch at 640; human_utils.py),
+falling back to yolo11n.pt if it isn't there. OpenCV runs single-threaded. While
+maze_explorer is in one of `pause_states` (/maze/status, run_gate.py) no inference runs.
+
 Topics (all names are parameters - VERIFY on the robot with `ros2 topic list`):
   in : image_topic        sensor_msgs/Image, or <image_topic>/compressed
                           sensor_msgs/CompressedImage if image_transport:=compressed
@@ -36,6 +41,7 @@ from geometry_msgs.msg import PointStamped
 import tf2_ros
 import tf2_geometry_msgs  # noqa: F401  (registers PointStamped with tf2)
 
+from team_perception import run_gate
 from team_perception.human_utils import HumanDetector, box_depth_pixel
 from team_perception import tf_pin
 from team_perception.qr_utils import DepthAlignState, deproject
@@ -54,9 +60,11 @@ class HumanDetectorNode(Node):
         #                                already aligned to colour
         p('camera_info_topic', '/camera/color/camera_info')
         p('map_frame', 'map')
-        p('model', 'yolo11n.pt')       # bare name -> ~/.cache/team_perception/, or a path
+        p('model', 'yolo11n_openvino_model')   # bare name -> ~/.cache/team_perception/, or a
+        #                                path; *_openvino_model = OpenVINO (falls back to .pt)
         p('conf', 0.4)                 # minimum confidence
-        p('imgsz', 640)                # YOLO input size (smaller = faster, misses far people)
+        p('imgsz', 416)                # YOLO input size (smaller = faster, misses far people);
+        #                                OpenVINO models use their exported size (320x416)
         p('device', 'cpu')             # 'cpu', or '0' for the first CUDA GPU
         p('rate_hz', 5.0)              # max inferences per second (0 = as fast as possible)
         p('threads', 2)                # torch CPU threads (0 = torch default: ~8 on the robot)
@@ -73,6 +81,12 @@ class HumanDetectorNode(Node):
                                f'({g("threads")} threads) ...')
         self.detector = HumanDetector(g('model'), g('conf'), g('imgsz'), g('device'),
                                       g('threads'))
+        if self.detector.fallback:
+            self.get_logger().warn(self.detector.fallback)
+        self.get_logger().info(f'YOLO {self.detector.path} '
+                               f'({"OpenVINO" if self.detector.openvino else "torch"}, '
+                               f'imgsz {self.detector.imgsz})')
+        self.gate = run_gate.attach(self, 'human_detector')
 
         self.bridge = CvBridge()
         self.latest_msg = None         # newest image message, decoded by the worker
@@ -143,7 +157,7 @@ class HumanDetectorNode(Node):
                 continue
             self.new_frame.clear()
             msg = self.latest_msg
-            if msg is None:
+            if msg is None or not self.gate.active:
                 continue
             start = time.time()
             try:
@@ -230,6 +244,7 @@ class HumanDetectorNode(Node):
 
 
 def main():
+    cv2.setNumThreads(1)               # OpenCV's pool would spin on every core per decode
     rclpy.init()
     try:
         node = HumanDetectorNode()

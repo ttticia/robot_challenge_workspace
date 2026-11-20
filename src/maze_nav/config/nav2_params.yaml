@@ -6,7 +6,7 @@
 #   velocity_smoother                                -> nav_cmd_vel
 #   cmd_vel_bridge (robot QoS, clamp, watchdog)      -> /cmd_vel
 #
-# Obstacles come only from /wall_scan (walls 0.30-0.43 m above the floor). Ramps, mats and
+# Obstacles come only from /wall_scan (walls 0.30-0.45 m above the floor). Ramps, mats and
 # stairs are below that band on purpose: the robot walks over them.
 #
 # Maze geometry (example maze.step): 1 m cells, 0.05 m walls -> ~0.90-0.95 m clear corridor,
@@ -42,7 +42,7 @@ planner_server:
       use_final_approach_orientation: false
       smoother:
         max_iterations: 1000
-        w_smooth: 0.3
+        w_smooth: 0.2                 # was 0.3: smoothing pulled corner paths to the inner wall
         w_data: 0.2
         tolerance: 1.0e-10
 
@@ -68,9 +68,11 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.15
-      lookahead_dist: 0.35           # short: pure pursuit cuts corners by about this much
-      min_lookahead_dist: 0.25
-      max_lookahead_dist: 0.45
+      lookahead_dist: 0.2           # short: pure pursuit cuts corners by about this much
+      #                                (0.35 cut the start-cell corner on 2026-11-19 04:04;
+      #                                0.25 still turned close to the inner wall, 2026-11-20)
+      min_lookahead_dist: 0.15
+      max_lookahead_dist: 0.25
       use_velocity_scaled_lookahead_dist: false
       lookahead_time: 1.5
       transform_tolerance: 0.3
@@ -81,11 +83,23 @@ controller_server:
       use_regulated_linear_velocity_scaling: true    # slow down in turns
       regulated_linear_scaling_min_radius: 0.6
       regulated_linear_scaling_min_speed: 0.05
-      use_cost_regulated_linear_velocity_scaling: false
+      use_cost_regulated_linear_velocity_scaling: true   # slow down close to walls
+      cost_scaling_dist: 0.3         # only within 0.3 m (a 0.9 m corridor is all "near")
+      cost_scaling_gain: 1.0
+      inflation_cost_scaling_factor: 6.0   # = local_costmap inflation cost_scaling_factor
       use_rotate_to_heading: true    # quadruped: turn on the spot, then walk
       rotate_to_heading_angular_vel: 0.4
-      rotate_to_heading_min_angle: 0.6
-      max_angular_accel: 1.0
+      rotate_to_heading_min_angle: 0.7    # turn on the spot above 34 deg; smaller errors are
+      #                                     arcs while walking (was 0.35: stop-turn-go jerks;
+      #                                     0.8 arced to the inner wall before turning, 11-20)
+      #                                     round corners; = explorer pre_turn_min_angle
+      #                                     (no footprint_padding: corridor turns fit by 1 cm)
+      # NOT the gentle start (velocity_smoother does that, OPEN_LOOP, 0.5 rad/s^2): RPP's
+      # rotate-to-heading asks for measured yaw rate + this * 0.1 s, so 0.5 = 0.05 rad/s from
+      # standstill, which the Lite3 ignores -> it never turns, never walks (robot 2026-11-20
+      # 07:18 bag s_maze1, sims the same: "Failed to make progress"). 2.0 = 0.2 rad/s first.
+      # cmd_vel_bridge min_spin_rate 0.15 guards it too.
+      max_angular_accel: 2.0
       allow_reversing: false
       max_robot_pose_search_dist: 10.0
 
@@ -96,7 +110,7 @@ local_costmap:
       publish_frequency: 2.0
       global_frame: odom
       robot_base_frame: base_link
-      transform_tolerance: 0.3
+      transform_tolerance: 0.6      # s; Fast-LIO odom stalls up to ~1 s (2026-11-20)
       rolling_window: true
       width: 3
       height: 3
@@ -117,8 +131,21 @@ local_costmap:
           inf_is_valid: false          # no return = no information (blind sector behind)
           obstacle_max_range: 3.0
           raytrace_max_range: 3.5
+          # Walls within 0.6 m of base_link are never CLEARED by beams (they still mark).
+          # The lidar sits ~0.50 m above the floor (base_link 0.37 standing) and the walls
+          # are 0.45 m: a beam passes OVER a wall closer than ~0.37 m abeam (~0.14 m at 45 deg)
+          # and hits a farther wall in the band, and raytracing then wiped the near wall
+          # from the costmap just when the robot was beside it (run 2026-11-19 13:01: left
+          # shoulder clipped a wall turning into a corridor). A wall seen from farther away
+          # now stays while the robot is close; it clears once the robot is > 0.45 m from it.
+          # 0.6 -> 0.45 on 2026-11-20: anything marked within 0.6 m was permanent, so a few
+          # lidar self-returns ahead of the nose sat in the footprint after the creep and RPP /
+          # Spin reported "collision" all run (01:28). 0.45 = the footprint's turning radius
+          # (0.44 m). With band_high 0.45 the side walls are hit directly from ~0.3 m out, so
+          # walls 0.45-0.6 m away are re-marked every scan instead of relying on no-clearing.
+          raytrace_min_range: 0.45
           max_obstacle_height: 2.0
-          expected_update_rate: 0.5
+          expected_update_rate: 1.5   # s; was 0.5: odom stalls of ~1 s flagged the costmap stale (user 2026-11-20)
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         # 0.5 / 6.0 (was 0.4 / 8.0): RPP's collision check sees cost further off the walls.
@@ -135,7 +162,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      transform_tolerance: 0.3
+      transform_tolerance: 0.6      # s; = local_costmap
       # Rolling, not sized by /map: the SLAM map ends at about the start pose (the lidar is
       # blind behind the robot), and Humble's Smac planner doesn't check that the start lies
       # in the costmap - planning from just off the map edge segfaulted planner_server (seen
@@ -152,6 +179,14 @@ global_costmap:
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: true
+        # maze_explorer's /maze/map: SLAM's /map with the confirmed curtains drawn free
+        # (slam_toolbox keeps a curtain as a wall for good: wall_scan's dropped bins read
+        # +inf, which it ignores). So the planner can plan through a curtain, e.g. from the
+        # line right after crossing (sim 2026-11-20: "Starting point in lethal space") or
+        # back the way it came. A curtain not walked through yet still blocks plans: wall_scan
+        # keeps it in the obstacle layer until it is crossed (curtains.scan_curtains), and
+        # curtain_detector walks the robot through. Same as /map when there is no curtain.
+        map_topic: /maze/map
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
@@ -164,8 +199,9 @@ global_costmap:
           inf_is_valid: false
           obstacle_max_range: 4.0
           raytrace_max_range: 5.0
+          raytrace_min_range: 0.45     # see local_costmap: beams over close walls cleared them
           max_obstacle_height: 2.0
-          expected_update_rate: 0.5
+          expected_update_rate: 1.5   # s; = local_costmap
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         # Wide and gentle, so the planner keeps to the corridor centre and swings wide of the
@@ -191,10 +227,11 @@ behavior_server:
     global_frame: odom
     robot_base_frame: base_link
     transform_tolerance: 0.3
-    simulate_ahead_time: 2.0
+    simulate_ahead_time: 1.0         # s of turn checked for collision (2.0 = ~46 deg ahead at
+    #                                  0.4 rad/s: corridor turns aborted early, run 2026-11-19 12:13)
     max_rotational_vel: 0.4
-    min_rotational_vel: 0.2
-    rotational_acc_lim: 1.0
+    min_rotational_vel: 0.1          # softer end of each turn (was 0.2)
+    rotational_acc_lim: 0.5          # was 1.0
 
 velocity_smoother:
   ros__parameters:
@@ -203,7 +240,8 @@ velocity_smoother:
     feedback: "OPEN_LOOP"
     max_velocity: [0.25, 0.0, 0.5]   # team limits; cmd_vel_bridge clamps again
     min_velocity: [0.0, 0.0, -0.5]   # never backwards
-    max_accel: [0.3, 0.0, 1.0]
+    max_accel: [0.3, 0.0, 0.5]       # angular 0.5 rad/s^2: the gentle turn start (open loop;
+    #                                  RPP max_angular_accel 2.0 so it doesn't stall)
     max_decel: [-0.8, 0.0, -1.5]
     odom_topic: "/odom"
     odom_duration: 0.1

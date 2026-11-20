@@ -12,11 +12,25 @@ start cell) unless floor_z is given. Until then it publishes base_link's height 
 floor on /maze/body_height (latched): cmd_vel_bridge uses it to stand a lying robot up, and
 the floor isn't measured while the robot is lying down or getting up.
 
+Curtains (curtains_topic, from curtain_detector, in its map frame; '' = off): points of a
+curtain the robot is being walked through, or has been (curtains.scan_curtains), are
+dropped: +-0.12 m of its line, and within 1 m of the robot +-0.40 m short of its ends
+(fabric pushed or dragged by the robot; curtains.curtain_mask). A confirmed curtain not yet
+walked through stays a wall: a false detection must not delete a real wall from the
+costmaps. Dropped bins read +inf, which neither the costmaps (inf_is_valid false) nor
+slam_toolbox clear with: cells marked earlier stay until the costmap is cleared
+(maze_explorer clears the local one on PASSED), and /map keeps the curtain. While the
+robot is within 1 m of any confirmed curtain and the lidar is covered
+(curtains.BlockageMonitor), no scan is published: a covered lidar would otherwise clear
+the map around the robot.
+The floor height is published once known on /maze/floor_z (Float32, odom z, latched).
+
 Published scan frame: base_link. Ranges are horizontal distances, so for SLAM / costmaps the
 small body pitch on ramps (a few degrees) is ignored, which costs < 1 % of range.
 """
 import collections
 import math
+import time
 
 import numpy as np
 import rclpy
@@ -26,10 +40,13 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan, PointCloud2
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
-from maze_nav.core import StandSettle, body_height, cloud_xyz, estimate_floor, posture, wall_ranges
+from maze_nav.core import (StandSettle, body_height, cloud_xyz, estimate_floor, floor_accepted,
+                           posture, wall_ranges)
+from maze_nav.curtains import (BlockageMonitor, curtain_mask, curtains_from_json, invert_pose,
+                               lidar_blockage, scan_curtains)
 
 
 def quat_to_mat(q):
@@ -58,10 +75,11 @@ class WallScan(Node):
         p('odom_frame', 'odom')
         p('base_frame', 'base_link')
         p('band_low', 0.30)       # m above the maze floor
-        p('band_high', 0.43)
+        p('band_high', 0.45)  # = wall top: side walls stay in band when the body rides 2-4 cm higher
         p('floor_z', float('nan'))  # odom z of the floor; NaN = measure at startup
         p('expected_floor_drop', 0.35)  # base_link height when standing (odom_relay convention)
-        p('floor_tolerance', 0.06)      # measured floor further than this from expected: ignored
+        p('floor_tolerance', 0.06)      # measured base_link height above drop + this: ignored
+        #                                 (below core.FLOOR_MIN_BODY_HEIGHT 0.27 m too)
         p('angle_increment', math.radians(0.5))   # 720 beams; ~2.6 cm apart at 3 m (1 deg missed wall ends in the sim)
         # m; > 0 thins wall points to one per cell. OFF: at 0.10 the sim map had dotted walls
         # and free space only along spokes (1 beam in ~11 hit), and exploring stopped at start.
@@ -72,8 +90,20 @@ class WallScan(Node):
         p('body_back', 0.42)
         p('body_front', 0.32)
         p('body_half_width', 0.28)
+        # m (3D) from the lidar origin: closer points are its own near/self returns. They reached
+        # 0.29 m from the sensor and 0.37 m ahead of base_link, past body_front (run 2026-11-20
+        # 01:28: stuck "in collision" from the start). Costs walls within ~0.13 m of the nose.
+        p('lidar_min_range', 0.32)
         p('range_max', 12.0)
-        p('max_cloud_age', 0.5)   # s; older clouds are dropped
+        # s; older clouds are dropped. 0.8, not 0.5: odometry through the robot bridge is often
+        # 0.4-0.8 s late (2026-11-19), and dropping every such cloud stalled /wall_scan for
+        # seconds (costmap "/wall_scan ... not updated"). Raised 0.8 -> 1.5 (user 2026-11-20:
+        # Fast-LIO odom stalls of ~1 s). Each cloud still uses the TF AT ITS STAMP, but a scan
+        # up to 1.5 s old reaches Nav2 that late: at 0.15 m/s the robot has moved up to
+        # ~22 cm since (cmd_vel_bridge stops it after 0.5 s without lidar/odom). It hides lag,
+        # doesn't fix it: the log counts clouds used at > 0.8 s ("late clouds").
+        p('max_cloud_age', 1.5)   # s waiting for TF before dropping a cloud
+        p('curtains_topic', '/curtain/curtains')   # curtain_detector; '' = no curtain override
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self.odom, self.base = g('odom_frame'), g('base_frame')
         self.band = (g('band_low'), g('band_high'))
@@ -86,7 +116,9 @@ class WallScan(Node):
         self.rmin, self.rmax = g('range_min'), g('range_max')
         self.voxel = g('voxel_size')
         self.body = (g('body_back'), g('body_front'), g('body_half_width'))
+        self.lidar_min = g('lidar_min_range')
         self.max_age = g('max_cloud_age')
+        self.late, self.used, self.late_log_at = 0, 0, time.monotonic()
         self.floor_tries = 0
         self.floor_guessed = None    # why the floor height is a guess, if it is
         self.settle = StandSettle()  # floor measured only once the robot is fully up
@@ -98,6 +130,17 @@ class WallScan(Node):
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.height_pub = self.create_publisher(Float32, '/maze/body_height', latched)
+        self.floor_pub = self.create_publisher(Float32, '/maze/floor_z', latched)
+        self.curtains = []           # curtains.Curtain in self.curtains_frame
+        self.curtains_frame = self.odom
+        self.curtains_tf = None      # last good (tx, ty, th) of curtains_frame in odom
+        self.curtain_near = 1.0      # m: a curtain being crossed is dropped from here on
+        self.blockage = BlockageMonitor()
+        self.curtains_on = bool(g('curtains_topic'))
+        if self.curtains_on:
+            self.create_subscription(String, g('curtains_topic'), self.on_curtains, latched)
+        if self.floor is not None:
+            self.floor_pub.publish(Float32(data=float(self.floor)))
         # Never block waiting for TF: the odometry for a cloud (Fast-LIO) arrives just after
         # the cloud itself. Clouds wait in a short queue and a timer handles each one as soon
         # as TF covers its stamp (TF keeps flowing in between on this node's executor).
@@ -111,6 +154,39 @@ class WallScan(Node):
             + (f'(floor_z {self.floor:.3f} given)' if self.floor is not None
                else '(floor measured at startup: robot must be STANDING)'))
 
+    def on_curtains(self, msg):
+        frame, curtains = curtains_from_json(msg.data)
+        if not frame:
+            return
+        old = len(scan_curtains(self.curtains))
+        if len(curtains) != len(self.curtains) or len(scan_curtains(curtains)) != old:
+            self.get_logger().info(
+                f'{len(curtains)} curtain(s) ({frame}), {len(scan_curtains(curtains))} walked '
+                'through (or being): those dropped from the wall scan')
+        if frame != self.curtains_frame:
+            self.curtains_tf = None
+        self.curtains_frame, self.curtains = frame, curtains
+
+    def curtains_odom(self):
+        """The curtains in odom (latest TF curtains_frame -> odom; the last good one if TF
+        is missing for a moment), [] if never had one."""
+        if not self.curtains:
+            return []
+        if self.curtains_frame == self.odom:
+            return self.curtains
+        try:
+            t = self.tf.lookup_transform(self.curtains_frame, self.odom, Time())
+            q = t.transform.rotation
+            self.curtains_tf = invert_pose(
+                t.transform.translation.x, t.transform.translation.y,
+                math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+        except TransformException:
+            if self.curtains_tf is None:
+                self.get_logger().warn(f'no TF {self.curtains_frame} -> {self.odom}: curtains '
+                                       'not used yet', throttle_duration_sec=10.0)
+                return []
+        return [c.transformed(*self.curtains_tf) for c in self.curtains]
+
     def process_pending(self):
         while self.pending:
             msg = self.pending[0]
@@ -118,7 +194,8 @@ class WallScan(Node):
             age = (self.get_clock().now() - stamp).nanoseconds * 1e-9
             if age > self.max_age:
                 self.pending.popleft()
-                self.get_logger().warn(f'no TF within {self.max_age} s of a cloud; dropped',
+                self.get_logger().warn(f'no TF within {self.max_age} s of a cloud; dropped '
+                                       f'({self.tf_problem(msg.header.frame_id)})',
                                        throttle_duration_sec=5.0)
                 continue
             if not (self.tf.can_transform(self.odom, msg.header.frame_id, stamp)
@@ -131,7 +208,31 @@ class WallScan(Node):
             except TransformException as e:
                 self.get_logger().warn(f'no TF for cloud: {e}', throttle_duration_sec=5.0)
                 continue
+            self.used += 1
+            self.late += age > 0.8
+            if time.monotonic() - self.late_log_at >= 30.0:
+                if self.late:
+                    self.get_logger().info(f'late clouds: {self.late} of {self.used} in the last '
+                                           '30 s used 0.8-' + f'{self.max_age:.1f} s old (would '
+                                           'have been dropped at max_cloud_age 0.8)')
+                self.late, self.used, self.late_log_at = 0, 0, time.monotonic()
             self.on_cloud(msg, to_odom, base)
+
+    def tf_problem(self, cloud_frame):
+        """Which TF is missing for a dropped cloud (latest data, never blocking)."""
+        parts = []
+        for parent, child in ((self.odom, self.base), (self.base, cloud_frame)):
+            try:
+                t = self.tf.lookup_transform(parent, child, Time())
+            except TransformException as e:
+                parts.append(f'{parent}->{child} missing: {str(e).splitlines()[0][:80]}')
+                continue
+            if t.header.stamp.sec == 0 and t.header.stamp.nanosec == 0:
+                parts.append(f'{parent}->{child} static ok')
+                continue
+            age = (self.get_clock().now() - Time.from_msg(t.header.stamp)).nanoseconds * 1e-9
+            parts.append(f'{parent}->{child} latest {age:.2f} s old')
+        return '; '.join(parts)
 
     def on_cloud(self, msg, to_odom, base):
         xyz = cloud_xyz(msg.data, msg.fields, msg.point_step, msg.row_step, msg.width,
@@ -167,13 +268,26 @@ class WallScan(Node):
             expected = b.translation.z - self.drop
             seen = estimate_floor(pts, bxy, b.translation.z, self.drop)
             self.floor_tries += 1
-            if seen is not None and abs(seen - expected) <= self.floor_tolerance:
+            ok = floor_accepted(b.translation.z, seen, self.drop, self.floor_tolerance)
+            if not ok and self.floor_tries < 20:
+                # One bad cloud (robot still rising, odom z jumping) must not latch a guess:
+                # wait for the height to settle again and measure again (~20 tries).
+                self.settle = StandSettle()
+                self.get_logger().info(
+                    'floor not believable yet ('
+                    + ('none found' if seen is None else
+                       f'base_link {b.translation.z - seen:.2f} m above z = {seen:.3f}')
+                    + f'); retrying ({self.floor_tries}/20)', throttle_duration_sec=2.0)
+                return
+            if ok:
                 self.floor = seen
+                self.floor_pub.publish(Float32(data=float(seen)))
                 self.get_logger().info(
                     f'floor at odom z = {seen:.3f} (base_link {b.translation.z - seen:.2f} m '
                     'above it)')
-            elif seen is not None or self.floor_tries >= 20:
+            else:
                 self.floor = expected
+                self.floor_pub.publish(Float32(data=float(expected)))
                 self.floor_guessed = (
                     'no floor found in the lidar cloud' if seen is None else
                     f'floor seen at z = {seen:.3f}, {abs(seen - expected):.2f} m from the '
@@ -187,15 +301,30 @@ class WallScan(Node):
                     'missing or terrain/stairs show up as walls.\n'
                     '!!! Was the robot STANDING at launch? Stand it up and relaunch, or set '
                     'floor_z:=<odom z of the floor>.\n' + bar)
-            else:
-                return
 
         if self.floor_guessed:
             self.get_logger().warn(f'floor height is a GUESS ({self.floor_guessed}); '
                                    'see the FLOOR DETECTION FAILED banner above',
                                    throttle_duration_sec=30.0)
+        if self.curtains_on:         # learn the usual return count from the start
+            curtains = self.curtains_odom()
+            near_curtain = any(c.distance(bxy) < 1.0 for c in curtains)
+            n_near, n_far = lidar_blockage(pts, m[:3, 3], bxy, yaw, self.body)
+            blocked, why = self.blockage.update(n_near, n_far, learn=not near_curtain)
+            if blocked and near_curtain:
+                self.get_logger().warn(f'lidar covered at a curtain ({why}): no wall scan',
+                                       throttle_duration_sec=2.0)
+                return
+            # Being crossed: dropped only from 1 m. On the way there it stays in the scan:
+            # in a corridor it is SLAM's only feature along the way (sim 2026-11-20: map pose
+            # 0.5 m behind after a 2 m approach without it).
+            drop = [c for c in scan_curtains(curtains)
+                    if c.crossed or c.distance(bxy) < self.curtain_near]
+            if drop:
+                pts = pts[~curtain_mask(pts, drop, bxy)]
         ranges = wall_ranges(pts, bxy, yaw, self.floor, self.band, -math.pi, self.inc, self.n,
-                             self.rmin, self.rmax, self.voxel, self.body)
+                             self.rmin, self.rmax, self.voxel, self.body,
+                             sensor=m[:3, 3], sensor_min=self.lidar_min)
         scan = LaserScan()
         scan.header.stamp = msg.header.stamp
         scan.header.frame_id = self.base

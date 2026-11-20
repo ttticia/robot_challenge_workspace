@@ -27,6 +27,8 @@ setup(
             'scene_trigger = maze_nav.scene_understanding.scene_trigger:main',
             'cpu_monitor = maze_nav.cpu_monitor:main',
             'stair_detector = maze_nav.stair_detector:main',
+            'curtain_detector = maze_nav.curtain_detector:main',
+            'lidar_relay = maze_nav.lidar_relay:main',
         ],
     },
 )

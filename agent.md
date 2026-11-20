@@ -7,6 +7,8 @@ Read this before you change anything in this workspace. It covers the robot setu
 packages, the ROS topics, and how motion commands reach the Lite3. It is written for
 teammates and coding agents working from a fresh clone.
 
+Queue simulation tasks across sessions to save tokens
+
 ROS 2 **Humble**, Ubuntu 22.04, Python packages (`ament_python`). Robot: DEEP Robotics
 **Lite3** quadruped with a Livox **Mid-360** lidar and an Orbbec RGB-D camera.
 
@@ -105,8 +107,7 @@ Explores with `slam_toolbox` + Nav2 until there is open floor next to the robot,
 ### `team_perception`: perception (all on the robot)
 
 ```bash
-ros2 launch team_perception robot.launch.py                 # qr_scanner, human_detector, poster_detector
-ros2 launch team_perception robot.launch.py posters:=false  # QR scanner only
+ros2 launch team_perception robot.launch.py                 # qr_scanner only (human/poster detection removed 2026-11-19: bridge overload)
 ros2 launch team_perception robot.launch.py --show-args     # every topic name is an argument
 ```
 
@@ -237,10 +238,10 @@ ros2 topic pub --once --qos-reliability reliable --qos-durability transient_loca
 | `0x21010C03` | **Auto mode**: the robot follows `/cmd_vel` | Alias `lite3_auto`. A human operator sends it. Our code should not |
 | `0x21010C02` | **Manual mode**: the handheld controller drives, `/cmd_vel` is ignored | Alias `lite3_manual`. Safe fallback; send it on shutdown if you entered auto |
 | `0x21010D06` | Move mode (needed before gait requests) | `maze_nav`'s `cmd_vel_bridge` sends it once at launch, before the gait |
-| `0x21010401` | RUG gait, General gear (gait state 2) | **Default gait for `maze_nav`**: `cmd_vel_bridge` sends it once at launch (`gait:=rug`; `gait:=none` = don't) |
-| `0x21010407` | H-Step (high-stepping RUG gait, gait state 13) | For rough ground. See [DEEP Robotics docs](https://developer.deeprobotics.cn/docs/lite3/interfaces/control/state/) |
+| `0x21010401` | RUG gait, General gear (gait state 2) | `maze_nav`'s default until 2026-11-20 (`gait:=rug`) |
+| `0x21010407` | H-Step (high-stepping RUG gait, gait state 13) | **Default gait for `maze_nav`** since 2026-11-20 (user): `cmd_vel_bridge` sends it once at launch (`gait:=hstep`; `gait:=none` = don't). For rough ground; made the robot unsteady once (2026-11-12). See [DEEP Robotics docs](https://developer.deeprobotics.cn/docs/lite3/interfaces/control/state/) |
 | `0x21020C0E` | Possibly a software STOP | Check it against the manufacturer docs before relying on it |
-| `0x21010528` + `0x2101052A` / `0x2101052B` | Enter AI state + AI basic gait / exit AI state | Aliases `lite3_ai` / `lite3_ai_off` (the latter also sends manual mode). **In AI state the robot ignores `/cmd_vel`**: no `maze_nav` driving. Untested; `robot_info.md` §6.3 |
+| `0x21010528` + `0x2101052A` / `0x2101052B` | Enter AI state + AI basic gait / exit AI state | Aliases `lite3_ai` / `lite3_ai_off` (the latter also sends manual mode). **In AI state the robot may ignore `/cmd_vel`** (manufacturer list; untested). Exception, the user's call 2026-11-19: once lined up at the stairs, `cmd_vel_bridge` switches to AI mode and drives `ai_walk_distance` (1.2 m) forward at 0.1 m/s on `/odom`, then stops; it gives up after 8 s without progress. `robot_info.md` §6.3 |
 
 Usual sequence: robot standing (handheld controller) → gait (maze_nav: sent at launch, log
 `gait sent`) → `lite3_auto` → drive with
@@ -390,9 +391,11 @@ misses its deadlines when the CPU is short, and YOLO is the largest single load.
 - **Big consumers to watch on the robot:** `fastlio_mapping`, `human_detector` (YOLO), and
   raw depth (640x480 16-bit at 30 Hz, ~18 MB/s) deserialised in Python by BOTH
   `qr_scanner` and `poster_detector`.
-- **Knobs if navigation struggles** (in this order): `yolo_rate_hz:=3.0`, `yolo_imgsz:=480`
-  (misses far people), `posters:=false` (no survivors!). Never raise `yolo_threads` above 2:
-  ultralytics would take ~8 threads of busy-waiting OpenMP.
+- **human_detector / poster_detector are no longer launched** (2026-11-19). With them on, the
+  robot bridge fell behind (IMU 23 Hz instead of 200, lidar 1.1 s late, no map). Running them
+  again means one colour subscriber from the bridge (a relay like lidar_relay / depth_relay).
+  If run by hand: `-p rate_hz:=3.0`, and never raise threads above 2 (ultralytics would take
+  ~8 threads of busy-waiting OpenMP).
 - **Traps that already cost CPU or starved nodes here:**
   - OpenBLAS busy-wait threads (`wall_scan` hit ~190 %): `OPENBLAS_NUM_THREADS=1` is set in
     `maze_nav/__init__.py`. Set it in any new numpy-heavy process.

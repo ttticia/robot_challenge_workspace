@@ -17,3 +17,6 @@ recordings/
 runs/
 maps/
 logs/
+
+# YOLO datasets (camera frames, may show people): keep local / share outside git
+datasets/
