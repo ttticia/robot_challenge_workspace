@@ -57,7 +57,7 @@ Arguments:
   scene_trigger:=true  /scene/trigger (+ /junction_detected) when the robot faces a dead end
                    from the cell before it; /scene/junction for the explorer's junction look
                    (maze_nav/scene_understanding/scene_trigger.py)
-  creep_distance:=0.10  m straight ahead (no steering) after start, onto the SLAM map and off the
+  creep_distance:=0.20  m straight ahead (no steering) after start, onto the SLAM map and off the
                    back wall (0 = off)
   start_scan:=true turn 30 deg left, 60 right, 30 left after the creep, before exploring
   max_speed:=0.15  band_low:=0.30  band_high:=0.45  floor_z:=nan (measure)
@@ -425,7 +425,7 @@ def generate_launch_description():
                                           '/scene/junction for the junction look'),
         DeclareLaunchArgument('cpu_log', default_value='true',
                               description='log CPU per process to ~/challenge_ws/logs/cpu/'),
-        DeclareLaunchArgument('creep_distance', default_value='0.10',
+        DeclareLaunchArgument('creep_distance', default_value='0.20',
                               description='m straight ahead after start, no steering; 0 = off'),
         DeclareLaunchArgument('start_scan', default_value='true',
                               description='after the creep: turn 30 deg left, 60 right, 30 left (back to the start heading; Nav2 spins, not Pose mode)'),
