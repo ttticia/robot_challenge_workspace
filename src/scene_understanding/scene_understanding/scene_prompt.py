@@ -4,15 +4,25 @@ import re
 
 SCENE_PROMPT = """Return one compact JSON observation of the camera frame, even if no mission matches.
 For a single camera frame, describe forward, left and right from the robot's
-perspective. For a three-panel image, use the panel mapping above. Use open only for a
-visible continuing route, partially_blocked or blocked for visible obstructions,
-and unknown when the route cannot be seen. In notes, name only the decisive
+perspective. For a three-panel image, use the panel mapping above. Use open
+for a visible continuing route or a pass-through curtain as described below.
+Use blocked when a visible obstruction prevents passage. Use partially_blocked
+when an obstruction narrows the route and the remaining clearance is uncertain.
+Use unknown when there is insufficient evidence to assess the route.
+In notes, name only the decisive
 visible cue in at most six words, or use "" if status is self-explanatory.
 Mention an obstacle only once unless it affects multiple directions. Include
 terrain only when it affects a path. Do not infer distance, clearance beyond
-the frame, or movement commands. A hanging sign, curtain or cutout can obscure
-the route even when floor is visible underneath. Use unknown if clearance or
-the route behind it is unclear, or blocked if it visibly blocks the route.
+the frame, or movement commands.
+When clearly visible metal stairs lie on a route, write "Metal stairs" as that
+path's note. Report the path status according to the visible obstruction.
+
+In this arena, a recognizable flexible curtain or freely hanging paper sheet
+across a passage is a pass-through marker. If it is the only visible obstruction,
+set status to open and use notes like "Passable curtain; view beyond obscured".
+Apply this rule even if the marker hides the view behind it. If you see a
+separate obstacle, assess the route around that obstacle. If you cannot tell
+whether the hanging material is flexible or rigid, use unknown.
 
 Check all categories in every frame, even when the room is unknown.
 Room cues for scene_type: kitchen (cooking or food-prep equipment), market
