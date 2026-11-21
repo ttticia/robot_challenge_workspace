@@ -230,6 +230,43 @@ class HeightMap:
         return float(np.median(z)) if len(z) >= p.floor_under_min_cells else None
 
 
+class LocalFloor:
+    """The floor under the robot's feet (odom z) for /maze/local_floor_z, while standing.
+
+    Seen floor (HeightMap.floor_under) when the lidar saw the ground the robot now stands on;
+    otherwise base_z - stand_h, the robot's standing height. A standing robot's base_link
+    rides a fixed height over whatever it stands on, so this follows it onto a curtain cell
+    10 cm below the start plate even where the lidar never saw that floor (from the plate,
+    the lab floor is first seen ~1.8 m ahead: the inspection spot mid-cell never is;
+    simulated scans, presentation curtain maze). stand_h: base_z - wall_scan's start floor at
+    the first update, then a running mean of base_z - seen floor. Lying down (cmd_vel_bridge
+    /maze/lie_status not IDLE): None, and stand_h isn't touched - listeners keep the value
+    from just before lying, which is what the lying height and the gap need."""
+
+    def __init__(self, stand_range=(0.20, 0.45), alpha=0.2):
+        self.stand_h = None
+        self.stand_range = stand_range
+        self.alpha = alpha
+
+    def update(self, base_z, seen=None, start_floor=None, lying=False):
+        """(floor z or None, 'seen' / 'body' / None)."""
+        if lying:
+            return None, None
+        if self.stand_h is None and start_floor is not None:
+            h = base_z - start_floor
+            if self.stand_range[0] <= h <= self.stand_range[1]:
+                self.stand_h = h
+        if seen is not None:
+            h = base_z - seen
+            if self.stand_range[0] <= h <= self.stand_range[1]:
+                self.stand_h = h if self.stand_h is None else \
+                    (1 - self.alpha) * self.stand_h + self.alpha * h
+                return seen, 'seen'
+        if self.stand_h is not None:
+            return base_z - self.stand_h, 'body'
+        return None, None
+
+
 # ---------------------------------------------------------------- profiles
 @dataclass
 class Level:

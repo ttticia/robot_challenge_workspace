@@ -376,12 +376,16 @@ class StairDetector(Node):
             self.terrain_pub = self.create_publisher(String, g('terrain_topic'), 10)
         if self.hmap is not None and g('local_floor_topic'):
             self.local_floor_pub = self.create_publisher(Float32, g('local_floor_topic'), 10)
-        self.start_floor = None         # wall_scan's /maze/floor_z: terrain before floor_under
+        self.start_floor = None         # wall_scan's /maze/floor_z (start floor)
+        self.local_floor = stairs_lidar.LocalFloor()
+        self.lie_status = None          # cmd_vel_bridge /maze/lie_status: no floor while lying
         if self.terrain_pub is not None or self.local_floor_pub is not None:
             self.create_timer(1.0 / float(g('terrain_rate')), self.terrain_tick)
             self.create_subscription(Float32, '/maze/floor_z',
                                      lambda m: setattr(self, 'start_floor', float(m.data)),
                                      LATCHED)
+            self.create_subscription(String, '/maze/lie_status',
+                                     lambda m: setattr(self, 'lie_status', m.data), LATCHED)
         self.set_state('IDLE', 'looking for stairs' + (
             f' while {self.status_topic} is {"/".join(self.trigger_states)}'
             if self.status_topic else ' (no explorer handshake: drives on its own)')
@@ -822,26 +826,28 @@ class StairDetector(Node):
         self.decide(now, xy, math.atan2(r[1, 0], r[0, 0]), found, why, None)
 
     def terrain_tick(self):
-        """terrain_rate Hz: /maze/local_floor_z (floor under the feet; nothing while lying or
-        not seen yet: listeners keep the last) and /maze/terrain (JSON: level of the strip
-        ahead, max_step / low / spread m, on_rough under the robot, floor used)."""
+        """terrain_rate Hz: /maze/local_floor_z (floor under the feet, stairs_lidar.LocalFloor:
+        seen by the lidar, else base_link z - the standing height; nothing while lying down:
+        listeners keep the last) and /maze/terrain (JSON: level of the strip ahead, max_step /
+        low / spread m, on_rough under the robot, floor: seen / body / around)."""
         if self.lidar_scans == 0:
             return
         try:
             r, a = matrix_of(self.tf.lookup_transform(self.odom_frame, self.base_frame, Time()))
         except TransformException:
             return
-        under = self.hmap.floor_under(a)
-        if under is not None and self.local_floor_pub is not None:
-            self.local_floor_pub.publish(Float32(data=float(under)))
+        st = (self.lie_status or 'IDLE').split(':', 1)[0].strip()
+        lying = st not in ('IDLE', 'UNAVAILABLE')     # ERROR: not standing after a lie
+        if lying:
+            return                      # listeners keep the floor from before lying down
+        local, src = self.local_floor.update(a[2], self.hmap.floor_under(a), self.start_floor)
+        if local is not None and self.local_floor_pub is not None:
+            self.local_floor_pub.publish(Float32(data=float(local)))
         if self.terrain_pub is None:
             return
-        # Until the robot has walked over seen ground (~1 m) there is no floor under it:
-        # wall_scan's start floor, then the lowest layer around (floor_z) as a last resort.
-        ref, src = under, 'under'
-        if ref is None:
-            ref, src = (self.start_floor, 'start') if self.start_floor is not None else \
-                (self.floor_z, 'around')
+        ref = local
+        if ref is None:                 # no start floor yet either: lowest layer around
+            ref, src = self.floor_z, 'around'
         t = stairs_lidar.terrain(self.hmap, a, math.atan2(r[1, 0], r[0, 0]), ref)
         t = {k: (round(v, 3) if isinstance(v, float) else v) for k, v in t.items()}
         t['floor'] = src if ref is not None else None
