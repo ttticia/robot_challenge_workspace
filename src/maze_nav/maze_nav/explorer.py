@@ -69,6 +69,11 @@ zero Twist and goes to STAIRS; only then does stair_detector drive (face the sta
 stop in front), so it and Nav2 never both command nav_cmd_vel. Its AT_STAIRS -> AT_STAIRS here:
 hold still until /maze/start (switch gait for the stairs first), then explore on. Its ABORTED
 or IDLE, or `stairs_timeout` s in STAIRS -> back to EXPLORING. stairs_topic:='' = ignore it.
+Possible stairs seen in a junction look (user 2026-11-21): stair_detector holds them
+(/stairs/candidate) instead of checking them after the look; the junction's other ways are
+explored first (curtain_branch.Deferral with `stairs`, like a curtain there), then the robot
+goes `stairs_approach` m in front of the first riser, facing it, and releases them
+(/maze/stairs_release): stair_detector hands over for the check. No other way: released now.
 Curtains (curtain_detector.py, `curtain_topic` / `curtains_topic`; '' = ignore): confirmed
 curtains (/curtain/curtains, map frame) are cleared on the explorer's copy of /map (a wall with a
 low gap is passable), so frontiers behind one count. A goal within `curtain_goal_radius` of a
@@ -151,13 +156,18 @@ Pose-mode looks (`pose_looks`, user's call 2026-11-19): the dead-end side-wall l
 turn the robot (no Nav2 /spin). The start scan is NOT a Pose-mode look any more: it always
 turns the robot with Nav2 /spin, 30 deg left, 60 right, 30 left (user 2026-11-20). In a
 look the feet stay put and only the body yaws in Lite3 Pose mode: the explorer publishes the body yaw it wants (map-frame offset from
-the stance heading, + = left, at most `pose_max_yaw`, cut where the body box would touch a
-wall) on `pose_yaw_topic` at 10 Hz, and cmd_vel_bridge switches modes and sends the yaw axis
+the stance heading, + = left, at most `pose_max_yaw` * `pose_axis_limit`, cut where the body
+box + `pose_margin` would touch a wall over the sweep plus `pose_overshoot`; none when the box
++ `pose_margin` already touches a wall at the stance: motor buzzing, run 2026-11-21 10:56) on `pose_yaw_topic` at 10 Hz, and cmd_vel_bridge switches modes and sends the yaw axis
 command (see its doc). The hold counts from the bridge's POSING (/maze/pose_status) plus
 `pose_turn_time` s for the body to get there. Dead end: left wall, right wall, `dead_end_side_hold` s
 each. No POSING within `pose_wait` s: that look is skipped. While /maze/pose_status says
 UNAVAILABLE (sim, drive:=false, no transfer_interfaces), or with pose_looks:=false, the old
-Nav2 spins are used.
+Nav2 spins are used. Also while stair_detector's /maze/terrain says the robot stands on rough
+ground (on_rough: a block field; presentation maze 2026-11-21), so no body twist is held there.
+Objects (`object_keepout`, 2026-11-21): 'footprint' keeps only the object's box (+ margin) out
+of the explorer's map, /maze/map and the Nav2 keepout mask, so the free half of a room can be
+entered; 'cell' blocks the whole cell (never entered).
 Back of the start cell (user 2026-11-20): the pose at /maze/start is kept. No frontier goal,
 junction look or junction follow-up goes into the start cell (within 0.5 m of that pose) or
 behind it (`start_back_depth` m back, `start_back_width` m either side; the lidar never saw
@@ -207,12 +217,14 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from maze_nav.curtain_branch import (CurtainHold, Deferral, branch_mask, in_mask,
                                     needs_crossing, way_towards)
 from maze_nav.curtains import clear_curtains, curtains_from_json
-from maze_nav.scene_understanding.scene_cells import (DIRECTIONS, CellGrid, block_cells,
-                                                      cell_objects, opening,
+from maze_nav.scene_understanding.scene_cells import (DIRECTIONS, CellGrid, block_boxes,
+                                                      block_cells, cell_objects, grow_box,
+                                                      in_boxes, object_box, opening,
                                                       side_heading, side_walls, trace_way)
 from maze_nav.core import (FREE_MAX, ExitDetector, Frontier, Grid, choose_frontier,
                            clearance_map, find_frontiers, geodesic_distance,
-                           free_distance_ahead, heading_towards, max_turn, plan_creep_turn,
+                           footprint_hits, free_distance_ahead, heading_towards, max_turn,
+                           plan_creep_turn,
                            plan_turn)
 
 START_CMD = 'ros2 topic pub --once /maze/start std_msgs/msg/Empty'
@@ -295,6 +307,18 @@ def keepout_mask(cells, blocked, resolution=0.05, margin=0.1):
     return block_cells(g, cells, blocked)
 
 
+def keepout_boxes_mask(boxes, resolution=0.05, margin=0.1):
+    """Keepout mask (core.Grid, map frame) over the given map boxes: 100 inside, 0 around.
+    No boxes: a 2 x 2 free patch at the map origin (the filter keeps a mask)."""
+    if not boxes:
+        return Grid(np.zeros((2, 2), np.int16), resolution, (0.0, 0.0))
+    b = np.array(boxes, float)
+    lo, hi = b[:, :2].min(axis=0) - margin, b[:, 2:].max(axis=0) + margin
+    w, h = np.ceil((hi - lo) / resolution).astype(int)
+    g = Grid(np.zeros((int(h), int(w)), np.int16), resolution, (float(lo[0]), float(lo[1])))
+    return block_boxes(g, boxes)
+
+
 class Explorer(Node):
 
     def __init__(self):
@@ -369,6 +393,13 @@ class Explorer(Node):
         # start_back_depth m back and start_back_width m either side of its line. 0 = off.
         p('start_back_depth', 1.5)
         p('start_back_width', 0.6)
+        # Possible stairs at a junction (user 2026-11-21): stair_detector holds them
+        # (/stairs/candidate); the junction's other ways are explored first (like a curtain
+        # there), then the robot goes stairs_approach m in front of the first riser, facing it,
+        # and releases them (/maze/stairs_release) for the stair check. '' = off.
+        p('stairs_candidate_topic', '/stairs/candidate')
+        p('stairs_release_topic', '/maze/stairs_release')
+        p('stairs_approach', 1.2)
         # Occupied cells (user 2026-11-21): rooms may hold objects (footprint >= 0.3 x 0.3 m);
         # the robot doesn't enter a cell with one. A free-standing blob of map walls inside a
         # cell (all of it more than object_border m from its edges, not joined to any wall:
@@ -399,6 +430,19 @@ class Explorer(Node):
         # the planner (/maze/map). '' = off.
         p('keepout_mask_topic', '/maze/keepout_mask')
         p('keepout_info_topic', '/maze/costmap_filter_info')
+        # What a confirmed object blocks (presentation mazes 2026-11-21: the object fills about
+        # half a room, and the posters on the room's side walls are at a steep angle from the
+        # doorway). 'footprint': only the object's box (occupied map cells inside the cell,
+        # union over maps, >= 0.3 m a side) grown by object_keepout_margin, on the explorer's
+        # map, /maze/map and the keepout mask: the robot may step into the free half (and a
+        # dead end there gets the usual dead-end look from inside). 'cell': the whole cell,
+        # never entered (the 2026-11-21 morning rule; set this if entering is penalised).
+        p('object_keepout', 'footprint')
+        p('object_keepout_margin', 0.25)   # m: Nav2 doesn't inflate keepout-filter cells
+        # No Pose-mode looks while standing on rough ground (stair_detector /maze/terrain
+        # on_rough, fresh within 2 s): a held body twist on a block field (presentation maze
+        # 2026-11-21: the room is looked into from one); Nav2 spins instead. '' = off.
+        p('terrain_topic', '/maze/terrain')
         # QR codes seen but unreadable (qr_scanner /qr/unread): turn to face them until read
         # (/qr/read). '' = ignore; maze_nav.launch.py blanks both when perception:=false.
         p('qr_unread_topic', '/qr/unread')
@@ -443,7 +487,16 @@ class Explorer(Node):
         p('pose_looks', True)
         p('pose_yaw_topic', '/maze/pose_yaw')
         p('pose_status_topic', '/maze/pose_status')
-        p('pose_max_yaw', math.radians(20))   # rad; = cmd_vel_bridge pose_max_yaw
+        p('pose_max_yaw', math.radians(16))   # rad; = cmd_vel_bridge pose_max_yaw
+        # = cmd_vel_bridge pose_axis_limit: the bridge never sends more than this fraction of
+        # the full yaw axis, so the most body yaw asked is pose_max_yaw * pose_axis_limit
+        # (motor buzzing at full axis in a tight cell, run 2026-11-21 10:56).
+        p('pose_axis_limit', 0.8)
+        # m kept clear of walls by the body box around a Pose-mode yaw (vs turn_margin 0.03
+        # for a whole-robot turn): the feet are planted, so a body that touches a wall can't
+        # slip away and the motors stall against it. Also checked at the stance first.
+        p('pose_margin', 0.08)
+        p('pose_overshoot', math.radians(3))  # rad of extra sweep checked past the yaw asked
         p('pose_turn_time', 1.0)       # s after POSING for the body to reach the yaw
         p('pose_wait', 6.0)            # s for the bridge to reach POSING before skipping
         p('scan_hold', 1.5)            # s per side of a pose-mode start scan (unused: start scan spins)
@@ -481,9 +534,12 @@ class Explorer(Node):
                                       'dead_end_hold', 'dead_end_side_hold',
                                       'dead_end_look_angle', 'curtain_timeout', 'curtain_approach',
                                       'curtain_goal_radius', 'curtain_spot_wait', 'pose_looks', 'pose_max_yaw',
+                                      'pose_axis_limit', 'pose_margin', 'pose_overshoot',
                                       'start_back_depth', 'start_back_width',
+                                      'stairs_approach',
                                       'block_objects', 'cell_size', 'object_border',
                                       'object_min_extent', 'object_min_pixels', 'object_confirm',
+                                      'object_keepout', 'object_keepout_margin',
                                       'room_looks', 'room_look_radius', 'room_look_hold',
                                       'room_look_max', 'room_stair_radius',
                                       'pose_turn_time', 'pose_wait', 'scan_hold',
@@ -533,6 +589,11 @@ class Explorer(Node):
         self.stair_spots = []         # (x, y) odom: first risers of confirmed stairs
         if g('stairs_topic'):
             self.create_subscription(String, g('stairs_topic'), self.on_stairs, LATCHED)
+        self.stairs_release_pub = self.create_publisher(
+            String, g('stairs_release_topic'), 10) if g('stairs_release_topic') else None
+        if g('stairs_candidate_topic') and g('stairs_topic'):
+            self.create_subscription(String, g('stairs_candidate_topic'),
+                                     self.on_stairs_candidate, 10)
             self.create_subscription(PoseStamped, '/stairs/pose', self.on_stair_pose, LATCHED)
         if g('look_topic'):
             self.create_subscription(PointStamped, g('look_topic'), self.on_look_request, 10)
@@ -562,6 +623,9 @@ class Explorer(Node):
         self.pose = None             # running pose look {'yaw', 'hold', 'sent', 'since'}
         self.pose_live = False       # a pose target was sent and not released (NaN) yet
         self.pose_status, self.pose_status_at = None, -1e9
+        self.on_rough, self.terrain_at = False, -1e9    # stair_detector /maze/terrain
+        if g('terrain_topic'):
+            self.create_subscription(String, g('terrain_topic'), self.on_terrain, 10)
         self.pose_pub = None
         self.pose_pitch_pub = None   # dead-end tilt compensation (cmd_vel_bridge pitch axis)
         if g('pose_looks') and g('pose_yaw_topic') and g('pose_status_topic'):
@@ -607,6 +671,7 @@ class Explorer(Node):
         self.object_seen = {}        # cell -> maps in a row with an object in it
         self.blocked_cells = {}      # cell -> (extent, (x, y)): objects, never entered
         self.paint_cells = set()     # blocked cells drawn as wall (not the one the robot is in)
+        self.object_boxes = {}       # blocked cell -> (x0, y0, x1, y1) map box of its object
         self.objects_map = None      # /map message the objects were last looked for on
         self.dead_end_cells = set()  # checked dead ends (self.cells): never a goal into them
         self.room_looks = {}         # object cell -> (x, y) of the object: look in from outside
@@ -799,7 +864,7 @@ class Explorer(Node):
         hold = CurtainHold(
             hold_new=self.state in CURTAIN_STATES and self.inspecting and
             (self.paused_junction is not None or self.junction_pending()),
-            ids=[d.curtain_id for d in self.defers if not d.released])
+            ids=[d.curtain_id for d in self.defers if not d.released and d.stairs is None])
         if self.hold is None or hold.to_json() != self.hold.to_json():
             self.hold = hold
             self.hold_pub.publish(String(data=hold.to_json()))
@@ -854,11 +919,61 @@ class Explorer(Node):
             f'way(s) {others} fully first, then crossing it')
         self.publish_hold()
 
+    def release_stairs(self, sid, why):
+        if self.stairs_release_pub is not None:
+            self.stairs_release_pub.publish(String(data=json.dumps({'id': int(sid)})))
+        self.get_logger().info(f'stairs {sid}: released for the stair check ({why})')
+
+    def on_stairs_candidate(self, msg):
+        """stair_detector holds possible stairs seen at a junction: explore the junction's
+        other ways first, then go to them and release them (user 2026-11-21)."""
+        try:
+            d = json.loads(msg.data)
+            sid, frame = int(d['id']), str(d.get('frame', 'odom'))
+            ex, ey = float(d['edge'][0]), float(d['edge'][1])
+            hd = float(d['heading'])
+        except (ValueError, KeyError, TypeError, IndexError) as e:
+            self.get_logger().warn(f'bad /stairs/candidate ({e}): {msg.data[:160]}')
+            return
+        for old in self.defers:
+            if old.stairs is not None and old.stairs['id'] == sid:
+                return                               # already held
+        edge, heading = (ex, ey), hd
+        if frame != 'map':
+            try:
+                tf = self.tf.lookup_transform('map', frame, Time())
+            except TransformException:
+                return self.release_stairs(sid, f'no TF map -> {frame}')
+            t, q = tf.transform.translation, tf.transform.rotation
+            th = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+            edge = (t.x + math.cos(th) * ex - math.sin(th) * ey,
+                    t.y + math.sin(th) * ex + math.cos(th) * ey)
+            heading = hd + th
+        j = self.junction if self.state == 'JUNCTION' else self.paused_junction
+        rec = j.get('rec') if j is not None else None
+        if not rec or rec.get('cells') is None or not rec.get('paths'):
+            return self.release_stairs(sid, 'not at a junction')
+        cells, cell = rec['cells'], rec['cell']
+        dirs = [DIRECTIONS[n] for n, _ in rec['paths'] if n in DIRECTIONS]
+        sway = way_towards(cells, cell, dirs, edge)
+        others = [w for w in dirs if w != sway and
+                  not self.back_to_start(cells.centre((cell[0] + w[0], cell[1] + w[1])))]
+        rec['skip_dirs'] = list(rec.get('skip_dirs') or []) + [sway]
+        if not others:
+            return self.release_stairs(sid, f'junction {list(cell)} has no other way')
+        self.defers.append(Deferral(None, tuple(cell), cells, others, stairs={
+            'id': sid, 'edge': edge, 'heading': heading, 'done': False}))
+        self.get_logger().info(
+            f'possible stairs {sid} at junction {list(cell)} (way {sway}): exploring its other '
+            f'way(s) {others} fully first, then checking them')
+
     def branch_frontiers(self, grid, xy, frontiers):
         """With a deferred curtain: only frontiers down its junction's other ways; none left
         (done_confirm replans) -> release it and go to the spot in front of it. Returns the
         frontiers to choose from, or None to wait this replan."""
         def gone(d):
+            if d.stairs is not None:
+                return d.stairs['done']
             c = self.curtain_by_id(d.curtain_id)
             return c is None or bool(c.passed)
         before = len(self.defers)
@@ -869,11 +984,13 @@ class Explorer(Node):
         if not self.defers:
             return frontiers
         d = self.defers[-1]
-        cur = self.curtain_by_id(d.curtain_id)
+        cur = self.curtain_by_id(d.curtain_id) if d.stairs is None else None
+        name = f'curtain {d.curtain_id}' if d.stairs is None else f'stairs {d.stairs["id"]}'
         if not d.released:
-            key = (id(self.map), d.curtain_id)
+            key = (id(self.map), name)
             if self.branch_cache is None or self.branch_cache[0] != key:
-                mask = branch_mask(grid, d.cells, d.junction_cell, d.ways, [cur])
+                mask = branch_mask(grid, d.cells, d.junction_cell, d.ways,
+                                   [cur] if cur is not None else [])
                 self.branch_cache = (key, mask)
             mask = self.branch_cache[1]
             inb = [f for f in frontiers if in_mask(mask, grid, f.goal)]
@@ -882,14 +999,17 @@ class Explorer(Node):
                 return inb
             d.empty += 1
             if d.empty < self.cfg['done_confirm']:
-                self.get_logger().info(f'curtain {d.curtain_id}: no frontier left down junction '
+                self.get_logger().info(f'{name}: no frontier left down junction '
                                        f'{list(d.junction_cell)}\'s other ways ({d.empty}/'
                                        f'{self.cfg["done_confirm"]}); checking again')
                 return None
             d.released = True
-            self.get_logger().info(f'curtain {d.curtain_id}: junction {list(d.junction_cell)}\'s '
-                                   'other ways explored; going back to cross it')
+            self.get_logger().info(f'{name}: junction {list(d.junction_cell)}\'s other ways '
+                                   'explored; going back to '
+                                   + ('cross it' if d.stairs is None else 'check them'))
             self.publish_hold()
+        if d.stairs is not None:
+            return self.stairs_spot(d, xy, frontiers)
         side = cur.side_of(xy)
         spot = cur.centre - side * cur.n * self.cfg['curtain_approach']
         if any(math.hypot(spot[0] - g[0], spot[1] - g[1]) < 0.4 for g in self.failed):
@@ -910,6 +1030,24 @@ class Explorer(Node):
         heading = math.atan2(side * cur.n[1], side * cur.n[0])
         return [Frontier(goal=(float(far[0]), float(far[1])), yaw=heading, path_length=0.0,
                          size=1, centroid=(float(far[0]), float(far[1])))]
+
+    def stairs_spot(self, d, xy, frontiers):
+        """Released held stairs: go stairs_approach m in front of the first riser, facing up
+        the stairs, then release them to stair_detector (its check takes over from there)."""
+        st = d.stairs
+        ux, uy = math.cos(st['heading']), math.sin(st['heading'])
+        a = self.cfg['stairs_approach']
+        spot = (st['edge'][0] - a * ux, st['edge'][1] - a * uy)
+        if any(math.hypot(spot[0] - g[0], spot[1] - g[1]) < 0.4 for g in self.failed):
+            st['done'] = True
+            self.release_stairs(st['id'], 'the spot in front can\'t be reached; checking '
+                                'from where the robot is')
+            return frontiers
+        if math.hypot(spot[0] - xy[0], spot[1] - xy[1]) < 0.35:
+            st['done'] = True
+            self.release_stairs(st['id'], f'{a:.1f} m in front of them')
+            return None                              # stair_detector hands over next tick
+        return [Frontier(goal=spot, yaw=st['heading'], path_length=0.0, size=1, centroid=spot)]
 
     def clear_local_costmap(self, why, global_too=False):
         """Fabric pushed or dragged through a curtain is marked around the robot; nothing
@@ -961,7 +1099,7 @@ class Explorer(Node):
         cs = self.curtains_in_map()
         if not cs and not self.paint_cells:
             return self.map
-        g = block_cells(clear_curtains(Grid.from_msg(self.map), cs), self.cells, self.paint_cells)
+        g = self.block_objects(clear_curtains(Grid.from_msg(self.map), cs))
         out = OccupancyGrid()
         out.header, out.info = self.map.header, self.map.info
         out.data = array.array('b', np.asarray(g.data, np.int8).tobytes())
@@ -973,13 +1111,40 @@ class Explorer(Node):
             self.curtain_map_pub.publish(m)
         self.publish_keepout()
 
+    def footprint_keepout(self):
+        return self.cfg.get('object_keepout', 'cell') == 'footprint'
+
+    def painted_boxes(self):
+        """Map boxes of the painted objects, grown by object_keepout_margin (footprint mode)."""
+        m = self.cfg['object_keepout_margin']
+        return [(b[0] - m, b[1] - m, b[2] + m, b[3] + m) for b in
+                (self.object_boxes.get(c) for c in sorted(self.paint_cells)) if b is not None]
+
+    def block_objects(self, grid):
+        """grid with the painted objects drawn as wall: their boxes, or whole cells."""
+        if self.footprint_keepout():
+            return block_boxes(grid, self.painted_boxes())
+        return block_cells(grid, self.cells, self.paint_cells)
+
+    def in_object(self, xy):
+        """Is xy where the robot must not go: in a blocked cell ('cell'), or within
+        object_keepout_margin of an object's box ('footprint')?"""
+        if self.footprint_keepout():
+            m = self.cfg['object_keepout_margin']
+            boxes = getattr(self, 'object_boxes', {}).values()
+            return in_boxes(xy, [b for b in boxes if b is not None], m)
+        return self.cells.cell(xy) in self.blocked_cells
+
     def publish_keepout(self):
-        """The painted object cells as Nav2's keepout mask (map frame), on change."""
+        """The painted objects as Nav2's keepout mask (map frame), on change."""
         cells = frozenset(self.paint_cells)
-        if self.keepout_pub is None or cells == self.keepout_cells:
+        key = (cells, tuple(round(v, 2) for b in self.painted_boxes() for v in b)) \
+            if self.footprint_keepout() else cells
+        if self.keepout_pub is None or key == self.keepout_cells:
             return
-        self.keepout_cells = cells
-        g = keepout_mask(self.cells, cells)
+        self.keepout_cells = key
+        g = keepout_boxes_mask(self.painted_boxes()) if self.footprint_keepout() else \
+            keepout_mask(self.cells, cells)
         msg = OccupancyGrid()
         msg.header.frame_id = 'map'
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -990,7 +1155,8 @@ class Explorer(Node):
         msg.data = array.array('b', np.asarray(g.data, np.int8).tobytes())
         self.keepout_pub.publish(msg)
         if cells:
-            self.get_logger().info(f'keepout mask: {len(cells)} object cell(s) lethal for Nav2 '
+            what = 'object footprint(s)' if self.footprint_keepout() else 'object cell(s)'
+            self.get_logger().info(f'keepout mask: {len(cells)} {what} lethal for Nav2 '
                                    f'({", ".join(str(list(c)) for c in sorted(cells))})')
 
     def curtains_in_map(self):
@@ -1009,8 +1175,8 @@ class Explorer(Node):
 
     def grid_now(self):
         """/map as a Grid, curtains cleared (they are passable), occupied cells as walls."""
-        return block_cells(clear_curtains(Grid.from_msg(self.map), self.curtains_in_map()),
-                           self.cells, self.paint_cells)
+        return self.block_objects(clear_curtains(Grid.from_msg(self.map),
+                                                 self.curtains_in_map()))
 
     def update_objects(self, xy):
         """Look for objects in the cells on a new /map; block cells that keep showing one."""
@@ -1028,22 +1194,39 @@ class Explorer(Node):
                 if n >= self.cfg['object_confirm']:
                     self.blocked_cells[c] = found[c]
                     ext, (ox, oy) = found[c]
-                    self.get_logger().warn(f'cell {list(c)}: object {ext:.2f} m across at '
-                                           f'({ox:.2f}, {oy:.2f}) - occupied, not entering it')
+                    self.get_logger().warn(
+                        f'cell {list(c)}: object {ext:.2f} m across at ({ox:.2f}, {oy:.2f}) - '
+                        + ('its footprint kept out' if self.footprint_keepout() else
+                           'occupied, not entering it'))
                     self.queue_room_look(c, (ox, oy))
+            # Footprints grow as more of each object is seen (the lidar sees faces only).
+            boxes_before = dict(self.object_boxes)
+            for c in self.blocked_cells:
+                self.object_boxes[c] = grow_box(
+                    self.object_boxes.get(c),
+                    object_box(raw, self.cells, c, self.cfg['object_border']))
+            if self.object_boxes != boxes_before and self.paint_cells:
+                self.publish_curtain_map()
         # Not drawn while the robot's body may still be in it (Nav2: "in lethal space").
-        reach = 0.5 + (self.cfg['footprint_back'] + 0.08) / self.cells.size
-        u, v = self.cells.local(xy)
-        paint = {c for c in self.blocked_cells
-                 if max(abs(u - c[0]), abs(v - c[1])) > reach}
+        reach_m = self.cfg['footprint_back'] + 0.08
+        if self.footprint_keepout():
+            m = self.cfg['object_keepout_margin'] + reach_m
+            paint = {c for c in self.blocked_cells if self.object_boxes.get(c) is not None
+                     and not in_boxes(xy, [self.object_boxes[c]], m)}
+        else:
+            reach = 0.5 + reach_m / self.cells.size
+            u, v = self.cells.local(xy)
+            paint = {c for c in self.blocked_cells
+                     if max(abs(u - c[0]), abs(v - c[1])) > reach}
         if paint != self.paint_cells:
             self.paint_cells = paint
             self.publish_curtain_map()
         cg = self.current.goal if self.current is not None else None
         if cg is not None and self.goal_handle is not None and \
-                self.cells.cell(cg) in self.blocked_cells and cg not in self.blacklist:
-            self.get_logger().warn(f'goal ({cg[0]:.2f}, {cg[1]:.2f}) is in an occupied cell: '
-                                   'cancelled')
+                self.in_object(cg) and cg not in self.blacklist:
+            self.get_logger().warn(f'goal ({cg[0]:.2f}, {cg[1]:.2f}) is in an occupied '
+                                   + ('object footprint' if self.footprint_keepout() else 'cell')
+                                   + ': cancelled')
             self.blacklist.append(cg)
             self.goal_handle.cancel_goal_async()
 
@@ -2129,11 +2312,20 @@ class Explorer(Node):
                          self.cfg['dead_end_look_angle'])
         want = wrap(h - stance)
         pitch, body_yaw = j.get('pitch'), None     # tilt compensation of this dead end
+        grid, margin = self.grid_now(), self.cfg['pose_margin']
+        if abs(want) >= math.radians(5) and footprint_hits(grid, xy, stance, self.box, margin):
+            # Already within pose_margin of a wall: any body yaw would push into it (motor
+            # buzzing, run 2026-11-21 10:56: squaring up was blocked, then 2 x full axis).
+            self.get_logger().warn(f'{step["name"]}: body within {margin * 100:.0f} cm of a '
+                                   'wall here: no Pose-mode yaw, holding as it is')
+            want = 0.0
         if abs(want) >= math.radians(5):
             sign = 1 if want > 0 else -1
-            lim = min(abs(want), abs(self.cfg['pose_max_yaw']))
-            ok = max_turn(self.grid_now(), xy, stance, self.box, sign, lim,
-                          self.cfg['turn_margin'], pivot=self.pivot)
+            lim = min(abs(want), abs(self.cfg['pose_max_yaw']) * self.cfg['pose_axis_limit'])
+            over = abs(self.cfg['pose_overshoot'])
+            ok = max_turn(grid, xy, stance, self.box, sign, lim + over, margin,
+                          pivot=self.pivot) - over      # the body may swing a little past
+            ok = min(ok, lim)
             if ok < math.radians(5):
                 self.get_logger().warn(f'{step["name"]}: body yaw '
                                        f'{math.degrees(sign * lim):+.0f} deg blocked by walls; '
@@ -2154,8 +2346,21 @@ class Explorer(Node):
     def on_pose_status(self, msg):
         self.pose_status, self.pose_status_at = msg.data, time.monotonic()
 
+    def on_terrain(self, msg):
+        try:
+            rough = bool(json.loads(msg.data).get('on_rough'))
+        except (ValueError, AttributeError):
+            return
+        if rough != self.on_rough:
+            self.get_logger().info('standing on rough ground: Nav2 spins instead of Pose looks'
+                                   if rough else 'on even ground again: Pose looks')
+        self.on_rough, self.terrain_at = rough, time.monotonic()
+
     def use_pose(self):
-        """Pose-mode looks on and cmd_vel_bridge able to send them (else Nav2 spins)."""
+        """Pose-mode looks on and cmd_vel_bridge able to send them (else Nav2 spins), and not
+        standing on rough ground (/maze/terrain, fresh within 2 s)."""
+        if getattr(self, 'on_rough', False) and time.monotonic() - self.terrain_at <= 2.0:
+            return False
         return self.pose_pub is not None and self.pose_status is not None and \
             not self.pose_status.startswith('UNAVAILABLE')
 
@@ -2460,7 +2665,7 @@ class Explorer(Node):
         # The lidar never saw behind the start pose: that patch reads as a frontier, but it
         # is the start cell's back wall (run 2026-11-20 01:28: goal (-0.73, 0.44), +67 deg).
         return [f for f in fs if not self.back_to_start(f.goal)
-                and self.cells.cell(f.goal) not in self.blocked_cells
+                and not self.in_object(f.goal)
                 and self.cells.cell(f.goal) not in self.dead_end_cells]
 
     def in_reach(self, frontiers, xy):

@@ -32,6 +32,7 @@ map is well covered there and flat: no stairs), or unknown (not enough lidar cov
 fuse(): one estimate from the camera tracker, the lidar tracker and that check.
 """
 import math
+import statistics
 from dataclasses import dataclass
 
 import numpy as np
@@ -48,7 +49,10 @@ class LidarParams:
     body_back: float = 0.45             # m, robot's own points (box around base_link) dropped
     body_front: float = 0.35
     body_half_width: float = 0.30
-    keep_below: float = 0.60            # m below base_link kept (floor at ~0.35)
+    # m below base_link kept (floor at ~0.29-0.35). 0.90, was 0.60: the bottom of descending
+    # stairs (two or three steps down to the lab floor, presentation maze 2026-11-21) lies
+    # 0.25-0.45 m below the robot's floor, and 0.60 cut it off.
+    keep_below: float = 0.90
     keep_above: float = 0.30            # m above base_link kept (stairs and rails are lower)
     standing_height: float = 0.35       # base_link above the floor, for the floor search
     floor_window: float = 0.15          # m around the expected floor height searched
@@ -84,6 +88,27 @@ class LidarParams:
     veto_coverage: float = 0.7          # fraction of check bins with data to veto
     veto_flat: float = 0.04             # m: max - min height of a flat (stair-less) profile
     nearer_max: float = 0.50            # m: lidar's first riser may be this much nearer
+    # Descending stairs / drops (detect_down; presentation maze 2026-11-21: the exit is two
+    # steps DOWN from a raised cell). From the top the lidar (lowest forward ray ~22 deg down)
+    # can't see the treads: each nosing shadows the tread below it. What it does see is the
+    # robot's own floor ending at a line and, past a strip it never sees, surfaces well below
+    # it (lower treads, the floor at the bottom).
+    drop_min: float = 0.17              # m below the floor; > a raised plate's edge (~0.10)
+    drop_max: float = 0.80
+    drop_gap_max: float = 1.4           # m of unseen strip between the edge and a lower level
+    drop_floor_min: float = 0.20        # m of floor-level profile right before the edge
+    drop_wall_max: float = 0.10         # m over the floor between edge and drop = a wall there
+    drop_search: float = 3.0            # m from the robot to the edge, at most
+    drop_near: float = 0.30             # m: edges nearer than this are under the robot's nose
+    drop_lat: float = 1.2               # m either side of the robot: lateral bands
+    drop_min_bands: int = 3             # bands with an agreeing edge (0.2 m apart: >= 0.6 m)
+    drop_edge_tol: float = 0.12         # m: band edges this close to the common one agree
+    drop_min_cells: int = 10            # cells below the floor before profiling at all
+    drop_rise_guess: float = 0.12       # m per riser when the treads themselves aren't seen
+    # Floor under the robot's feet (floor_under): cells it walked over, seen while it came
+    floor_under_radius: float = 0.50
+    floor_under_window: float = 0.12    # m around base_z - standing_height
+    floor_under_min_cells: int = 10
 
 
 class HeightMap:
@@ -185,6 +210,26 @@ class HeightMap:
         return f if abs(f - guess) <= p.floor_max_off else None
 
 
+    def floor_under(self, base_xyz):
+        """Odom z of the floor under the robot's feet (median of the cells within
+        floor_under_radius, seen from further back while it walked there, within
+        floor_under_window of base_z - standing_height), or None.
+
+        Not floor(): that takes the LOWEST dense layer in a 0.5-3 m ring, which on a raised
+        plate is the lab floor seen past the maze walls. This is the surface the robot stands
+        on: the start plate, the bare floor of a room or a curtain cell 5-10 cm lower, the
+        block tops on rough terrain. Lying down it is out of the window: None (keep the last).
+        None too until the robot has walked ~1 m: the lidar never sees the floor within ~1.1 m
+        ahead, so at the start nothing under it was seen. No wider fallback disc: next to slats
+        it took the slats' smeared tops (0.155) for a 0.10 plate (simulated scans) - callers
+        fall back to wall_scan's start floor instead."""
+        p = self.p
+        guess = base_xyz[2] - p.standing_height
+        xy, h = self.cells(base_xyz[:2], p.floor_under_radius)
+        z = h[np.abs(h - guess) <= p.floor_under_window]
+        return float(np.median(z)) if len(z) >= p.floor_under_min_cells else None
+
+
 # ---------------------------------------------------------------- profiles
 @dataclass
 class Level:
@@ -229,7 +274,9 @@ def levels(centres, med, p):
                 out.append(cur)
                 cur = None
             continue
-        if cur is not None and abs(hv - np.median(cur[2])) <= p.level_tol:
+        # statistics.median, not np.median: same value, ~20x faster on these short lists
+        # (np.median per bin was most of detect()'s and detect_down()'s time, 2026-11-21).
+        if cur is not None and abs(hv - statistics.median(cur[2])) <= p.level_tol:
             cur[1] = u
             cur[2].append(hv)
         else:
@@ -240,7 +287,7 @@ def levels(centres, med, p):
     if cur is not None:
         out.append(cur)
     # One-bin runs are riser cells (mixed heights), not treads.
-    return [Level(a, b, float(np.median(hs))) for a, b, hs in out if len(hs) >= 2]
+    return [Level(a, b, float(statistics.median(hs))) for a, b, hs in out if len(hs) >= 2]
 
 
 def steps_in(lv, floor_z, p):
@@ -263,6 +310,33 @@ def steps_in(lv, floor_z, p):
         if len(us) > len(best[0]) or (len(us) == len(best[0]) and anchored and not best[2]):
             best = (us, rises, anchored)
     return best if len(best[0]) >= p.min_risers else ([], [], False)
+
+
+def steps_down(lv, floor_z, p):
+    """Longest run of downward steps from a level at the floor: (riser u positions, drops).
+    The mirror of steps_in for stairs seen from the top (only when the treads are seen,
+    e.g. from close up or pitched nose down)."""
+    best = ([], [])
+    if floor_z is None:
+        return best
+    for i in range(len(lv) - 1):
+        if abs(lv[i].h - floor_z) > p.floor_tol:
+            continue
+        us, drops = [], []
+        for a, b in zip(lv[i:], lv[i + 1:]):
+            d = a.h - b.h
+            u = (a.u1 + b.u0) / 2
+            if not (p.rise_min <= d <= p.rise_max) or b.u0 - a.u1 > p.riser_gap_max:
+                break
+            if us and not (p.tread_min <= u - us[-1] <= p.tread_max):
+                break
+            if drops and abs(d - float(np.mean(drops))) > p.rise_tol:
+                break
+            us.append(u)
+            drops.append(d)
+        if len(us) > len(best[0]):
+            best = (us, drops)
+    return best
 
 
 # ---------------------------------------------------------------- detection
@@ -470,6 +544,244 @@ def detect(hm, base_xyz, floor_z, p=None):
     return out
 
 
+def drop_edge(centres, med, floor_z, p):
+    """(edge u, drop m, levels seen below) of one profile, or None.
+
+    A floor level (within floor_tol of floor_z, >= drop_floor_min long) ending at u > 0, then
+    within drop_gap_max a run of ever lower levels (unseen bins in between are fine: the
+    nosing shadows them) reaching drop_min..drop_max below the floor, with nothing higher
+    than floor + drop_wall_max in between (a wall between the robot and lower ground seen
+    past it is not a drop). The edge is where the floor level ends: the nosing is the
+    occluding edge, so the floor is seen right up to it."""
+    lv = levels(centres, med, p)
+    for k, a in enumerate(lv[:-1]):
+        if abs(a.h - floor_z) > p.floor_tol or a.u1 <= 0.0 or \
+                a.u1 - a.u0 < p.drop_floor_min - 1e-9:
+            continue
+        run, prev = [], a
+        for b in lv[k + 1:]:
+            if b.h >= prev.h - 0.03 or b.u0 - prev.u1 > p.drop_gap_max:
+                break
+            run.append(b)
+            prev = b
+        if not run:
+            continue
+        drop = floor_z - run[-1].h
+        if not (p.drop_min <= drop <= p.drop_max):
+            continue
+        between = (centres > a.u1) & (centres < run[-1].u0) & np.isfinite(med)
+        if between.any() and np.nanmax(med[between]) > floor_z + p.drop_wall_max:
+            continue
+        return float(a.u1), float(drop), len(run)      # last floor bin: never late
+    return None
+
+
+def band_profiles(xy, h, base_xy, heading, lats, p, u_max):
+    """(u centres, median height per (lat, bin) or nan) of all lateral bands at once.
+
+    profile() per band costs a pass over every cell plus a Python loop per bin; detect_down
+    profiles ~100 bands per call (336 ms near a drop). Here the cells are rasterised once per
+    heading (profile_bin along x map cell across; the highest cell wins a raster pixel) and
+    each band is a nan-median over its raster rows."""
+    d = np.array([math.cos(heading), math.sin(heading)])
+    n = np.array([-d[1], d[0]])
+    rel = xy - np.asarray(base_xy, float)
+    u, v = rel @ d, rel @ n
+    lats = np.asarray(lats, float)
+    v0 = lats.min() - p.band_half_width
+    nv = int(math.ceil((lats.max() + p.band_half_width - v0) / p.cell)) + 1
+    nb = max(1, int(math.ceil(u_max / p.profile_bin)))
+    ui = np.floor(u / p.profile_bin).astype(np.int64)
+    vi = np.floor((v - v0) / p.cell).astype(np.int64)
+    ok = (ui >= 0) & (ui < nb) & (vi >= 0) & (vi < nv)
+    ui, vi, hh = ui[ok], vi[ok], h[ok]
+    order = np.argsort(hh, kind='stable')
+    ras = np.full((nv, nb), np.nan)
+    ras[vi[order], ui[order]] = hh[order]
+    centres = (np.arange(nb) + 0.5) * p.profile_bin
+    rows_v = v0 + (np.arange(nv) + 0.5) * p.cell
+    med = np.full((len(lats), nb), np.nan)
+    with np.errstate(all='ignore'):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            for k, lat in enumerate(lats):
+                rows = ras[np.abs(rows_v - lat) <= p.band_half_width]
+                if len(rows) == 0:
+                    continue
+                cnt = np.isfinite(rows).sum(axis=0)
+                m = np.nanmedian(rows, axis=0)
+                med[k] = np.where(cnt >= p.min_bin_cells, m, np.nan)
+    return centres, med
+
+
+def _drop_bands(xy, h, base_xy, heading, floor_z, p, lats=None):
+    """[(lateral, edge u, drop, levels below)] across lateral bands at one heading."""
+    if lats is None:
+        lats = np.arange(-p.drop_lat, p.drop_lat + 1e-9, p.band_step)
+    c, med = band_profiles(xy, h, base_xy, heading, lats, p, p.drop_search + p.drop_gap_max)
+    out = []
+    for lat, row in zip(lats, med):
+        if np.isfinite(row).sum() < 4:
+            continue
+        e = drop_edge(c, row, floor_z, p)
+        if e is not None and p.drop_near <= e[0] <= p.drop_search:
+            out.append((float(lat),) + e)
+    return out
+
+
+def _drop_group(bands, p):
+    """The bands whose edges agree with the most others (within drop_edge_tol)."""
+    if not bands:
+        return []
+    us = np.array([b[1] for b in bands])
+    votes = [(np.abs(us - x) <= p.drop_edge_tol).sum() for x in us]
+    ref = us[int(np.argmax(votes))]
+    return [b for b in bands if abs(b[1] - ref) <= p.drop_edge_tol]
+
+
+def detect_down(hm, base_xyz, floor_z, p=None):
+    """Descending stairs (or a drop of >= drop_min) near the robot: StairEstimates with
+    down=True, heading pointing down them, `along` at the top edge, best first.
+
+    floor_z: the floor the robot stands on (HeightMap.floor_under, not floor()). Cheap when
+    there is nothing: cells drop_min below that floor are counted first. Headings: bearings
+    of those cells from the robot (10 deg bins, up to 3), each tried +-20 deg, then corrected
+    by the line through the bands' edges. Treads seen (steps_down) give the riser count;
+    otherwise drop / drop_rise_guess, at least 2."""
+    p = p or hm.p
+    if floor_z is None:
+        return []
+    base_xy = np.asarray(base_xyz[:2], float)
+    xy, h = hm.cells(base_xy, p.drop_search + p.drop_gap_max)
+    low = (h < floor_z - p.drop_min) & (h > floor_z - p.drop_max)
+    if low.sum() < p.drop_min_cells:
+        return []
+    rel = xy[low] - base_xy
+    ang = np.degrees(np.arctan2(rel[:, 1], rel[:, 0]))
+    hist = np.bincount(((ang + 180) // 10).astype(int) % 36, minlength=36).astype(float)
+    sm = hist + 0.5 * (np.roll(hist, 1) + np.roll(hist, -1))
+    out = []
+    tried = []
+    for b in np.argsort(-sm)[:6]:
+        if sm[b] < p.drop_min_cells or len(tried) >= 3:
+            break
+        coarse = math.radians(b * 10 - 180 + 5)
+        if any(abs(wrap(coarse - t)) < math.radians(25) for t in tried):
+            continue
+        tried.append(coarse)
+        best = None
+        for dh in (0.0, -15.0, 15.0):
+            hd = wrap(coarse + math.radians(dh))
+            grp = _drop_group(_drop_bands(xy, h, base_xy, hd, floor_z, p), p)
+            if not grp:
+                continue
+            spread = float(np.ptp([g[1] for g in grp])) if len(grp) > 1 else 0.0
+            key = (len(grp), -spread)
+            if best is None or key > best[0]:
+                best = (key, hd, grp)
+        if best is None or len(best[2]) < p.drop_min_bands:
+            continue
+        _, heading, grp = best
+        if len(grp) >= 3:                   # the edge line's own direction, then re-profile
+            lats, us = np.array([g[0] for g in grp]), np.array([g[1] for g in grp])
+            k, _ = np.polyfit(lats, us, 1)
+            hd = wrap(heading - math.atan(k))
+            g2 = _drop_group(_drop_bands(xy, h, base_xy, hd, floor_z, p), p)
+            if len(g2) >= len(grp):
+                heading, grp = hd, g2
+        if len(grp) < p.drop_min_bands:
+            continue
+        lats = np.array([g[0] for g in grp])
+        edge = float(np.median([g[1] for g in grp]))
+        drop = float(np.median([g[2] for g in grp]))
+        # Treads seen? Profile the centre band again for downward steps from the floor.
+        mid = float(np.median(lats))
+        c, med, _ = profile(xy, h, base_xy, heading, mid, p.band_half_width,
+                            0.0, p.drop_search + p.drop_gap_max, p)
+        us, drops = steps_down(levels(c, med, p), floor_z, p)
+        if len(us) >= 2 and abs(us[0] - edge) <= p.drop_edge_tol + 0.05:
+            risers, rise = len(us), float(np.mean(drops))
+            risers = max(risers, int(round(drop / rise)))
+        else:
+            # Treads unseen: a drop >= drop_min isn't walked off in the normal gait, so it is
+            # stairs (>= 2 risers, the user's rule for stairs) whatever the real count.
+            risers = max(2, int(round(drop / p.drop_rise_guess)))
+            rise = drop / risers
+        est = StairEstimate(heading=wrap(heading), along=0.0, risers=risers, rise=rise,
+                            source='lidar', anchored=True,
+                            width=float(np.ptp(lats) + p.band_step), down=True)
+        est.along = float(base_xy @ est.d()) + edge
+        est.centre = float(base_xy @ est.n()) + mid
+        # One staircase reached from two coarse bearings: same edge point, similar heading.
+        if not any(np.linalg.norm(o.edge_point(base_xy) - est.edge_point(base_xy)) < 0.3 and
+                   abs(wrap(o.heading - est.heading)) < math.radians(30) for o in out):
+            out.append(est)
+    out.sort(key=lambda e: e.distance(base_xy))
+    return out
+
+
+# ---------------------------------------------------------------- terrain ahead
+@dataclass
+class TerrainParams:
+    """terrain(): what the robot is about to walk on (presentation mazes 2026-11-21: the only
+    way out crosses two uneven cells - a raised box / ramp, transverse slats, a field of
+    blocks of mixed heights). Heights relative to the floor under the robot."""
+    ahead: tuple = (0.25, 1.20)         # m ahead of base_link: the strip looked at
+    half_width: float = 0.30            # m either side (the body is 0.46 m wide)
+    under: float = 0.45                 # m around base_link: what it stands on now
+    min_cells: int = 12
+    ignore_above: float = 0.30          # m: walls and stairs (their own detectors)
+    rough_step: float = 0.05            # m (95th percentile) -> rough
+    rough_spread: float = 0.035         # m (90th - 10th percentile) -> rough
+    obstacle_step: float = 0.10         # m -> obstacle (slats, blocks, a plate edge up)
+    obstacle_spread: float = 0.08
+    drop_low: float = 0.06              # m below the floor (5th percentile) -> drop
+    # m spread under the robot -> standing on rough ground. Simulated scans (2 cm range noise):
+    # flat 0.01, slats 0.025, the presentation block field 0.037-0.042 (its 9 cm real spread
+    # is squashed by the per-cell maximum and the smoothing).
+    under_rough: float = 0.03
+
+
+def terrain(hm, base_xyz, yaw, floor_z, tp=None):
+    """dict: level ('even', 'rough', 'obstacle', 'drop' or 'unknown') of the strip ahead,
+    its max_step / low / spread (m, vs floor_z), cells, and under_spread / on_rough for the
+    ground under the robot (None if not seen). Cheap: two small discs of the height map."""
+    tp = tp or TerrainParams()
+    out = {'level': 'unknown', 'max_step': None, 'low': None, 'spread': None, 'cells': 0,
+           'under_spread': None, 'on_rough': False}
+    if floor_z is None:
+        return out
+    bxy = np.asarray(base_xyz[:2], float)
+    xy, h = hm.cells(bxy, math.hypot(tp.ahead[1], tp.half_width))
+    rel = xy - bxy
+    c, s = math.cos(yaw), math.sin(yaw)
+    u, v = rel[:, 0] * c + rel[:, 1] * s, -rel[:, 0] * s + rel[:, 1] * c
+    z = h - floor_z
+    ok = z <= tp.ignore_above
+    near = ok & (np.hypot(u, v) <= tp.under)
+    if near.sum() >= tp.min_cells:
+        sp = float(np.percentile(z[near], 90) - np.percentile(z[near], 10))
+        out['under_spread'], out['on_rough'] = sp, sp >= tp.under_rough
+    strip = ok & (u >= tp.ahead[0]) & (u <= tp.ahead[1]) & (np.abs(v) <= tp.half_width)
+    out['cells'] = int(strip.sum())
+    if strip.sum() < tp.min_cells:
+        return out
+    zs = z[strip]
+    step, low = float(np.percentile(zs, 95)), float(np.percentile(zs, 5))
+    spread = float(np.percentile(zs, 90) - np.percentile(zs, 10))
+    out.update(max_step=step, low=low, spread=spread)
+    if low <= -tp.drop_low:
+        out['level'] = 'drop'
+    elif step >= tp.obstacle_step or spread >= tp.obstacle_spread:
+        out['level'] = 'obstacle'
+    elif step >= tp.rough_step or spread >= tp.rough_spread:
+        out['level'] = 'rough'
+    else:
+        out['level'] = 'even'
+    return out
+
+
 # ---------------------------------------------------------------- camera check and fusion
 @dataclass
 class Check:
@@ -537,7 +849,7 @@ def fuse(cam, lid, chk, base_xy, nearer_min=0.10, yaw_tol=math.radians(10), near
     if cam is None or lid is None:
         out = cam if cam is not None else lid
         return out, '; '.join(why) or (f'{out.source} only' if out is not None else 'none')
-    if abs(wrap(cam.heading - lid.heading)) > yaw_tol or \
+    if cam.down != lid.down or abs(wrap(cam.heading - lid.heading)) > yaw_tol or \
             abs(cam.distance(xy) - lid.distance(xy)) > nearer_max:
         near = cam if cam.distance(xy) <= lid.distance(xy) else lid
         why.append(f'camera and lidar disagree; nearer ({near.source}) taken')
@@ -548,7 +860,7 @@ def fuse(cam, lid, chk, base_xy, nearer_min=0.10, yaw_tol=math.radians(10), near
                         centre=cam.centre if cam.centre is not None else lid.centre,
                         risers=max(cam.risers, lid.risers), rise=cam.rise, source='both',
                         anchored=cam.anchored or lid.anchored,
-                        width=max(cam.width, lid.width))
+                        width=max(cam.width, lid.width), down=cam.down)
     out.along = float(np.dot(near.d() * near.along, out.d()))
     why.append(f'camera and lidar agree; first riser from {"lidar" if near is lid else "camera"}')
     return out, '; '.join(why)

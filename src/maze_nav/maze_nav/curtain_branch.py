@@ -1,7 +1,8 @@
 """Which part of the map lies down a junction's other ways (no ROS here).
 
 User 2026-11-20: a curtain confirmed at a junction is crossed only after the junction's other
-ways have been explored fully (every branch off them too). maze_explorer keeps the curtain
+ways have been explored fully (every branch off them too). User 2026-11-21: the same for
+possible stairs seen at a junction (Deferral.stairs): checked only after the other ways. maze_explorer keeps the curtain
 on hold (CurtainHold) and lets only frontiers inside branch_mask() be goals until none are
 left; then it releases the curtain and drives to it.
 
@@ -69,7 +70,10 @@ def in_mask(mask, grid, xy):
 
 @dataclass
 class Deferral:
-    """A curtain confirmed at a junction, crossed once the junction's other ways are done."""
+    """A curtain confirmed at a junction, crossed once the junction's other ways are done;
+    or (curtain_id None, `stairs` set; user 2026-11-21) possible stairs seen at a junction,
+    checked once its other ways are done. stairs: {'id', 'edge' (map x, y of the first
+    riser), 'heading' (map, up the stairs), 'done'}."""
     curtain_id: int
     junction_cell: tuple
     cells: object                          # scene_cells.CellGrid
@@ -77,6 +81,7 @@ class Deferral:
     empty: int = 0                         # replans in a row with no frontier in the branch
     released: bool = False                 # branch done: driving to the curtain / crossing
     at_spot: float = None                  # monotonic time it got to the spot in front
+    stairs: dict = None
 
 
 @dataclass

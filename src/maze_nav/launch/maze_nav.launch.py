@@ -54,6 +54,8 @@ Arguments:
                    look instead of lying down
   curtain_max_gap:=0.15  m: a gap at the bottom at least this big is a hurdle, not a curtain
                    (spec < 15 cm; the lab test curtain hangs ~20 cm up -> 0.25 to test with it)
+  curtain_lab:=false  true = the lab test curtain (gap 17-25 cm, run 2026-11-21 10:48 missed it
+                   as a hurdle): curtain_max_gap and curtain_gap_max both 0.25
   scene_trigger:=true  /scene/trigger (+ /junction_detected) when the robot faces a dead end
                    from the cell before it; /scene/junction for the explorer's junction look
                    (maze_nav/scene_understanding/scene_trigger.py). The dead-end looks
@@ -162,6 +164,16 @@ RAW_DEPTH, RAW_INFO = '/camera/depth/image_raw', '/camera/depth/camera_info'
 RELAY_DEPTH, RELAY_INFO = '/camera/depth_relay/image_raw', '/camera/depth_relay/camera_info'
 
 
+LAB_CURTAIN_GAP = '0.25'   # m: the lab test curtain hangs 17-25 cm up (spec < 15 cm)
+
+
+def lab_or(name):
+    """LAB_CURTAIN_GAP with curtain_lab:=true, else the launch argument `name`."""
+    return PythonExpression([f"'{LAB_CURTAIN_GAP}' if '", LaunchConfiguration('curtain_lab'),
+                             "'.lower() in ('true', '1') else '", LaunchConfiguration(name),
+                             "'"])
+
+
 def depth_users(context):
     """team_perception (perception:=true) and stair_detector (stairs:=true), sharing ONE
     depth_relay: the raw depth comes from lite3_domain_bridge_4 (another VM), which sends a
@@ -217,15 +229,13 @@ def depth_users(context):
                          # relay (never a 2nd raw copy). No relay -> lidar only.
                          'sensors': LaunchConfiguration('curtain_sensors'),
                          'cloud_topic': crop_topic().perform(context),
-                         'max_gap': ParameterValue(LaunchConfiguration('curtain_max_gap'),
-                                                   value_type=float),
+                         'max_gap': ParameterValue(lab_or('curtain_max_gap'), value_type=float),
                          'inspect': ParameterValue(LaunchConfiguration('curtain_inspect'),
                                                    value_type=bool),
                          'inspect_mode': LaunchConfiguration('curtain_inspect_mode'),
                          'gap_min': ParameterValue(LaunchConfiguration('curtain_gap_min'),
                                                    value_type=float),
-                         'gap_max': ParameterValue(LaunchConfiguration('curtain_gap_max'),
-                                                   value_type=float),
+                         'gap_max': ParameterValue(lab_or('curtain_gap_max'), value_type=float),
                          # same wall band as wall_scan (curtain points drop out of it)
                          'band_low': ParameterValue(LaunchConfiguration('band_low'),
                                                     value_type=float),
@@ -365,6 +375,7 @@ def generate_launch_description():
     pose_max_yaw = ParameterValue(PythonExpression(['__import__("math").radians(',
                                                     arg('pose_max_yaw_deg'), ')']),
                                   value_type=float)
+    pose_axis_limit = ParameterValue(arg('pose_axis_limit'), value_type=float)
     pose_max_pitch = ParameterValue(PythonExpression(['__import__("math").radians(',
                                                       arg('pose_max_pitch_deg'), ')']),
                                     value_type=float)
@@ -404,9 +415,14 @@ def generate_launch_description():
         DeclareLaunchArgument('pose_looks', default_value='true',
                               description='dead-end side walls: yaw the body in Pose mode (feet '
                               'still) instead of Nav2 spins; false = spins (the start scan always spins)'),
-        DeclareLaunchArgument('pose_max_yaw_deg', default_value='20.0',
-                              description='body yaw at full Pose-mode axis (not measured yet; '
-                              'cmd_vel_bridge logs what /odom saw after each look)'),
+        DeclareLaunchArgument('pose_max_yaw_deg', default_value='16.0',
+                              description='body yaw at full Pose-mode axis (16 deg on /odom in '
+                              'the open start cell, 11-20; cmd_vel_bridge logs what each '
+                              'target reached)'),
+        DeclareLaunchArgument('pose_axis_limit', default_value='0.8',
+                              description='largest fraction of the full Pose-mode yaw axis sent '
+                              '(full axis buzzed the motors, 11-21 10:56); body yaw at most '
+                              'pose_max_yaw_deg x this'),
         DeclareLaunchArgument('curtain_inspect', default_value='true',
                               description='stop and inspect possible curtains (lie down and '
                               'measure the gap) before deciding'),
@@ -442,6 +458,9 @@ def generate_launch_description():
                               description='curtain_detector: clear curtains (wall with a low '
                                           'gap at the bottom) from the map and walk through '
                                           'them'),
+        DeclareLaunchArgument('curtain_lab', default_value='false',
+                              description='true = lab test curtain (17-25 cm gap): curtain_max_gap '
+                                          'and curtain_gap_max 0.25'),
         DeclareLaunchArgument('curtain_max_gap', default_value='0.15',
                               description='curtain detection: m, largest gap at the bottom of a '
                                           'curtain (spec 0.15; bigger = hurdle)'),
@@ -559,6 +578,7 @@ def generate_launch_description():
                                     'auto_stand': ParameterValue(arg('auto_stand'),
                                                                  value_type=bool),
                                     'pose_max_yaw': pose_max_yaw,
+                                    'pose_axis_limit': pose_axis_limit,
                                     'pose_max_pitch': pose_max_pitch}]),
 
         nav2_node('nav2_planner', 'planner_server'),
@@ -587,6 +607,7 @@ def generate_launch_description():
                                                       value_type=float),
                  'pose_looks': ParameterValue(arg('pose_looks'), value_type=bool),
                  'pose_max_yaw': pose_max_yaw,
+                 'pose_axis_limit': pose_axis_limit,
                  'pose_max_pitch': pose_max_pitch,
                  'scene_capture_topic': ParameterValue(PythonExpression(
                      ["'/scene/capture' if '", arg('scene_understanding'),

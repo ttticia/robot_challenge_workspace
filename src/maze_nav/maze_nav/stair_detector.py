@@ -63,6 +63,22 @@ Detection is in maze_nav/stairs.py (risers in the depth image) and maze_nav/stai
      Stairs that were handled (or aborted) are not triggered again (`suppress_radius`).
   ABORTED: no TF for 2 s, or the explorer left STAIRS (stopped, max runtime). Zero
      velocity, and the explorer goes back to exploring.
+  DESCENDING STAIRS (`descend`, presentation maze 2026-11-21: the exit is two steps down
+     from a raised cell): stairs_lidar.detect_down on the height map, against the floor
+     under the robot's feet. From the top the lidar can't see the treads (each nosing
+     shadows the one below); it sees its own floor end at a line and lower ground past an
+     unseen strip. Such an estimate has down=True, heading pointing DOWN the stairs and
+     `along` at the top edge, so 1.-4. run unchanged: the robot stops stop_distance before
+     the edge, square to it. AT_STAIRS then reads "descending stairs: ..." and
+     cmd_vel_bridge walks ai_walk_distance_down (not ai_walk_distance) in AI mode. The
+     camera detector only finds rising risers; descending stairs are lidar-only (anchored:
+     the floor under the feet was measured). Seen from ~2 m to ~0.6 m when walking towards
+     them (simulated scans, test_stairs_lidar.py); nothing is found standing still at
+     the start, before the robot has walked over (and so seen) its own floor.
+  TERRAIN (`terrain_topic`, `local_floor_topic`, `terrain_rate` Hz): /maze/terrain (JSON:
+     level even / rough / obstacle / drop / unknown of the strip 0.25-1.2 m ahead, and
+     on_rough for the ground under the robot) and /maze/local_floor_z (the floor under the
+     feet, odom z; nothing while lying down).
 
 Topics
   in : depth_topic (sensor_msgs/Image, 16UC1 mm or 32FC1 m), depth_camera_info_topic,
@@ -188,6 +204,18 @@ class StairDetector(Node):
         p('lidar_stop_margin', 0.10)           # m further back when only the lidar saw the stairs
         p('lidar_alone_trigger', True)         # lidar-only stairs (anchored on the floor) may
         #                                        start a line-up (camera blind or looking away)
+        # Descending stairs (presentation maze 2026-11-21: the exit is two steps DOWN from a
+        # raised cell): stairs_lidar.detect_down against the floor under the robot's feet.
+        # Lined up like rising stairs (stop_distance before the top edge); AT_STAIRS then
+        # starts with "descending" so cmd_vel_bridge walks ai_walk_distance_down in AI mode.
+        p('descend', True)
+        # Terrain ahead + the floor under the feet from the height map (stairs_lidar.terrain /
+        # floor_under), at terrain_rate Hz: cmd_vel_bridge (speed cap, height when lying down),
+        # curtain_detector (gap when lying down), maze_explorer (no Pose looks on rough
+        # ground). '' = not published.
+        p('terrain_topic', '/maze/terrain')
+        p('local_floor_topic', '/maze/local_floor_z')
+        p('terrain_rate', 2.0)
         # Possible-stairs check (user 2026-11-20, stair_check.py): candidates also from single
         # frames, lidar, far / beside stairs and the explorer's looks; checked after them.
         p('check', True)
@@ -224,6 +252,12 @@ class StairDetector(Node):
         # s after the explorer leaves a look (its held curtain inspection goes first).
         p('curtain_status_topic', '/curtain/status')   # '' = don't wait for curtains
         p('curtain_grace', 2.0)
+        # Possible stairs seen in a JUNCTION look (user 2026-11-21) are held, not checked after
+        # the look: published on /stairs/candidate ({id, frame, edge, heading}); maze_explorer
+        # explores the junction's other ways first, then comes back and releases them on
+        # /maze/stairs_release ({id}). Stairs seen again near a held one join it.
+        p('junction_defer', True)
+        p('stairs_release_topic', '/maze/stairs_release')
         g = lambda n: self.get_parameter(n).value  # noqa: E731
 
         self.params = StairParams(standing_height=float(g('standing_height')),
@@ -249,7 +283,8 @@ class StairDetector(Node):
         self.last_note = ''             # Approach.note last logged
         self.status_topic = g('status_topic')
         self.trigger_states = tuple(g('trigger_states'))
-        self.lidar_cfg = {n: g(n) for n in ('lidar_topic', 'lidar_veto', 'lidar_alone_trigger')}
+        self.lidar_cfg = {n: g(n) for n in ('lidar_topic', 'lidar_veto', 'lidar_alone_trigger',
+                                            'descend')}
         self.hmap = stairs_lidar.HeightMap(stairs_lidar.LidarParams(
             standing_height=float(g('standing_height')))) if g('lidar_topic') else None
         self.lidar_tracker = StairTracker(window=int(g('lidar_vote_window')),
@@ -322,6 +357,12 @@ class StairDetector(Node):
         self.curtain_status = None      # curtain_detector state, None = not heard
         self.curtain_grace = float(g('curtain_grace'))
         self.look_left_at = -1e9        # monotonic s the explorer last left a look state
+        self.junction_defer = bool(g('junction_defer'))
+        self.held = {}                  # id -> (StairEstimate, what): held until released
+        self.next_held_id = 1
+        self.cand_pub = self.create_publisher(String, '/stairs/candidate', 10)
+        if g('stairs_release_topic'):
+            self.create_subscription(String, g('stairs_release_topic'), self.on_release, 10)
         if g('curtain_status_topic'):
             self.create_subscription(String, g('curtain_status_topic'), self.on_curtain_status,
                                      LATCHED)
@@ -330,6 +371,17 @@ class StairDetector(Node):
         self.check = None               # StairCheck while CHECKING
         self.rejected = []              # (xy odom, monotonic time): checked, not stairs
         self.create_timer(0.2, self.check_tick)
+        self.terrain_pub = self.local_floor_pub = None
+        if self.hmap is not None and g('terrain_topic'):
+            self.terrain_pub = self.create_publisher(String, g('terrain_topic'), 10)
+        if self.hmap is not None and g('local_floor_topic'):
+            self.local_floor_pub = self.create_publisher(Float32, g('local_floor_topic'), 10)
+        self.start_floor = None         # wall_scan's /maze/floor_z: terrain before floor_under
+        if self.terrain_pub is not None or self.local_floor_pub is not None:
+            self.create_timer(1.0 / float(g('terrain_rate')), self.terrain_tick)
+            self.create_subscription(Float32, '/maze/floor_z',
+                                     lambda m: setattr(self, 'start_floor', float(m.data)),
+                                     LATCHED)
         self.set_state('IDLE', 'looking for stairs' + (
             f' while {self.status_topic} is {"/".join(self.trigger_states)}'
             if self.status_topic else ' (no explorer handshake: drives on its own)')
@@ -451,6 +503,8 @@ class StairDetector(Node):
                                    f'{self.check_cfg["check_min_rise"] * 100:.0f} cm: no stair '
                                    'check', throttle_duration_sec=5.0)
             return
+        if self.hold_candidate(est, xy, d, what):
+            return
         now = time.monotonic()
         old = self.candidate
         if old is None or now - old[1] > 1.0 or d < abs(old[0].distance(np.asarray(xy))):
@@ -459,6 +513,49 @@ class StairDetector(Node):
                                        + ('after the explorer\'s look' if self.in_look()
                                           else 'now'), throttle_duration_sec=3.0)
             self.candidate = (est, now, what)
+
+    def hold_candidate(self, est, xy, d, what):
+        """Possible stairs at a junction: hold them for maze_explorer (True = held)."""
+        if not (self.junction_defer and self.status_topic):
+            return False
+        pt = np.asarray(est.edge_point(np.asarray(xy, float)), float)
+        sid = self.held_id(est, xy)
+        if sid is not None:
+            self.held[sid] = (est, what)              # seen again: same hold
+            return True
+        if self.explorer != 'JUNCTION':
+            return False
+        sid, self.next_held_id = self.next_held_id, self.next_held_id + 1
+        self.held[sid] = (est, what)
+        self.cand_pub.publish(String(data=json.dumps({
+            'id': sid, 'frame': self.odom_frame, 'edge': [float(pt[0]), float(pt[1])],
+            'heading': float(est.heading), 'distance': round(float(d), 2), 'what': what})))
+        self.get_logger().info(f'possible stairs {d:.2f} m away ({what}) at a junction: held '
+                               f'(id {sid}) until its other ways are explored')
+        return True
+
+    def held_id(self, est, xy):
+        """Id of the held stairs est is (first riser within check_forget_radius), or None."""
+        pt = np.asarray(est.edge_point(np.asarray(xy, float)), float)
+        for sid, (old, _) in self.held.items():
+            if np.linalg.norm(np.asarray(old.edge_point(np.asarray(xy, float))) - pt) < \
+                    self.check_cfg['check_forget_radius']:
+                return sid
+        return None
+
+    def on_release(self, msg):
+        """maze_explorer is back in front of held stairs: check them now."""
+        try:
+            sid = int(json.loads(msg.data)['id'])
+        except (ValueError, KeyError, TypeError):
+            self.get_logger().warn(f'bad {msg.data[:80]!r} on stairs_release_topic')
+            return
+        if sid not in self.held:
+            return
+        est, what = self.held.pop(sid)
+        self.candidate = (est, time.monotonic(), f'{what}, held at a junction')
+        self.cooldown_until = 0.0
+        self.get_logger().info(f'held stairs {sid} released: checking them')
 
     def check_tick(self):
         """5 Hz: IDLE, the explorer exploring again, a fresh candidate -> HANDOVER to check."""
@@ -710,6 +807,12 @@ class StairDetector(Node):
         now = time.monotonic()
         ests = [e for e in stairs_lidar.detect(self.hmap, a, self.floor_z)
                 if not self.is_handled(e)]
+        if self.lidar_cfg['descend']:
+            # The floor under the feet, not floor_z (the lowest layer around: on a raised
+            # plate that is the lab floor past the walls, and the robot's own floor would not
+            # be "the floor" the drop starts from).
+            ests += [e for e in stairs_lidar.detect_down(self.hmap, a, self.hmap.floor_under(a))
+                     if not self.is_handled(e)]
         xy = (a[0], a[1])
         near = min(ests, key=lambda e: e.distance(np.asarray(xy))) if ests else None
         self.lidar_tracker.add(now, near)
@@ -717,6 +820,32 @@ class StairDetector(Node):
             self.note_candidate(near, xy, 'lidar height map')
         found, why = self.fused(now, xy)
         self.decide(now, xy, math.atan2(r[1, 0], r[0, 0]), found, why, None)
+
+    def terrain_tick(self):
+        """terrain_rate Hz: /maze/local_floor_z (floor under the feet; nothing while lying or
+        not seen yet: listeners keep the last) and /maze/terrain (JSON: level of the strip
+        ahead, max_step / low / spread m, on_rough under the robot, floor used)."""
+        if self.lidar_scans == 0:
+            return
+        try:
+            r, a = matrix_of(self.tf.lookup_transform(self.odom_frame, self.base_frame, Time()))
+        except TransformException:
+            return
+        under = self.hmap.floor_under(a)
+        if under is not None and self.local_floor_pub is not None:
+            self.local_floor_pub.publish(Float32(data=float(under)))
+        if self.terrain_pub is None:
+            return
+        # Until the robot has walked over seen ground (~1 m) there is no floor under it:
+        # wall_scan's start floor, then the lowest layer around (floor_z) as a last resort.
+        ref, src = under, 'under'
+        if ref is None:
+            ref, src = (self.start_floor, 'start') if self.start_floor is not None else \
+                (self.floor_z, 'around')
+        t = stairs_lidar.terrain(self.hmap, a, math.atan2(r[1, 0], r[0, 0]), ref)
+        t = {k: (round(v, 3) if isinstance(v, float) else v) for k, v in t.items()}
+        t['floor'] = src if ref is not None else None
+        self.terrain_pub.publish(String(data=json.dumps(t)))
 
     def fused(self, now, xy):
         """(estimate, why): camera tracker + lidar check + lidar tracker (stairs_lidar.fuse)."""
@@ -750,6 +879,11 @@ class StairDetector(Node):
             self.note_candidate(found, xy, f'confirmed, {found.risers} risers, seen during '
                                 f'{self.explorer}')
             return                      # stair checks come after junction checking
+        if self.state == 'IDLE' and self.held_id(found, xy) is not None:
+            self.get_logger().info(f'stairs {dist:.2f} m ahead are held (junction id '
+                                   f'{self.held_id(found, xy)}): checked after its other ways',
+                                   throttle_duration_sec=5.0)
+            return
         if self.state == 'IDLE':
             if dist > self.cfg['trigger_distance'] or now < self.cooldown_until:
                 self.note_candidate(found, xy, f'{found.risers} risers, {dist:.1f} m away')
@@ -774,7 +908,8 @@ class StairDetector(Node):
             self.announce(found, dist)
             self.lock = found
             if self.status_topic:
-                self.set_state('HANDOVER', f'stairs {dist:.2f} m ahead at '
+                self.set_state('HANDOVER', ('descending ' if found.down else '')
+                               + f'stairs {dist:.2f} m ahead at '
                                f'{math.degrees(wrap(found.heading - yaw)):+.0f} deg, '
                                f'{found.risers} risers of {found.rise * 100:.0f} cm ({why}); '
                                'waiting for maze_explorer to stop Nav2')
@@ -801,7 +936,8 @@ class StairDetector(Node):
         self.announced.append(est)
         print('stairs detected', flush=True)
         self.get_logger().info(f'stairs detected: {dist:.2f} m ahead, {est.risers} risers '
-                               f'({est.source}); lining up with them'
+                               + ('DOWN ' if est.down else '')
+                               + f'({est.source}); lining up with them'
                                if self.cfg['drive'] else
                                f'stairs detected: {dist:.2f} m ahead ({est.source})')
 
@@ -909,9 +1045,12 @@ class StairDetector(Node):
             dist = self.lock.distance(np.asarray(xy))
             err = math.degrees(wrap(self.lock.heading - yaw))
             lat = self.lock.lateral(np.asarray(xy))
-            self.set_state('AT_STAIRS', f'{dist:.2f} m from the first riser, {err:+.1f} deg off '
-                           'perpendicular' + (f', {lat * 100:+.0f} cm off centre'
-                                              if self.lock.centre is not None else '')
+            self.set_state('AT_STAIRS', ('descending stairs: ' if self.lock.down else '')
+                           + f'{dist:.2f} m from the '
+                           + ('top edge' if self.lock.down else 'first riser')
+                           + f', {err:+.1f} deg off perpendicular'
+                           + (f', {lat * 100:+.0f} cm off centre'
+                              if self.lock.centre is not None else '')
                            + (f' ({self.approach.note})' if self.approach.note else ''))
             return
         msg = Twist()
@@ -935,7 +1074,8 @@ class StairDetector(Node):
             self.stop_xy = np.asarray(xy)
         if self.lock is not None:
             self.handled.append(self.lock)
-        self.set_state('AT_STAIRS', f'NOT LINED UP: {why}{where} - line it up by hand')
+        down = 'descending stairs, ' if self.lock is not None and self.lock.down else ''
+        self.set_state('AT_STAIRS', f'NOT LINED UP: {down}{why}{where} - line it up by hand')
 
     def abort(self, why):
         self.stop_robot()

@@ -58,6 +58,12 @@ Nav2 can't talk to the robot directly, so this glue stays:
   (0x2101052B), manual mode, then Move mode + `gait` again (not valid in AI state, so lost),
   then velocity is forwarded again; the robot follows it once the operator sends lite3_auto.
   The same stairs don't switch again until /stairs/status has left AT_STAIRS.
+  Descending stairs (AT_STAIRS "descending stairs: ...", stair_detector): the walk is
+  `ai_walk_distance_down` (2.0 m: edge, 2-3 treads, the body off the last step) instead.
+- Terrain speed cap (`terrain_topic`, /maze/terrain from stair_detector, presentation mazes
+  2026-11-21): forward speed <= `terrain_rough_speed` while the strip ahead is rough, <=
+  `terrain_obstacle_speed` for obstacle / drop (slats, blocks, a plate edge). Older than
+  `terrain_timeout` s or unknown: no cap. Gait switching on terrain is NOT done (to_do.md).
   drive:=false: nothing is sent (logged).
 - Pose-mode looks (`pose_yaw_topic`, /maze/pose_yaw, std_msgs/Float32: body yaw in rad,
   + = left, relative to where the feet stand; NaN = done). The explorer uses these instead
@@ -66,8 +72,10 @@ Nav2 can't talk to the robot directly, so this glue stays:
   Twist, Nav2 velocity dropped from now on, then on /simple_cmd [manual mode (`pose_manual`)]
   -> Pose mode (0x21010D05), `pose_settle` s apart; then the yaw axis command (0x21010135,
   value in `size`, + = rotate RIGHT on the robot, so the sign is flipped here; dead zone
-  +-9553 of 32767) at 10 Hz, value = -yaw / `pose_max_yaw` * 32767 (linear, clamped; the
-  angle at full axis is NOT measured yet: the log prints what /odom saw). A target older
+  +-9553 of 32767) at 10 Hz, value = -yaw / `pose_max_yaw` * 32767 (linear, clamped to
+  `pose_axis_limit` of full axis: full axis buzzed the motors, 2026-11-21 10:56; the
+  angle at full axis is only roughly measured, 16 deg: each target's line in the log says
+  how far /odom saw the body get). A target older
   than `pose_timeout` s -> axis 0 (the robot also returns to standing by itself after 1 s
   without an axis command). NaN, or no fresh target for `pose_linger` s -> axis 0 for
   0.5 s, then Move mode -> gait [-> navigation (auto) mode 0x21010C03 if `pose_manual`],
@@ -84,7 +92,9 @@ Nav2 can't talk to the robot directly, so this glue stays:
   ends the look: send both. Pitch older than `pose_timeout` s, NaN, or leaving -> pitch 0.
 - Lie down / stand up for the curtain inspection (`lie_topic`, /maze/lie, std_msgs/Bool,
   user 2026-11-20): True (repeated at >= 1 Hz) = lie down and stay down; False, or no True for
-  `lie_linger` s = stand up. Height = /odom z - /maze/floor_z (wall_scan): standing >= 0.25 m,
+  `lie_linger` s = stand up. Height = /odom z - the floor under the feet (/maze/local_floor_z
+  from stair_detector, while younger than `local_floor_timeout` s; else /maze/floor_z from
+  wall_scan, the START floor, 5-10 cm off on a lower curtain cell): standing >= 0.25 m,
   lying <= 0.18 m (core.posture). Down: velocity forwarding STOPPED, one zero Twist,
   [manual mode (`lie_manual`)], then the stand/sit TOGGLE (0x21010202) only while the robot
   measures STANDING; LYING once it measures lying (`lie_down_timeout` s, else it stands up
@@ -96,6 +106,7 @@ Nav2 can't talk to the robot directly, so this glue stays:
   robot: whether the toggle works from auto/manual mode mid-run.
 """
 import collections
+import json
 import math
 import signal
 import threading
@@ -134,6 +145,17 @@ YAW_AXIS = 0x21010135      # pose mode: + = rotate right (robot convention)
 PITCH_AXIS = 0x21010130    # pose mode: + = lowers the head (nose down)
 AXIS_MAX = 32767
 YAW_DEAD_ZONE = 9553
+
+
+def terrain_cap(level, age, max_v, rough=0.15, obstacle=0.10, timeout=2.0):
+    """Speed limit (m/s) for the terrain ahead: /maze/terrain level, its age (s)."""
+    if level is None or age is None or age > timeout:
+        return max_v
+    if level == 'rough':
+        return min(max_v, rough)
+    if level in ('obstacle', 'drop'):
+        return min(max_v, obstacle)
+    return max_v
 
 
 def clamp(value, limit):
@@ -181,12 +203,22 @@ class CmdVelBridge(Node):
         p('ai_walk_speed', 0.1)         # m/s for that walk (clamped to max_linear)
         p('ai_walk_delay', 2.0)         # s after the AI basic gait before walking
         p('ai_walk_timeout', 8.0)       # s with < 0.1 m progress -> stop the walk
+        # m for DESCENDING stairs (/stairs/status AT_STAIRS "descending stairs: ..."): from
+        # 0.45 m before the top edge, down 2-3 treads (~0.3 m each) and the body (0.64 m) off
+        # the last step. Presentation maze 2026-11-21; NOT measured on the robot.
+        p('ai_walk_distance_down', 2.0)
         p('pose_yaw_topic', '/maze/pose_yaw')   # explorer's pose-mode looks; '' = off
-        p('pose_max_yaw', math.radians(20))     # rad of body yaw at full axis (NOT measured)
+        # rad of body yaw at full axis: 16 deg on /odom in the open start cell (11-20 run,
+        # full axis, 2.5 s); 8 deg in a tight cell on 11-21 10:56 (motor buzzing: body
+        # against a wall?). Each target's reached yaw is logged: refine from those lines.
+        p('pose_max_yaw', math.radians(16))
         p('pose_manual', True)          # manual mode before Pose mode, auto mode after
         p('pose_settle', 0.5)           # s between the mode commands
         p('pose_timeout', 0.3)          # s: target older than this -> axis 0
         p('pose_linger', 1.5)           # s at axis 0 (no target) before leaving Pose mode
+        # Fraction of the full yaw axis never exceeded: full axis holds the body at the end of
+        # its range, and the motors buzzed doing that (run 2026-11-21 10:56). = the explorer's.
+        p('pose_axis_limit', 0.8)
         p('pose_pitch_topic', '/maze/pose_pitch')   # curtain inspection: + = nose down
         p('pose_max_pitch', math.radians(20))   # rad of body pitch at full axis (NOT measured)
         p('lie_topic', '/maze/lie')     # curtain inspection: lie down (True) / stand up
@@ -194,6 +226,21 @@ class CmdVelBridge(Node):
         p('lie_linger', 2.0)            # s without a True -> stand up
         p('lie_down_timeout', 8.0)      # s for the robot to measure lying
         p('lie_up_timeout', 12.0)       # s for the robot to measure standing again
+        # Terrain speed cap (presentation mazes 2026-11-21: the only way out crosses slats,
+        # a block field and a raised box). stair_detector's /maze/terrain (JSON 'level' of the
+        # strip 0.25-1.2 m ahead), fresh within terrain_timeout s: rough -> terrain_rough_speed,
+        # obstacle or drop -> terrain_obstacle_speed; even / unknown / stale -> no cap. '' = off.
+        p('terrain_topic', '/maze/terrain')
+        p('terrain_rough_speed', 0.15)  # m/s
+        p('terrain_obstacle_speed', 0.10)
+        p('terrain_timeout', 2.0)
+        # Floor under the feet (stair_detector) for the lying / standing height, instead of
+        # wall_scan's start floor: a curtain cell or room on the bare lab floor is 5-10 cm
+        # below a raised start plate, so the robot standing there measured ~0.19 m, "not
+        # standing", and the lie-down toggle was refused. Used while younger than
+        # local_floor_timeout s (it isn't updated while lying). '' = start floor only.
+        p('local_floor_topic', '/maze/local_floor_z')
+        p('local_floor_timeout', 30.0)
         get = lambda name: self.get_parameter(name).value  # noqa: E731
         self.max_v = min(abs(get('max_linear')), HARD_MAX_V)
         self.max_w = min(abs(get('max_angular')), HARD_MAX_W)
@@ -249,6 +296,8 @@ class CmdVelBridge(Node):
         self.gait_req = get('gait')
         self.gait_code = GAITS.get(self.gait_req)
         self.walk_dist = max(0.0, float(get('ai_walk_distance')))
+        self.walk_dist_down = max(0.0, float(get('ai_walk_distance_down')))
+        self.walk_dist_now = self.walk_dist     # the stairs being switched for: up or down
         self.walk_speed = min(abs(float(get('ai_walk_speed'))), self.max_v)
         self.walk_delay = float(get('ai_walk_delay'))
         self.walk_timeout = float(get('ai_walk_timeout'))
@@ -259,6 +308,8 @@ class CmdVelBridge(Node):
         self.pose_settle = float(get('pose_settle'))
         self.pose_timeout = float(get('pose_timeout'))
         self.pose_linger = float(get('pose_linger'))
+        self.pose_axis_max = int(AXIS_MAX * min(1.0, max(0.0, float(get('pose_axis_limit')))))
+        self.pose_track = None            # [target rad, furthest body yaw towards it rad]
         self.pose_max_pitch = max(1e-3, abs(float(get('pose_max_pitch'))))
         self.pitch_target, self.pitch_at, self.pitch_used = 0.0, -1e9, False
         self.lie_manual = bool(get('lie_manual'))
@@ -270,6 +321,16 @@ class CmdVelBridge(Node):
         self.lie_steps, self.lie_next, self.lie_deadline, self.lie_stood = [], 0.0, 0.0, None
         self.lie_status = None
         self.odom_z, self.floor_z = None, None
+        self.local_floor, self.local_floor_at = None, -1e9
+        self.local_floor_timeout = float(get('local_floor_timeout'))
+        if get('local_floor_topic'):
+            self.create_subscription(Float32, get('local_floor_topic'), self.on_local_floor, 10)
+        self.terrain_level, self.terrain_at = None, -1e9
+        self.terrain_cfg = {n: float(get(n)) for n in ('terrain_rough_speed',
+                                                        'terrain_obstacle_speed',
+                                                        'terrain_timeout')}
+        if get('terrain_topic'):
+            self.create_subscription(String, get('terrain_topic'), self.on_terrain, 10)
         self.pose_phase = 'idle'          # idle -> enter -> posing -> leave -> idle
         self.pose_target, self.pose_at, self.pose_end = 0.0, -1e9, False
         self.pose_steps, self.pose_next = [], 0.0
@@ -366,6 +427,7 @@ class CmdVelBridge(Node):
             return
         if self.ai_mode or not self.ai_armed or 'NOT LINED UP' in why:
             return
+        self.walk_dist_now = self.walk_dist_down if 'descending' in why else self.walk_dist
         self.enter_ai(f'lined up at the stairs ({why.strip()})')
 
     def on_start(self, _):
@@ -443,11 +505,12 @@ class CmdVelBridge(Node):
             if self.ai_exit_wanted:
                 self.get_logger().warn('AI mode sent; leaving it again (/maze/start)')
                 self.exit_ai()
-            elif self.walk_dist > 0.0 and self.walk_speed > 0.0:
-                self.walk = {'at': now + self.walk_delay, 'start': None}
+            elif self.walk_dist_now > 0.0 and self.walk_speed > 0.0:
+                self.walk = {'at': now + self.walk_delay, 'start': None,
+                             'dist': self.walk_dist_now}
                 self.get_logger().warn(
                     f'AI mode sent (no feedback: watch the robot / controller). Walking '
-                    f'{self.walk_dist:.2f} m forward at {self.walk_speed:.2f} m/s in '
+                    f'{self.walk_dist_now:.2f} m forward at {self.walk_speed:.2f} m/s in '
                     f'{self.walk_delay:.1f} s')
             else:
                 self.get_logger().warn('AI mode sent (no feedback: watch the robot / '
@@ -523,10 +586,10 @@ class CmdVelBridge(Node):
         if w['start'] is None:
             w['start'] = self.odom_xy
             w['best'], w['best_t'] = 0.0, now
-            self.get_logger().warn(f'AI walk: driving {self.walk_dist:.2f} m forward')
+            self.get_logger().warn(f'AI walk: driving {w["dist"]:.2f} m forward')
         dx, dy = self.odom_xy[0] - w['start'][0], self.odom_xy[1] - w['start'][1]
         d = (dx * dx + dy * dy) ** 0.5
-        if d >= self.walk_dist:
+        if d >= w['dist']:
             self.end_walk(f'{d:.2f} m done')
             return
         if d >= w['best'] + 0.1:
@@ -598,7 +661,27 @@ class CmdVelBridge(Node):
     def pose_axis(self, yaw):
         """Body yaw (rad, + = left) -> yaw axis value (+ = right on the robot)."""
         v = int(round(-yaw / self.pose_max_yaw * AXIS_MAX))
-        return max(-AXIS_MAX, min(AXIS_MAX, v))
+        return max(-self.pose_axis_max, min(self.pose_axis_max, v))
+
+    def track_target(self, target, d):
+        """Per yaw target: the furthest /odom saw the body go towards it (d: signed body yaw
+        from the stance, rad, + = left) -> the real yaw at that axis value (pose_max_yaw)."""
+        t = self.pose_track
+        if t is not None and abs(target - t[0]) < math.radians(1):
+            t[1] = max(t[1], math.copysign(1.0, t[0]) * d)
+            return
+        self.log_track()
+        self.pose_track = [target, math.copysign(1.0, target) * d]
+
+    def log_track(self):
+        t, self.pose_track = self.pose_track, None
+        if t is None or abs(t[0]) < math.radians(1):
+            return
+        a = self.pose_axis(t[0])
+        self.get_logger().info(
+            f'pose target {math.degrees(t[0]):+.0f} deg -> yaw axis {a} '
+            f'({100.0 * abs(a) / AXIS_MAX:.0f} % of full): body reached '
+            f'{math.copysign(math.degrees(t[1]), t[0]):+.0f} deg on /odom')
 
     def send_axis(self, value):
         self.simple_pub.publish(self.simple_cmd(cmd_code=YAW_AXIS, size=value, type=0))
@@ -630,6 +713,7 @@ class CmdVelBridge(Node):
                 + [('Pose mode', POSE_MODE)]
             self.pose_next = now
             self.pose_yaw0, self.pose_seen, self.pose_asked = self.odom_yaw, 0.0, 0.0
+            self.pose_track = None
             self.pitch_used, self.pitch_asked = False, 0.0
             self.get_logger().warn('pose look: velocity forwarding STOPPED; '
                                    + ' -> '.join(n for n, _ in self.pose_steps))
@@ -656,10 +740,13 @@ class CmdVelBridge(Node):
                 self.send_pitch(self.pitch_axis(self.pitch_target) if pitch_fresh and fresh
                                 else 0)
             if self.odom_yaw is not None and self.pose_yaw0 is not None:
-                d = abs(math.atan2(math.sin(self.odom_yaw - self.pose_yaw0),
-                                   math.cos(self.odom_yaw - self.pose_yaw0)))
-                self.pose_seen = max(self.pose_seen, d)
+                d = math.atan2(math.sin(self.odom_yaw - self.pose_yaw0),
+                               math.cos(self.odom_yaw - self.pose_yaw0))
+                self.pose_seen = max(self.pose_seen, abs(d))
+                if fresh:
+                    self.track_target(self.pose_target, d)
             if self.pose_end or now - self.pose_fresh_at > self.pose_linger:
+                self.log_track()
                 self.pose_phase = 'leave'
                 self.pose_steps = [('Move mode', MOVE_MODE)]
                 if self.gait_code is not None:
@@ -670,7 +757,8 @@ class CmdVelBridge(Node):
                 self.set_pose_status('LEAVING')
                 self.get_logger().info(
                     f'pose look done: asked up to {math.degrees(self.pose_asked):.0f} deg '
-                    f'(pose_max_yaw {math.degrees(self.pose_max_yaw):.0f} deg at full axis), '
+                    f'(pose_max_yaw {math.degrees(self.pose_max_yaw):.0f} deg at full axis, at most '
+                    f'{100.0 * self.pose_axis_max / AXIS_MAX:.0f} % sent), '
                     f'/odom yaw moved up to {math.degrees(self.pose_seen):.0f} deg'
                     + (f'; pitch asked up to {math.degrees(self.pitch_asked):.0f} deg nose down '
                        f'(pose_max_pitch {math.degrees(self.pose_max_pitch):.0f} deg)'
@@ -705,11 +793,26 @@ class CmdVelBridge(Node):
         if self.lie_want:
             self.lie_at = time.monotonic()
 
+    def on_local_floor(self, msg):
+        self.local_floor, self.local_floor_at = float(msg.data), time.monotonic()
+
+    def on_terrain(self, msg):
+        try:
+            self.terrain_level = json.loads(msg.data).get('level')
+        except (ValueError, AttributeError):
+            return
+        self.terrain_at = time.monotonic()
+
     def body_h(self):
-        """base_link height above the floor (odom z - floor_z), or None."""
-        if self.odom_z is None or self.floor_z is None:
+        """base_link height above the floor under the feet (stair_detector, while fresh;
+        else wall_scan's start floor_z), or None."""
+        floor = self.floor_z
+        if self.local_floor is not None and \
+                time.monotonic() - self.local_floor_at <= self.local_floor_timeout:
+            floor = self.local_floor
+        if self.odom_z is None or floor is None:
             return None
-        return self.odom_z - self.floor_z
+        return self.odom_z - floor
 
     def lie_tick(self):
         now = time.monotonic()
@@ -918,10 +1021,18 @@ class CmdVelBridge(Node):
             self.pause(f'no {"/".join(stale)} for > {self.sensor_timeout} s')
             return
         out = Twist()
-        out.linear.x = max(0.0, clamp(msg.linear.x, self.max_v))
+        now = time.monotonic()
+        c = self.terrain_cfg
+        cap = terrain_cap(self.terrain_level, now - self.terrain_at, self.max_v,
+                          c['terrain_rough_speed'], c['terrain_obstacle_speed'],
+                          c['terrain_timeout'])
+        if cap < self.max_v and msg.linear.x > cap:
+            self.get_logger().info(f'terrain ahead {self.terrain_level}: speed capped at '
+                                   f'{cap:.2f} m/s', throttle_duration_sec=5.0)
+        out.linear.x = max(0.0, clamp(msg.linear.x, cap))
         out.angular.z = min_spin(out.linear.x, clamp(msg.angular.z, self.max_w),
                                  self.min_spin)
-        self.last_cmd, self.active = time.monotonic(), True
+        self.last_cmd, self.active = now, True
         self.pub.publish(out)
 
     def watchdog(self):

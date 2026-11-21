@@ -453,3 +453,63 @@ def test_crossing_back_triggers_with_looser_limits():
     t = T(back)
     t.maybe_trigger(xy, yaw)
     assert t.state == 'HANDOVER'
+
+
+# ------------------------------------------------------------------ stairs held at a junction
+
+class StairFake(Fake):
+    on_stairs_candidate = Explorer.on_stairs_candidate
+    release_stairs = Explorer.release_stairs
+    stairs_spot = Explorer.stairs_spot
+
+    def __init__(self, state):
+        super().__init__(state)
+        self.cfg['stairs_approach'] = 1.2
+        self.released = []
+        self.stairs_release_pub = SimpleNamespace(
+            publish=lambda m: self.released.append(json.loads(m.data)['id']))
+
+    def back_to_start(self, p):
+        return False
+
+
+def stairs_msg(sid=7):
+    """Possible stairs up the east way, first riser at x = 2.0 (map frame)."""
+    return SimpleNamespace(data=json.dumps({'id': sid, 'frame': 'map', 'edge': [2.0, 0.0],
+                                            'heading': 0.0}))
+
+
+def test_stairs_at_junction_wait_for_the_other_ways_then_are_checked():
+    e = StairFake('JUNCTION')
+    e.junction = look(i=1)
+    e.on_stairs_candidate(stairs_msg())
+    assert e.released == []
+    assert e.junction['rec']['skip_dirs'] == [(1, 0)]          # east = the stairs' way
+    assert len(e.defers) == 1 and e.defers[0].ways == [(0, 1)] and e.defers[0].stairs['id'] == 7
+    assert e.holds == [] or e.holds[-1].ids == []              # not a curtain hold
+    e.on_stairs_candidate(stairs_msg())                        # seen again: one hold
+    assert len(e.defers) == 1
+    g = maze_grid()
+    north, beyond, back = frontier((1.0, 2.5)), frontier((3.5, 0.0)), frontier((-0.3, 0.0))
+    assert e.branch_frontiers(g, (1.0, 1.0), [beyond, north, back]) == [north]
+    # north explored: done_confirm replans, then go 1.2 m in front of the first riser
+    assert e.branch_frontiers(g, (1.0, 2.5), [beyond, back]) is None
+    out = e.branch_frontiers(g, (1.0, 2.5), [beyond, back])
+    assert len(out) == 1 and out[0].goal == (0.8, 0.0) and out[0].yaw == 0.0
+    assert e.released == []
+    # there: release them to stair_detector, which hands over for the check
+    assert e.branch_frontiers(g, (0.85, 0.05), [beyond, back]) is None
+    assert e.released == [7]
+    assert e.branch_frontiers(g, (0.85, 0.05), [beyond, back]) == [beyond, back]
+    assert e.defers == []
+
+
+def test_stairs_released_at_once_without_another_way_or_junction():
+    e = StairFake('JUNCTION')
+    e.junction = look(i=1)
+    e.junction['rec']['paths'] = [p for p in e.junction['rec']['paths'] if p[0] == '+i']
+    e.on_stairs_candidate(stairs_msg(3))
+    assert e.released == [3] and e.defers == []
+    e = StairFake('EXPLORING')                                  # not in a junction look
+    e.on_stairs_candidate(stairs_msg(4))
+    assert e.released == [4] and e.defers == []

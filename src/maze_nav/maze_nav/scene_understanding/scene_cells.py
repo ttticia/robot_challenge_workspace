@@ -354,6 +354,78 @@ def cell_objects(grid, cells, border=0.12, min_extent=0.2, min_pixels=4, min_kno
     return out
 
 
+def object_box(grid, cells, cell, border=0.12):
+    """(x0, y0, x1, y1) map-frame box around the occupied map cells inside `cell`'s interior
+    (more than `border` m from its edges: walls and their SLAM blur stay out), or None.
+    The lidar sees only an object's faces, so this grows as more of it is seen; callers
+    keep the union over maps (grow_box)."""
+    h, w = grid.data.shape
+    res = grid.resolution
+    corners = np.array([cells.world((cell[0] + a, cell[1] + b))
+                        for a in (-0.5, 0.5) for b in (-0.5, 0.5)])
+    lo = np.floor((corners.min(axis=0) - np.array(grid.origin)) / res).astype(int)
+    hi = np.ceil((corners.max(axis=0) - np.array(grid.origin)) / res).astype(int)
+    c0, r0 = max(lo[0], 0), max(lo[1], 0)
+    c1, r1 = min(hi[0], w - 1), min(hi[1], h - 1)
+    if c1 < c0 or r1 < r0:
+        return None
+    cols, rows = np.meshgrid(np.arange(c0, c1 + 1), np.arange(r0, r1 + 1))
+    x, y = grid.origin[0] + (cols + 0.5) * res, grid.origin[1] + (rows + 0.5) * res
+    u, v = cells.local((x, y))
+    inner = np.maximum(np.abs(u - cell[0]), np.abs(v - cell[1])) <= 0.5 - border / cells.size
+    occ = inner & (grid.data[rows, cols] >= OCCUPIED_MIN)
+    if not occ.any():
+        return None
+    half = res / 2
+    return (float(x[occ].min() - half), float(y[occ].min() - half),
+            float(x[occ].max() + half), float(y[occ].max() + half))
+
+
+def grow_box(box, new, min_size=0.3):
+    """Union of two boxes (either may be None), at least min_size m on each side (the user's
+    smallest object footprint, 0.3 x 0.3 m, 2026-11-21: a box seen as one face is a line)."""
+    if new is not None:
+        box = new if box is None else (min(box[0], new[0]), min(box[1], new[1]),
+                                       max(box[2], new[2]), max(box[3], new[3]))
+    if box is None:
+        return None
+    x0, y0, x1, y1 = box
+    if x1 - x0 < min_size:
+        c = (x0 + x1) / 2
+        x0, x1 = c - min_size / 2, c + min_size / 2
+    if y1 - y0 < min_size:
+        c = (y0 + y1) / 2
+        y0, y1 = c - min_size / 2, c + min_size / 2
+    return (x0, y0, x1, y1)
+
+
+def block_boxes(grid, boxes, margin=0.0, value=100):
+    """Copy of grid with every map cell inside the given (x0, y0, x1, y1) map boxes, grown
+    by margin m, set to `value`: an object's footprint only, not its whole maze cell
+    (presentation mazes 2026-11-21: the object fills about half of a room)."""
+    if not boxes:
+        return grid
+    data = grid.data.copy()
+    h, w = data.shape
+    res = grid.resolution
+    ox, oy = grid.origin
+    for x0, y0, x1, y1 in boxes:
+        c0 = max(int(math.floor((x0 - margin - ox) / res)), 0)
+        r0 = max(int(math.floor((y0 - margin - oy) / res)), 0)
+        c1 = min(int(math.ceil((x1 + margin - ox) / res)) - 1, w - 1)
+        r1 = min(int(math.ceil((y1 + margin - oy) / res)) - 1, h - 1)
+        if c1 >= c0 and r1 >= r0:
+            data[r0:r1 + 1, c0:c1 + 1] = value
+    return Grid(data, grid.resolution, grid.origin)
+
+
+def in_boxes(xy, boxes, margin=0.0):
+    """Is the point inside any (x0, y0, x1, y1) box grown by margin?"""
+    x, y = xy
+    return any(x0 - margin <= x <= x1 + margin and y0 - margin <= y <= y1 + margin
+               for x0, y0, x1, y1 in boxes)
+
+
 def block_cells(grid, cells, blocked, value=100):
     """Copy of grid (core.Grid) with every map cell inside the given maze cells set to
     `value` (occupied), so no frontier goal and no Nav2 path goes into them."""

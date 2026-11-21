@@ -579,6 +579,10 @@ class StairEstimate:
     source: str = 'camera'              # 'camera', 'lidar' or 'both' (stairs_lidar.fuse)
     anchored: bool = False              # lidar: bottom riser seen rising from the measured floor
     width: float = 0.0                  # m of riser edge seen across (0 = unknown)
+    # Descending stairs (stairs_lidar.detect_down): heading points DOWN the stairs (the way
+    # the robot walks), `along` is the top edge (nosing) instead of the bottom riser, so the
+    # line-up (Approach) stops stop_distance before the edge exactly as before a bottom riser.
+    down: bool = False
 
     def d(self):
         return np.array([math.cos(self.heading), math.sin(self.heading)])
@@ -600,7 +604,7 @@ class StairEstimate:
         return self.d() * self.along + self.n() * c
 
     def close_to(self, other, pos_tol, yaw_tol):
-        if abs(wrap(self.heading - other.heading)) > yaw_tol:
+        if self.down != other.down or abs(wrap(self.heading - other.heading)) > yaw_tol:
             return False
         return abs(self.along - float(np.dot(other.d() * other.along, self.d()))) <= pos_tol
 
@@ -668,7 +672,7 @@ class StairTracker:
                             risers=max(e.risers for e in best),
                             rise=float(np.mean([e.rise for e in best])),
                             source=best[-1].source, anchored=any(e.anchored for e in best),
-                            width=max(e.width for e in best))
+                            width=max(e.width for e in best), down=best[-1].down)
         d, n = out.d(), out.n()
         out.along = float(np.mean([np.dot(e.d() * e.along, d) for e in best]))
         cs = [np.dot(e.edge_point(e.d() * e.along), n) for e in best if e.centre is not None]

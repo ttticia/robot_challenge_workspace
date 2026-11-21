@@ -25,6 +25,7 @@ class Fake:
         self.cfg = {'junction_trace_cells': 4, 'junction_dead_end_hold': 0.0,
                     'dead_end_side_hold': 0.0, 'dead_end_look_angle': math.radians(60),
                     'pose_max_yaw': math.radians(20), 'turn_margin': 0.03,
+                    'pose_axis_limit': 1.0, 'pose_margin': 0.03, 'pose_overshoot': 0.0,
                     'junction_follow': True, 'tilt_comp': True,
                     'tilt_threshold': math.radians(30), 'pose_max_pitch': math.radians(20),
                     'camera_frame': 'camera_link', 'pose_turn_time': 0.0, 'pose_wait': 6.0}
@@ -256,3 +257,44 @@ def test_tilted_dead_end_centre_view_is_a_pitched_pose_look():
     assert [c['view'] for c in e.captures] == ['centre', 'left', 'right']
     assert e.poses[0] == 0.0                       # centre: no body yaw, only pitch
     assert all(abs(p + math.radians(20)) < 1e-9 for p in e.pitches)   # nose up, clamped
+
+
+def test_pose_yaw_never_asks_more_than_the_axis_limit():
+    """pose_axis_limit 0.8: the bridge never sends more than 80 % of the yaw axis, so the
+    explorer asks for at most pose_max_yaw x 0.8 (motor buzzing at full axis, 11-21 10:56)."""
+    e = Fake()
+    e.cfg['pose_axis_limit'] = 0.8
+    dead_end_look(e)
+    yaws = [abs(p) for p in e.poses if not math.isnan(p) and p != 0.0]
+    assert yaws and max(yaws) <= math.radians(16) + 1e-9
+
+
+class TightFake(Fake):
+    """A wall row 7 cm beside the body box at the stance (y 1.30-1.35 m, robot at y 1.0)."""
+
+    def grid_now(self):
+        data = np.zeros((80, 80), np.int16)
+        data[46, :] = 100
+        return Grid(data, 0.05, (-2.0, -1.0))
+
+
+def test_no_pose_yaw_when_the_body_is_already_near_a_wall():
+    from maze_nav.core import footprint_hits
+    e = TightFake()
+    e.cfg['pose_margin'] = 0.08
+    g = e.grid_now()
+    assert not footprint_hits(g, e.xy, e.yaw, e.box, 0.03)      # the old check let it yaw
+    assert footprint_hits(g, e.xy, e.yaw, e.box, 0.08)
+    dead_end_look(e)
+    assert all(math.isnan(p) or p == 0.0 for p in e.poses)      # no body yaw at all
+    assert any('within 8 cm of a wall' in str(m) for m in e.logs)
+    assert [c['view'] for c in e.captures] == ['centre', 'left', 'right']   # views still held
+
+
+def test_bridge_clamps_the_yaw_axis():
+    from maze_nav.cmd_vel_bridge import AXIS_MAX, CmdVelBridge
+    b = SimpleNamespace(pose_max_yaw=math.radians(16), pose_axis_max=int(AXIS_MAX * 0.8))
+    axis = lambda y: CmdVelBridge.pose_axis(b, y)               # noqa: E731
+    assert axis(math.radians(40)) == -int(AXIS_MAX * 0.8)       # + = left -> negative axis
+    assert axis(math.radians(-40)) == int(AXIS_MAX * 0.8)
+    assert axis(math.radians(8)) == -round(AXIS_MAX / 2)

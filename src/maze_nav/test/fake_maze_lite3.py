@@ -23,6 +23,11 @@ windows at each end are see-through (only with occlusion on: the plain sim sees 
 wall), and "board_side" (-1/+1, default -1) puts the board on the min or max face. The body
 still collides with the whole bounding box. A maze with an extru wall turns occlusion on too.
 test/extru_maze.json: the curtain corridor built from extru walls.
+A "steps" solid is a staircase with explicit size: its min/max box is the footprint, "down"
+("+x", "-x", "+y" or "-y") the way it descends, "treads" the number of treads; tread i (from
+the high end) is at max_z - i * rise, rise = (max_z - min_z) / treads, and the ground past
+the last tread is at min_z. test/maze_curtains.json, test/maze_stairs.json: the two
+presentation mazes (resource/Presentation, 2026-11-21; make_presentation_mazes.py).
 
 Always run it on a spare domain so it cannot meet the real robot:
 
@@ -86,6 +91,34 @@ def surface(lo, hi, step, faces='all'):
     return np.concatenate(out)
 
 
+def steps_height(s, x, y):
+    """Height of a "steps" solid at (x, y) inside its footprint (see the module doc)."""
+    lo, hi = s['min'], s['max']
+    n = int(s.get('treads', 2))
+    axis = 0 if s['down'][1] == 'x' else 1
+    length = hi[axis] - lo[axis]
+    v = (x, y)[axis]
+    t = (v - lo[axis]) / length if s['down'][0] == '+' else (hi[axis] - v) / length
+    i = min(n - 1, max(0, int(t * n)))
+    return hi[2] - i * (hi[2] - lo[2]) / n
+
+
+def steps_risers(s):
+    """[(z_low, z_high, edge coordinate)] of a "steps" solid's riser faces (down its axis),
+    the last one down to min_z at the far end."""
+    lo, hi = s['min'], s['max']
+    n = int(s.get('treads', 2))
+    axis = 0 if s['down'][1] == 'x' else 1
+    rise = (hi[2] - lo[2]) / n
+    length = hi[axis] - lo[axis]
+    out = []
+    for i in range(1, n + 1):
+        f = i / n
+        edge = lo[axis] + f * length if s['down'][0] == '+' else hi[axis] - f * length
+        out.append((hi[2] - i * rise, hi[2] - (i - 1) * rise, edge))
+    return out
+
+
 class Maze:
     """Example maze geometry: points for the lidar and a height map for the feet."""
 
@@ -124,6 +157,8 @@ class Maze:
                 else:
                     t = (y - lo[1]) / (hi[1] - lo[1]) if uy > 0 else (hi[1] - y) / (hi[1] - lo[1])
                 h = max(h, lo[2] + t * (hi[2] - lo[2]))
+            elif k == 'steps':
+                h = max(h, steps_height(s, x, y))
             elif k == 'stairs':                  # 3 steps up, 3 down, 0.15 m treads, 0.12 m rise
                 c = (lo[0] + hi[0]) / 2
                 n = 3 - min(2, int((abs(x - c) + 0.075) / 0.15)) if abs(x - c) < 0.375 else 0
@@ -148,7 +183,7 @@ class Maze:
         # odom -0.45 (lab floor) instead of -0.35 (the tiles the robot stands on) and guessed.
         covered = np.zeros(len(g), bool)
         for s in self.solids:
-            if s['kind'] in ('tile', 'mat', 'block', 'wedge', 'stairs'):
+            if s['kind'] in ('tile', 'mat', 'block', 'wedge', 'stairs', 'steps'):
                 lo, hi = s['min'], s['max']
                 covered |= (g[:, 0] >= lo[0]) & (g[:, 0] <= hi[0]) & \
                     (g[:, 1] >= lo[1]) & (g[:, 1] <= hi[1])
@@ -174,6 +209,19 @@ class Maze:
                 xx, yy = np.meshgrid(xs, ys)
                 zz = np.vectorize(self.height)(xx, yy)
                 add(np.stack([xx.ravel(), yy.ravel(), zz.ravel()], 1), False)
+            elif k == 'steps':                   # treads + riser faces
+                xs, ys = np.arange(lo[0], hi[0], 0.03), np.arange(lo[1], hi[1], 0.03)
+                xx, yy = np.meshgrid(xs, ys)
+                zz = np.vectorize(lambda a, b: steps_height(s, a, b))(xx, yy)
+                tread = np.stack([xx.ravel(), yy.ravel(), zz.ravel()], 1)
+                rise = []
+                for r0, r1, edge in steps_risers(s):
+                    for z in np.arange(r0, r1, 0.02):
+                        if s['down'][1] == 'x':
+                            rise += [(edge, y, z) for y in ys]
+                        else:
+                            rise += [(x, edge, z) for x in xs]
+                add(np.concatenate([tread, np.array(rise).reshape(-1, 3)]), False)
             elif k == 'stairs':
                 xs, zs = np.arange(lo[0], hi[0], 0.02), np.arange(0, hi[2], 0.03)
                 ys = np.arange(lo[1], hi[1], 0.03)
