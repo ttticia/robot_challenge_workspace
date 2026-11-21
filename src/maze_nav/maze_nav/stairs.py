@@ -94,10 +94,10 @@ class StairParams:
     face_half_window: float = 0.06      # m either side of a peak
     min_height: float = -0.25           # faces considered from this far below the floor
     max_height: float = 0.75            # ... to this far above it
-    rise_min: float = 0.06              # per step; a faint first step must not break the chain
-    mean_rise_min: float = 0.075        # whole chain: 6-7 cm chains were real-lab false hits
+    rise_min: float = 0.08              # per step, > 8 cm counts (user 2026-11-21; was 0.06)
+    mean_rise_min: float = 0.08         # whole chain (user 2026-11-21; was 0.075)
     rise_max: float = 0.22
-    first_rise_min: float = 0.03
+    first_rise_min: float = 0.03        # a riser face's own measured height (reads short)
     rise_tol: float = 0.05
     chain_tol: float = 0.04             # a face may start this far below the one before ends
     chain_gap: float = 0.08             # ... or this far above (face ends come out short)
@@ -578,6 +578,7 @@ class StairEstimate:
     rise: float = 0.0
     source: str = 'camera'              # 'camera', 'lidar' or 'both' (stairs_lidar.fuse)
     anchored: bool = False              # lidar: bottom riser seen rising from the measured floor
+    width: float = 0.0                  # m of riser edge seen across (0 = unknown)
 
     def d(self):
         return np.array([math.cos(self.heading), math.sin(self.heading)])
@@ -607,7 +608,8 @@ class StairEstimate:
 def to_odom(det, xy, yaw):
     """Detection (level frame at base_link pose xy, yaw in odom) -> StairEstimate."""
     heading = wrap(yaw + det.yaw)
-    est = StairEstimate(heading=heading, along=0.0, risers=det.risers, rise=det.rise)
+    est = StairEstimate(heading=heading, along=0.0, risers=det.risers, rise=det.rise,
+                        width=float(det.width))
     xy = np.asarray(xy, float)
     est.along = float(np.dot(xy, est.d())) + det.distance
     if det.centre_ok:
@@ -665,7 +667,8 @@ class StairTracker:
         out = StairEstimate(heading=hd, along=0.0,
                             risers=max(e.risers for e in best),
                             rise=float(np.mean([e.rise for e in best])),
-                            source=best[-1].source, anchored=any(e.anchored for e in best))
+                            source=best[-1].source, anchored=any(e.anchored for e in best),
+                            width=max(e.width for e in best))
         d, n = out.d(), out.n()
         out.along = float(np.mean([np.dot(e.d() * e.along, d) for e in best]))
         cs = [np.dot(e.edge_point(e.d() * e.along), n) for e in best if e.centre is not None]

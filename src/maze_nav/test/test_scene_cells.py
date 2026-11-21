@@ -322,3 +322,92 @@ def test_trace_way_junction_unknown_and_long():
     op = _maze_openings(_edges(*[((k, 0), (k + 1, 0)) for k in range(20)]))
     t = trace_way(op, (0, 0), (1, 0), max_cells=5)
     assert t['kind'] == 'open' and t['length'] == 5
+
+
+# ------------------------------------------------------------------ occupied cells
+
+def test_cell_objects_finds_a_box_face_not_the_walls():
+    from maze_nav.scene_understanding.scene_cells import block_cells, cell_objects
+    cells = CellGrid()
+    g = open_grid(-0.5, -0.5, 3.0)                      # cells (0..2, 0..2) all mapped free
+    for x in (0.5, 1.5):                                # walls on cell edges: not objects
+        draw_wall_x(g, x, -0.5, 2.5)
+    draw_wall_x(g, 1.1, 0.85, 1.15)                     # 0.3 m face of a box in cell (1, 1)
+    g.data[int((0.2 + 0.5) / RES), int((0.2 + 0.5) / RES)] = 100   # one speck in (0, 0)
+    found = cell_objects(g, cells)
+    assert list(found) == [(1, 1)]
+    ext, xy = found[(1, 1)]
+    assert 0.25 <= ext <= 0.4 and abs(xy[0] - 1.1) < 0.06 and abs(xy[1] - 1.0) < 0.06
+
+    b = block_cells(g, cells, {(1, 1)})
+    inside = b.cell((1.0, 1.0)), b.cell((0.6, 1.4))
+    assert all(b.data[c[1], c[0]] == 100 for c in inside)
+    assert b.data[b.cell((1.0, 0.3))[1], b.cell((1.0, 0.3))[0]] == 0      # (1, 0) untouched
+    assert g.data[g.cell((1.0, 1.0))[1], g.cell((1.0, 1.0))[0]] == 0      # original kept
+
+
+def test_cell_objects_skips_cells_mostly_unknown():
+    from maze_nav.scene_understanding.scene_cells import cell_objects
+    g = open_grid(-0.5, -0.5, 2.0, value=-1)
+    draw_wall_x(g, 1.0, 0.85, 1.15)
+    assert cell_objects(g, CellGrid()) == {}
+
+
+def test_cell_objects_ignores_walls_off_the_grid_lines():
+    """Robot 2026-11-21 08:32: real walls 0.10-0.15 m off the 1 m grid (it starts at the start
+    pose) and sim walls through a cell's middle were blocked as objects. A blob that reaches
+    out of the cell interior is a wall; a free-standing box still counts."""
+    from maze_nav.scene_understanding.scene_cells import cell_objects
+    cells = CellGrid()
+    g = open_grid(-0.5, -0.5, 4.0)                      # cells (0..3, 0..3) all mapped free
+    draw_wall_x(g, 0.65, -0.5, 3.5)                     # 0.15 m inside cells (1, *)
+    draw_wall_y(g, 2.0, 1.5, 3.5)                       # through the middle of (2, 2), (3, 2)
+    draw_wall_x(g, 2.66, 0.5, 1.5)                      # one cell edge to edge, 0.16 m inside
+    draw_wall_x(g, 3.0, -0.15, 0.15)                    # 0.3 m box face, free-standing
+    found = cell_objects(g, cells)
+    assert list(found) == [(3, 0)]
+    assert abs(found[(3, 0)][1][0] - 3.0) < 0.06
+
+
+def test_cell_objects_box_touching_a_wall_is_not_found():
+    """The documented price of the wall rule: a box drawn against a wall merges with it."""
+    from maze_nav.scene_understanding.scene_cells import cell_objects
+    g = open_grid(-0.5, -0.5, 3.0)
+    draw_wall_x(g, 1.5, -0.5, 2.5)
+    draw_wall_y(g, 1.0, 1.15, 1.5)                      # 0.35 m face, end on the wall
+    assert cell_objects(g, CellGrid()) == {}
+    draw_wall_y(g, 0.0, 1.0, 1.3)                       # 0.3 m face 0.2 m clear of it
+    assert list(cell_objects(g, CellGrid())) == [(1, 0)]
+
+
+def _sim_maze_map(name):
+    """The sim maze's walls, rails and lab walls rasterised into an all-known odom map, as
+    wall_scan + SLAM would draw them (start pose = odom origin, facing maze +y)."""
+    import json
+    import os
+    d = json.load(open(os.path.join(os.path.dirname(__file__), name)))
+    x0, x1, y0, y1 = d.get('room', (-7.0, 3.0, -3.5, 4.5))      # fake_maze_lite3.ROOM
+    sx, sy, sth = d.get('start', (0.0, 0.0, math.pi / 2))
+    boxes = [(s['min'][0], s['min'][1], s['max'][0], s['max'][1])
+             for s in d['solids'] if s['kind'] in ('wall', 'rail')]
+    boxes += [(x0, y0, x1, y0 + 0.05), (x0, y1 - 0.05, x1, y1),
+              (x0, y0, x0 + 0.05, y1), (x1 - 0.05, y0, x1, y1)]
+    g = open_grid(-6.0, -9.0, 15.0)
+    h, w = g.data.shape
+    cols, rows = np.meshgrid(np.arange(w), np.arange(h))
+    ox, oy = g.origin[0] + (cols + 0.5) * RES, g.origin[1] + (rows + 0.5) * RES
+    c, s = math.cos(sth), math.sin(sth)                         # odom -> maze
+    mx, my = sx + c * ox - s * oy, sy + s * ox + c * oy
+    for bx0, by0, bx1, by1 in boxes:
+        pad = RES / 2                                           # thin walls still hit a cell
+        g.data[(mx >= bx0 - pad) & (mx <= bx1 + pad) & (my >= by0 - pad) & (my <= by1 + pad)] = 100
+    return g
+
+
+def test_cell_objects_sim_mazes():
+    """Example maze (no objects; the sim run blocked 9 wall cells): none. Object maze: only
+    the 0.3 m box at maze (-1, 2) = odom (2, 1)."""
+    from maze_nav.scene_understanding.scene_cells import cell_objects
+    assert cell_objects(_sim_maze_map('example_maze.json'), CellGrid()) == {}
+    found = cell_objects(_sim_maze_map('object_maze.json'), CellGrid())
+    assert list(found) == [(2, 1)]

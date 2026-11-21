@@ -68,11 +68,9 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.15
-      lookahead_dist: 0.2           # short: pure pursuit cuts corners by about this much
-      #                                (0.35 cut the start-cell corner on 2026-11-19 04:04;
-      #                                0.25 still turned close to the inner wall, 2026-11-20)
-      min_lookahead_dist: 0.15
-      max_lookahead_dist: 0.25
+      lookahead_dist: 0.35           # was 0.15: too short caused turns to hit walls
+      min_lookahead_dist: 0.25
+      max_lookahead_dist: 0.45
       use_velocity_scaled_lookahead_dist: false
       lookahead_time: 1.5
       transform_tolerance: 0.3
@@ -89,7 +87,7 @@ controller_server:
       inflation_cost_scaling_factor: 6.0   # = local_costmap inflation cost_scaling_factor
       use_rotate_to_heading: true    # quadruped: turn on the spot, then walk
       rotate_to_heading_angular_vel: 0.4
-      rotate_to_heading_min_angle: 0.7    # turn on the spot above 34 deg; smaller errors are
+      rotate_to_heading_min_angle: 0.5    # turn on the spot above 34 deg; smaller errors are
       #                                     arcs while walking (was 0.35: stop-turn-go jerks;
       #                                     0.8 arced to the inner wall before turning, 11-20)
       #                                     round corners; = explorer pre_turn_min_angle
@@ -118,6 +116,15 @@ local_costmap:
       footprint: "[[0.27, 0.23], [0.27, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # 5 cm back of base_link centre
       footprint_padding: 0.0
       plugins: ["obstacle_layer", "inflation_layer"]
+      # maze_explorer's object cells (/maze/keepout_mask, map frame): lethal, so the controller
+      # and the spin / wait recoveries never take the footprint into a room with an object,
+      # not only the planner (/maze/map). Applied after the layers (not inflated).
+      filters: ["keepout_filter"]
+      keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: true
+        filter_info_topic: "/maze/costmap_filter_info"
+        transform_tolerance: 0.6
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
@@ -176,6 +183,15 @@ global_costmap:
       track_unknown_space: true
       footprint: "[[0.27, 0.23], [0.27, -0.23], [-0.37, -0.23], [-0.37, 0.23]]"   # 5 cm back of base_link centre
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      # maze_explorer's object cells (/maze/keepout_mask, map frame): lethal, so the controller
+      # and the spin / wait recoveries never take the footprint into a room with an object,
+      # not only the planner (/maze/map). Applied after the layers (not inflated).
+      filters: ["keepout_filter"]
+      keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: true
+        filter_info_topic: "/maze/costmap_filter_info"
+        transform_tolerance: 0.6
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: true
@@ -207,11 +223,10 @@ global_costmap:
         # Wide and gentle, so the planner keeps to the corridor centre and swings wide of the
         # inner wall in turns: cost still ~100 (of 252) in the middle of a 0.9 m corridor,
         # rising towards the walls. With 0.4 / 8.0 the cost was 0 from 0.4 m off a wall,
-        # and paths hugged the inside of corners. 0.7 / 3.5 (was 0.6 / 4.0, 2026-11-16): a bit
-        # more again (~130 mid-corridor instead of ~118); with 0.6 / 4.0 the sim robot still
-        # scraped the inner wall at the ramp corner.
-        inflation_radius: 0.7
-        cost_scaling_factor: 3.5
+        # and paths hugged the inside of corners. 0.6 / 4.0 makes planner keep corridor centre
+        # and swing wide in turns, avoiding inner walls.
+        inflation_radius: 0.6
+        cost_scaling_factor: 4.0
       always_send_full_costmap: true
 
 behavior_server:

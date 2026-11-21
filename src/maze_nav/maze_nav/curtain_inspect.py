@@ -59,7 +59,10 @@ class InspectParams:
     hold: float = 1.5              # s per Pose look once there
     pose_turn_time: float = 1.0    # s for the body to get there after POSING
     pose_wait: float = 4.0         # s for POSING before falling back to whole-robot turns
-    timeout: float = 75.0          # s for the whole inspection (not cut while lying)
+    timeout: float = 45.0          # s for the whole inspection (not cut while lying); was 75:
+    #                                two 2026-11-21 sim inspections used all 75 s going nowhere
+    stuck_time: float = 10.0       # s in GOTO without getting stuck_gain m closer: give up
+    stuck_gain: float = 0.05
     looks: list = field(default_factory=lambda: None)   # [(yaw, pitch, hold)]; None = default
 
     def look_list(self):
@@ -101,6 +104,7 @@ class InspectPlan:
         self.lay = False           # it did lie down (measurements came from lying)
         self.goto_from = None
         self.goto_until = 0.0
+        self.goto_best = (math.inf, now)   # (closest distance to the look point, when)
         self.after_stand = 'DONE'  # after STAND_UP: 'DONE', or 'LOOK' (couldn't lie down)
         self.result = ''
 
@@ -162,6 +166,16 @@ class InspectPlan:
         if d <= p.goto_tol or now > self.goto_until:
             self.go('FACE', now)
             return None
+        if d < self.goto_best[0] - p.stuck_gain:
+            self.goto_best = (d, now)
+        elif now - self.goto_best[1] > p.stuck_time:
+            # Not getting closer (a wall in the way, the robot pinned): looking from here is
+            # pointless once well short of the look point.
+            if d <= 3 * p.goto_tol:
+                self.go('FACE', now)
+                return None
+            return self.done(f'no progress towards the look point for {p.stuck_time:.0f} s '
+                             f'({d:.2f} m short): given up')
         # cmd_vel_bridge never reverses: a look point behind the robot (closer to the curtain
         # than half a cell already) -> square up where it is.
         if float(np.dot(off, np.array([math.cos(yaw), math.sin(yaw)]))) < 0 and \

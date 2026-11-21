@@ -20,9 +20,9 @@ Arguments:
   bringup:=false   Fast-LIO / odom already running (or a simulator)
   go:=false        explorer picks goals but doesn't send them (watch /maze/goal in RViz)
   drive:=false     Nav2 runs but nothing reaches /cmd_vel (cmd_vel_bridge preview topic)
-  gait:=hstep      cmd_vel_bridge sends Move mode + H-Step (high-stepping RUG gait) once at
-                   startup; rug = RUG gait General gear (before 2026-11-20); none = leave
-                   the gait alone. Send lite3_auto AFTER "gait sent"
+  gait:=rug        cmd_vel_bridge sends Move mode + RUG gait General gear once at startup
+                   (default again since 2026-11-21); hstep = H-Step (high-stepping RUG gait);
+                   none = leave the gait alone. Send lite3_auto AFTER "gait sent"
   perception:=true also start team_perception (robot.launch.py: qr_scanner only; human /
                    poster detection removed 2026-11-19, too many camera copies for the
                    bridge). It runs niced on all but the first 4 cores, and only at dead
@@ -56,10 +56,17 @@ Arguments:
                    (spec < 15 cm; the lab test curtain hangs ~20 cm up -> 0.25 to test with it)
   scene_trigger:=true  /scene/trigger (+ /junction_detected) when the robot faces a dead end
                    from the cell before it; /scene/junction for the explorer's junction look
-                   (maze_nav/scene_understanding/scene_trigger.py)
-  creep_distance:=0.20  m straight ahead (no steering) after start, onto the SLAM map and off the
+                   (maze_nav/scene_understanding/scene_trigger.py). The dead-end looks
+                   (hold facing in, Pose-mode side walls, tilt compensation over 30 deg)
+                   and the junction follow-up run with it; a checked dead end is never
+                   entered
+  scene_understanding:=false  true = also room_scene (one camera frame per dead-end view
+                   -> VLM queue, logs/scene/) + task_reporter (/mission/task_completed).
+                   Off by default: VLM not wired yet, and one more colour-camera copy over
+                   the robot bridge. The explorer never waits for it either way
+  creep_distance:=0.10  m straight ahead (no steering) after start, onto the SLAM map and off the
                    back wall (0 = off)
-  start_scan:=true turn 30 deg left, 60 right, 30 left after the creep, before exploring
+  start_scan:=false  true = turn 30 deg left, 60 right, 30 left after the creep, before exploring
   max_speed:=0.15  band_low:=0.30  band_high:=0.45  floor_z:=nan (measure)
   map_dir:=~/challenge_ws/maps   udp_only:=true   use_sim_time:=false
   fastlio_config:=<maze_nav>/config/fastlio_mid360.yaml  Fast-LIO settings: blind 0.3 m (was
@@ -70,6 +77,10 @@ Arguments:
                    for wall_scan, cmd_vel_bridge, stair_detector, curtain_detector). Each
                    bridge copy costs: 6 copies put the lidar ~1.1 s late and starved the IMU
                    (2026-11-19). false = every node subscribes /livox/points itself
+  lidar_crop:=true  (with lidar_relay) wall_scan, stair_detector and curtain_detector read the
+                   relay's /livox/points_crop: no-return points and points well above/below
+                   the maze dropped (~40 % of each cloud left), so each parses and transforms
+                   less. cmd_vel_bridge keeps /livox/points_local. false = all on points_local
   domain_id:=auto  auto = 4 (the robot's domain, ROS_LOCALHOST_ONLY=0) with bringup:=true,
                    whatever the terminal has; with bringup:=false (simulator) the terminal's
                    ROS_DOMAIN_ID. A number forces that domain
@@ -191,7 +202,7 @@ def depth_users(context):
             parameters=[{'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time'),
                                                         value_type=bool),
                          'drive': ParameterValue(LaunchConfiguration('go'), value_type=bool),
-                         'lidar_topic': cloud_topic().perform(context),
+                         'lidar_topic': crop_topic().perform(context),
                          'depth_topic': depth, 'depth_camera_info_topic': info}]))
     if curtains:
         out.append(Node(
@@ -205,7 +216,7 @@ def depth_users(context):
                          # Detection (0.6-2 m) and covered-lens check; only through the
                          # relay (never a 2nd raw copy). No relay -> lidar only.
                          'sensors': LaunchConfiguration('curtain_sensors'),
-                         'cloud_topic': cloud_topic().perform(context),
+                         'cloud_topic': crop_topic().perform(context),
                          'max_gap': ParameterValue(LaunchConfiguration('curtain_max_gap'),
                                                    value_type=float),
                          'inspect': ParameterValue(LaunchConfiguration('curtain_inspect'),
@@ -248,6 +259,8 @@ DEATH_HINTS = {
                         'stay cleared). If it died while driving, cmd_vel_bridge stops the '
                         'robot (idle).',
     'scene_trigger': 'scene understanding only: no more /scene/trigger. Navigation carries on.',
+    'room_scene': 'scene understanding only: no more room captures for VLM. Navigation carries on.',
+    'task_reporter': 'task reporting only: no more /mission/task_completed. Navigation carries on.',
     'depth_relay': 'no depth: no QR positions, no stair line-up. Navigation '
                    'carries on.',
     'stair_detector': 'no stair line-up: Nav2 drives over the stairs as floor. If it died '
@@ -332,6 +345,19 @@ def cloud_topic():
                              "'.lower() in ('true', '1') else '/livox/points'"])
 
 
+def use_crop():
+    """Python expression parts: lidar_relay and lidar_crop both on."""
+    return ["'", LaunchConfiguration('lidar_relay'), "'.lower() in ('true', '1') and '",
+            LaunchConfiguration('lidar_crop'), "'.lower() in ('true', '1')"]
+
+
+def crop_topic():
+    """/livox/points_crop (lidar_relay:=true lidar_crop:=true), else cloud_topic()."""
+    return PythonExpression(["'/livox/points_crop' if "] + use_crop() + [
+        " else ('/livox/points_local' if '", LaunchConfiguration('lidar_relay'),
+        "'.lower() in ('true', '1') else '/livox/points')"])
+
+
 def generate_launch_description():
     config = os.path.join(get_package_share_directory('maze_nav'), 'config')
     arg = LaunchConfiguration
@@ -349,6 +375,8 @@ def generate_launch_description():
     # Every lidar cloud reader takes the relay's local copy (lidar_relay.py): one copy from the
     # bridge instead of one per process. Fast-LIO keeps its own /livox/lidar.
     cloud = ParameterValue(cloud_topic(), value_type=str)
+    # wall_scan, stair_detector, curtain_detector: the relay's cropped copy (lidar_crop:=true).
+    cropped = ParameterValue(crop_topic(), value_type=str)
 
     nav2_params = RewrittenYaml(
         source_file=os.path.join(config, 'nav2_params.yaml'),
@@ -396,7 +424,7 @@ def generate_launch_description():
                               'the curtain inspection (not measured yet)'),
         DeclareLaunchArgument('drive', default_value='true',
                               description='false = nothing is sent to /cmd_vel'),
-        DeclareLaunchArgument('gait', default_value='hstep',
+        DeclareLaunchArgument('gait', default_value='rug',
                               description='sent once on /simple_cmd at startup (after Move mode): '
                                           'hstep = H-Step (high-stepping RUG gait); rug = RUG '
                                           'gait General gear; none = leave it'),
@@ -423,12 +451,18 @@ def generate_launch_description():
         DeclareLaunchArgument('scene_trigger', default_value='true',
                               description='/scene/trigger (+ /junction_detected) at dead ends; '
                                           '/scene/junction for the junction look'),
+        DeclareLaunchArgument('scene_understanding', default_value='false',
+                              description='true = room_scene (dead-end views -> VLM queue) '
+                                          '+ task_reporter; needs scene_trigger'),
         DeclareLaunchArgument('cpu_log', default_value='true',
                               description='log CPU per process to ~/challenge_ws/logs/cpu/'),
-        DeclareLaunchArgument('creep_distance', default_value='0.20',
+        DeclareLaunchArgument('creep_distance', default_value='0.10',
                               description='m straight ahead after start, no steering; 0 = off'),
-        DeclareLaunchArgument('start_scan', default_value='true',
-                              description='after the creep: turn 30 deg left, 60 right, 30 left (back to the start heading; Nav2 spins, not Pose mode)'),
+        DeclareLaunchArgument('pre_turn_max_creep', default_value='0.0',
+                              description='m straight ahead the explorer may creep to find room '
+                                          'for a turn blocked by walls both ways; 0 = off'),
+        DeclareLaunchArgument('start_scan', default_value='false',
+                              description='true = after the creep: turn 30 deg left, 60 right, 30 left (back to the start heading; Nav2 spins, not Pose mode); off since 2026-11-21'),
         DeclareLaunchArgument('max_speed', default_value='0.15',
                               description='m/s (clamped to 0.25 by cmd_vel_bridge)'),
         DeclareLaunchArgument('band_low', default_value='0.30',
@@ -450,6 +484,10 @@ def generate_launch_description():
                               description='lidar_relay: /livox/points crosses the bridge once '
                                           '(/livox/points_local for wall_scan, cmd_vel_bridge, '
                                           'stair/curtain_detector); false = each its own copy'),
+        DeclareLaunchArgument('lidar_crop', default_value='true',
+                              description='with lidar_relay: wall_scan, stair/curtain_detector '
+                                          'read /livox/points_crop (no-return and out-of-band '
+                                          'points dropped); false = /livox/points_local'),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('domain_id', default_value='auto',
                               description='auto = 4 with bringup:=true (real run), else the '
@@ -493,6 +531,8 @@ def generate_launch_description():
         Node(package='maze_nav', executable='cpu_monitor', name='cpu_monitor', output='both',
              condition=IfCondition(arg('cpu_log'))),
         Node(package='maze_nav', executable='lidar_relay', name='lidar_relay', output='both',
+             parameters=[sim_time, {'crop_topic': ParameterValue(PythonExpression(
+                 ["'/livox/points_crop' if "] + use_crop() + [" else ''"]), value_type=str)}],
              condition=IfCondition(arg('lidar_relay'))),
 
         # cmd_vel_bridge with wall_scan: its stand_wait counts from its start and needs
@@ -502,7 +542,7 @@ def generate_launch_description():
                  'band_low': ParameterValue(arg('band_low'), value_type=float),
                  'band_high': ParameterValue(arg('band_high'), value_type=float),
                  'floor_z': ParameterValue(arg('floor_z'), value_type=float),
-                 'cloud_topic': cloud,
+                 'cloud_topic': cropped,
                  'curtains_topic': ParameterValue(PythonExpression(
                      ["'/curtain/curtains' if '", arg('curtains'), "'.lower() in ('true', '1') "
                       "else ''"]), value_type=str),
@@ -543,8 +583,14 @@ def generate_launch_description():
                  'map_dir': arg('map_dir'),
                  'creep_distance': ParameterValue(arg('creep_distance'), value_type=float),
                  'start_scan': ParameterValue(arg('start_scan'), value_type=bool),
+                 'pre_turn_max_creep': ParameterValue(arg('pre_turn_max_creep'),
+                                                      value_type=float),
                  'pose_looks': ParameterValue(arg('pose_looks'), value_type=bool),
                  'pose_max_yaw': pose_max_yaw,
+                 'pose_max_pitch': pose_max_pitch,
+                 'scene_capture_topic': ParameterValue(PythonExpression(
+                     ["'/scene/capture' if '", arg('scene_understanding'),
+                      "'.lower() in ('true', '1') else ''"]), value_type=str),
                  # Switched-off features are disconnected, so a stray publisher on the
                  # domain (an old stair_detector, a test rig) can't stop the robot.
                  'stairs_topic': ParameterValue(PythonExpression(
@@ -563,6 +609,14 @@ def generate_launch_description():
                      ["'/qr/unread' if '", arg('perception'),
                       "'.lower() in ('true', '1') else ''"]), value_type=str),
              }]),
+
+        Node(package='maze_nav', executable='room_scene', name='room_scene',
+             output='both', parameters=[sim_time],
+             condition=IfCondition(arg('scene_understanding'))),
+
+        Node(package='maze_nav', executable='task_reporter', name='task_reporter',
+             output='both', parameters=[sim_time],
+             condition=IfCondition(arg('scene_understanding'))),
 
         OpaqueFunction(function=depth_users),
     ])

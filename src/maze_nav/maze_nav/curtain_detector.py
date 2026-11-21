@@ -38,11 +38,13 @@ with curtains:=true (default).
      `handover_timeout` s -> IDLE.
   2b. INSPECTING (`inspect`, user 2026-11-20; curtain_inspect.py): no confirmed curtain, but
      a single unconfirmed detection, or a near miss with a gap < `inspect_max_gap` (0.22 m)
-     over >= `inspect_min_width` (curtains.near_miss_segment), `inspect_min_distance` (0.6)
+     over > `inspect_min_width` (0.6 m, curtains.near_miss_segment), `inspect_min_distance` (0.6)
      to `inspect_trigger_distance` (2.5) m ahead and within `inspect_max_bearing` (35 deg)
      of the heading, its line facing the robot (normal within 45 deg of the heading: the
      extru walls' side windows read as 12-46 cm gaps on the side walls 0.4-0.6 m away),
-     while maze_explorer is in trigger_states -> the same HANDOVER.
+     while maze_explorer is in trigger_states -> the same HANDOVER. Candidates are only
+     taken during a junction look or dead-end stop (`look_states`, user 2026-11-21); ones
+     seen elsewhere are logged and dropped (confirmed curtains are still crossed anywhere).
      Junction looks, dead-end and start scans come first: a candidate seen during DEAD_END /
      JUNCTION / SCANNING is kept and inspected once the explorer is back in trigger_states
      (within 20 s, still in range). Then (`inspect_mode` lie): drive to the middle of the
@@ -130,7 +132,7 @@ from maze_nav.core import Grid, cloud_xyz, free_distance_ahead, max_turn
 from maze_nav.curtains import (BlockageMonitor, Curtain, CurtainParams, CurtainTracker,
                                clear_curtains, curtains_to_json, depth_blockage, depth_points,
                                detect_curtains, diagnose, gap_at_line, invert_pose,
-                               lidar_blockage, near_miss_segment, wrap)
+                               lidar_blockage, near_miss_segment, wall_between, wrap)
 from maze_nav.curtain_branch import CurtainHold
 from maze_nav.curtain_inspect import InspectParams, InspectPlan
 from maze_nav.stairs import WallCheck, camera_from_link
@@ -178,6 +180,10 @@ class CurtainDetector(Node):
         # Detect (publish, clear from the map) but never hand over in these too: a curtain
         # looks like a dead end, and there the robot holds still facing it (user 2026-11-20).
         p('detect_states', ['DEAD_END', 'JUNCTION'])
+        # Possible curtains are only taken (for an inspection) during these explorer looks
+        # (user 2026-11-21): the junction look and the dead-end stop. Confirmed curtains are
+        # still crossed wherever they are. [] = any time (the old behaviour).
+        p('look_states', ['JUNCTION', 'DEAD_END'])
         p('band_low', 0.30)                    # m above the floor: wall band (= wall_scan)
         p('band_high', 0.45)
         p('diag_period', 3.0)                  # s between near-miss log lines (0 = off)
@@ -186,7 +192,7 @@ class CurtainDetector(Node):
         # mode (pitch down, yaw both ways) while detecting; confirmed -> walk through.
         p('inspect', True)
         p('inspect_max_gap', 0.22)             # m: near misses with a smaller gap qualify
-        p('inspect_min_width', 0.40)           # m of seen-under wall
+        p('inspect_min_width', 0.60)           # m of seen-under wall, more than this (user 2026-11-21)
         p('inspect_trigger_distance', 2.5)     # m to the candidate's line
         p('inspect_min_distance', 0.6)         # m: closer candidates are side-wall windows etc.
         p('inspect_max_bearing', math.radians(35))  # candidate centre off the heading
@@ -265,6 +271,7 @@ class CurtainDetector(Node):
                                     max_range=float(g('max_range')),
                                     band=(float(g('band_low')), float(g('band_high'))))
         self.detect_states = tuple(g('detect_states'))
+        self.look_states = tuple(g('look_states'))
         self.diag_period = float(g('diag_period'))
         self.diag_last = -1e9
         self.inspect_on = bool(g('inspect'))
@@ -701,10 +708,11 @@ class CurtainDetector(Node):
 
     # ------------------------------------------------------------------ inspection
     def inspect_tick(self, found_odom, cells, xy):
-        """Dead-end and start scans come first (user 2026-11-20): candidates seen in
-        DEAD_END / SCANNING are remembered (`deferred`) and inspected once maze_explorer is
-        back in one of trigger_states (within 20 s, still in range). In a JUNCTION look the
-        inspection comes first: maze_explorer pauses the look for it."""
+        """Candidates only from the explorer's looks (`look_states`, user 2026-11-21). Dead-end
+        stops come first (user 2026-11-20): candidates seen in DEAD_END are remembered
+        (`deferred`) and inspected once maze_explorer is back in one of trigger_states (within
+        20 s, still in range). In a JUNCTION look the inspection comes first: maze_explorer
+        pauses the look for it. Outside the looks only those deferred candidates count."""
         now = time.monotonic()
         cands = [(c.p1, c.p2, c.gap, 'unconfirmed curtain') for c in found_odom]
         seg = near_miss_segment(cells, self.params, self.inspect_cfg['inspect_max_gap'],
@@ -713,10 +721,17 @@ class CurtainDetector(Node):
             cands.append((*seg, 'wall with a gap under it'))
         # At a junction the lie-down check comes first (user 2026-11-20): maze_explorer
         # pauses the junction look for it. Dead-end and start scans still come first.
+        in_look = not self.look_states or self.explorer in self.look_states
         if self.status_topic and self.explorer not in self.trigger_states + ('JUNCTION',):
-            if cands and self.explorer in self.detect_states + ('SCANNING',):
+            if cands and in_look:
                 self.deferred = (cands, now)
             return
+        if self.status_topic and not in_look:
+            if cands:
+                self.get_logger().info(f'possible curtain ({cands[0][3]}) while '
+                                       f'{self.explorer}: inspected only from a junction or '
+                                       'dead-end look', throttle_duration_sec=10.0)
+            cands = []
         if self.deferred is not None:
             if now - self.deferred[1] < 20.0:
                 cands += [(*c[:3], c[3] + ', seen during the look') for c in self.deferred[0]]
@@ -758,6 +773,11 @@ class CurtainDetector(Node):
                 continue
             if any(np.linalg.norm(centre - k.centre) < 0.5 for k in known):
                 continue                                 # already a curtain
+            if self.behind_wall(rxy, centre):
+                self.get_logger().info(
+                    f'possible curtain ({what}, {dist:.2f} m ahead) is behind a wall on the '
+                    'map: not reachable from here, not inspected', throttle_duration_sec=5.0)
+                continue
             width = float(np.linalg.norm(d))
             self.inspect_target = {'centre': centre, 'n': n, 'p1': p1, 'p2': p2,
                                    'what': f'{what}: {width:.2f} m wide, gap '
@@ -766,6 +786,22 @@ class CurtainDetector(Node):
             self.set_state('HANDOVER', f'possible curtain ({self.inspect_target["what"]}): '
                            'asking maze_explorer to stop Nav2 so it can be inspected')
             return
+
+    def behind_wall(self, robot_odom, target_odom):
+        """A /map wall between the robot and a candidate (curtains.wall_between), both in
+        odom; False without a map or TF (then inspect as before)."""
+        if self.grid is None:
+            return False
+        try:
+            tf = self.tf.lookup_transform(self.map_frame, self.odom, Time())
+        except TransformException:
+            return False
+        ox, oy, oth = tf.transform.translation.x, tf.transform.translation.y, tf_yaw(tf)
+        c, s = math.cos(oth), math.sin(oth)
+        to_map = lambda p: (ox + c * p[0] - s * p[1], oy + s * p[0] + c * p[1])  # noqa: E731
+        grid = clear_curtains(self.grid, self.tracker.confirmed if self.cframe == self.map_frame
+                              else [k.transformed(ox, oy, oth) for k in self.tracker.confirmed])
+        return wall_between(grid, to_map(robot_odom), to_map(target_odom))
 
     def start_inspection(self):
         tg = self.inspect_target

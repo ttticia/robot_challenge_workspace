@@ -79,6 +79,12 @@ class WallScan(Node):
         p('floor_z', float('nan'))  # odom z of the floor; NaN = measure at startup
         p('expected_floor_drop', 0.35)  # base_link height when standing (odom_relay convention)
         p('floor_tolerance', 0.06)      # measured base_link height above drop + this: ignored
+        # ...plus this when the robot may stand on a raised start tile while the walls stand
+        # on the floor below. 0 (default): in the sim example maze the walls stand on the
+        # same 0.1 m plate as the robot and the lower layer was the lab floor OUTSIDE the
+        # maze: accepting it (0.12, 2026-11-21) made every wall look raised 10 cm and set off
+        # curtain inspections everywhere. Only for an arena known to start on a tile.
+        p('floor_start_tile', 0.0)
         #                                 (below core.FLOOR_MIN_BODY_HEIGHT 0.27 m too)
         p('angle_increment', math.radians(0.5))   # 720 beams; ~2.6 cm apart at 3 m (1 deg missed wall ends in the sim)
         # m; > 0 thins wall points to one per cell. OFF: at 0.10 the sim map had dotted walls
@@ -111,6 +117,7 @@ class WallScan(Node):
         self.floor = None if math.isnan(self.floor) else float(self.floor)
         self.drop = g('expected_floor_drop')
         self.floor_tolerance = g('floor_tolerance')
+        self.start_tile = float(g('floor_start_tile'))
         self.inc = g('angle_increment')
         self.n = int(round(2 * math.pi / self.inc))
         self.rmin, self.rmax = g('range_min'), g('range_max')
@@ -268,7 +275,8 @@ class WallScan(Node):
             expected = b.translation.z - self.drop
             seen = estimate_floor(pts, bxy, b.translation.z, self.drop)
             self.floor_tries += 1
-            ok = floor_accepted(b.translation.z, seen, self.drop, self.floor_tolerance)
+            ok = floor_accepted(b.translation.z, seen, self.drop, self.floor_tolerance,
+                                start_tile=self.start_tile)
             if not ok and self.floor_tries < 20:
                 # One bad cloud (robot still rising, odom z jumping) must not latch a guess:
                 # wait for the height to settle again and measure again (~20 tries).
@@ -282,9 +290,11 @@ class WallScan(Node):
             if ok:
                 self.floor = seen
                 self.floor_pub.publish(Float32(data=float(seen)))
+                tile = b.translation.z - seen - self.drop - self.floor_tolerance
                 self.get_logger().info(
                     f'floor at odom z = {seen:.3f} (base_link {b.translation.z - seen:.2f} m '
-                    'above it)')
+                    'above it' + (f'; standing on a ~{tile + self.floor_tolerance:.2f} m start '
+                                  'tile, walls on the floor below' if tile > 0 else '') + ')')
             else:
                 self.floor = expected
                 self.floor_pub.publish(Float32(data=float(expected)))

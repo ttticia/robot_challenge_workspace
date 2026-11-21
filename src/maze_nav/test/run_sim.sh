@@ -24,7 +24,11 @@ mkdir -p "$LOG" && rm -rf "$LOG/maps" "$LOG"/*.log
 setsid python3 -W ignore "$WS/src/maze_nav/test/fake_maze_lite3.py" --ros-args -p track_csv:="$LOG/track.csv" > "$LOG/sim.log" 2>&1 &
 SIM=$!
 sleep 3
-setsid ros2 launch maze_nav maze_nav.launch.py bringup:=false udp_only:=true \
+# floor_z: the sim's walls stand on the start cell's floor, 0.35 m (STAND) below base_link at
+# the start. Measured, the floor came out as the lab floor OUTSIDE the maze (-0.45: the maze
+# sits on a 0.1 m plate and sim walls are see-through), which made every wall look raised 10 cm
+# and set off curtain inspections (2026-11-21).
+setsid ros2 launch maze_nav maze_nav.launch.py bringup:=false udp_only:=true floor_z:=-0.35 \
     map_dir:="$LOG/maps" wait_for_start:=false perception:=false > "$LOG/launch.log" 2>&1 &
 LAUNCH=$!
 

@@ -399,9 +399,9 @@ def diagnose(cells, p=None):
             f'< {p.min_core:.2f} m or off a straight line')
 
 
-def near_miss_segment(cells, p=None, max_gap=0.30, min_width=0.40):
+def near_miss_segment(cells, p=None, max_gap=0.30, min_width=0.60):
     """(p1, p2, gap) of the widest run of non-wall bins seen under (see diagnose) whose
-    median seen-under gap is < max_gap and that spans >= min_width, else None. For the
+    median seen-under gap is < max_gap and that spans > min_width, else None. For the
     curtain inspection (user 2026-11-20): a wall with a suitable gap that isn't proven a
     curtain yet - too narrow, too few bins, or a gap just over max_gap."""
     p = p or CurtainParams()
@@ -424,7 +424,7 @@ def near_miss_segment(cells, p=None, max_gap=0.30, min_width=0.40):
         gap = float(np.median([c['gap'] for c in under]))
         p1, p2 = np.array(run[0]['xy'], float), np.array(run[-1]['xy'], float)
         width = float(np.linalg.norm(p2 - p1))
-        if gap >= max_gap or width < min_width:
+        if gap >= max_gap or width <= min_width:
             continue
         if best is None or width > best[3]:
             best = (p1, p2, gap, width)
@@ -626,6 +626,29 @@ def clear_curtains(grid, curtains, half_thickness=0.10, extend=0.0):
         inside = in_curtains(centres, [c], half_thickness + res / 2, extend + res / 2)
         data[rows.ravel()[inside], cols.ravel()[inside]] = 0
     return Grid(data, grid.resolution, grid.origin)
+
+
+def wall_between(grid, a, b, stop_short=0.25, start_after=0.3, occupied=65):
+    """Is there a map wall on the straight line from a (the robot) to b (a curtain
+    candidate's middle), both in the grid's frame? The last `stop_short` m before b are left
+    out (the candidate itself is on the map as a wall) and so are the first `start_after` m
+    (the robot's own cell, where its footprint or self-returns may mark cells).
+
+    Curtain candidates seen through a gap, or through see-through sim walls (2026-11-21: one
+    2 m away behind a wall), can't be reached for the inspection: the robot drove at the wall
+    until the 75 s timeout. Cells off the map count as no wall."""
+    a, b = np.asarray(a, float)[:2], np.asarray(b, float)[:2]
+    d = float(np.linalg.norm(b - a))
+    if d <= start_after + stop_short:
+        return False
+    res = grid.resolution
+    t = np.arange(start_after, d - stop_short, res / 2) / d
+    pts = a + t[:, None] * (b - a)
+    cols = np.floor((pts[:, 0] - grid.origin[0]) / res).astype(int)
+    rows = np.floor((pts[:, 1] - grid.origin[1]) / res).astype(int)
+    h, w = grid.data.shape
+    ok = (cols >= 0) & (cols < w) & (rows >= 0) & (rows < h)
+    return bool((grid.data[rows[ok], cols[ok]] >= occupied).any())
 
 
 # --------------------------------------------------------------------------- blockage

@@ -140,6 +140,77 @@ def test_cloud_xyz_reads_livox_mixed_field_types():
         cloud_xyz(a.tobytes(), fields[1:], 26, 78, 3, 1)
 
 
+def _livox(xyz_rows):
+    """(fields, structured array) in the Livox layout (step 26) for the given x, y, z rows."""
+    from types import SimpleNamespace as F
+    fields = [F(name='x', offset=0, datatype=7), F(name='y', offset=4, datatype=7),
+              F(name='z', offset=8, datatype=7), F(name='intensity', offset=12, datatype=7),
+              F(name='tag', offset=16, datatype=2), F(name='line', offset=17, datatype=2),
+              F(name='timestamp', offset=18, datatype=8)]
+    dt = np.dtype({'names': ['x', 'y', 'z', 'i', 'tag', 'line', 't'],
+                   'formats': ['<f4'] * 4 + ['u1', 'u1', '<f8'],
+                   'offsets': [0, 4, 8, 12, 16, 17, 18], 'itemsize': 26})
+    a = np.zeros(len(xyz_rows), dt)
+    xyz_rows = np.asarray(xyz_rows, float)
+    a['x'], a['y'], a['z'] = xyz_rows[:, 0], xyz_rows[:, 1], xyz_rows[:, 2]
+    a['i'], a['t'] = np.arange(len(a)), 1e9 + np.arange(len(a))
+    return fields, a
+
+
+def test_cloud_xyz_reads_rclpy_array_in_place():
+    """rclpy hands PointCloud2.data over as array('B'): read without a bytes() copy; a list
+    of ints still works."""
+    import array
+    fields, a = _livox([[1, 2, 3], [4, 5, 6]])
+    data = array.array('B', a.tobytes())
+    assert cloud_xyz(data, fields, 26, 52, 2, 1).tolist() == [[1, 2, 3], [4, 5, 6]]
+    assert cloud_xyz(list(a.tobytes()), fields, 26, 52, 2, 1).tolist() == [[1, 2, 3], [4, 5, 6]]
+
+
+def test_cloud_rows_keeps_every_field_and_trims_row_padding():
+    from maze_nav.core import cloud_rows
+    fields, a = _livox([[1, 2, 3], [4, 5, 6], [np.nan, 0, 0], [7, 8, 9]])
+    raw = a.tobytes()
+    padded = raw[:52] + b'\0' * 4 + raw[52:] + b'\0' * 4      # 2 rows of 2 points, 4 B pad
+    rows, xyz = cloud_rows(padded, fields, 26, 56, 2, 2)
+    assert rows.shape == (4, 26) and rows.tobytes() == raw
+    assert np.isnan(xyz[2, 0]) and xyz[3].tolist() == [7, 8, 9]   # NaN kept, row for row
+
+
+def test_crop_mask_drops_no_returns_out_of_range_and_out_of_band():
+    from maze_nav.core import crop_mask
+    xyz = np.array([[0, 0, 0],            # Mid-360 no-return
+                    [np.nan, 1, 0],
+                    [2, 0, -0.4],          # floor
+                    [3, 0, 0.1],           # wall band
+                    [1, 0, 2.5],           # ceiling
+                    [0, 1, -1.5],          # far below (no stairs down that deep)
+                    [20, 0, 0]])           # beyond max_range
+    up = np.array([0, 0, 1.0])
+    assert crop_mask(xyz, up, -1.2, 1.0, 12.0).tolist() == \
+        [False, False, True, True, False, False, False]
+    # no up (no TF / tilt changing): only no-return, NaN and range
+    assert crop_mask(xyz, None, -1.2, 1.0, 12.0).tolist() == \
+        [False, False, True, True, True, True, False]
+
+
+def test_crop_band_follows_the_tilt():
+    """Nose down 30 deg: a wall point straight ahead at lidar height shows ~1.5 m UP in the
+    lidar frame at 3 m; with up from TF it is still 0 m above the lidar and kept."""
+    from maze_nav.core import crop_mask, up_in_frame
+    a = math.radians(30) / 2             # pitch +30 deg about y (nose down in odom = +pitch)
+    qx, qy, qz, qw = 0.0, math.sin(a), 0.0, math.cos(a)
+    up = up_in_frame(qx, qy, qz, qw)
+    r = np.array([[math.cos(2 * a), 0, math.sin(2 * a)], [0, 1, 0],
+                  [-math.sin(2 * a), 0, math.cos(2 * a)]])          # odom <- lidar
+    wall_odom = np.array([[3.0, 0, 0.0]])
+    wall_lidar = wall_odom @ r                                       # r.T @ p, row-wise
+    assert abs(wall_lidar[0, 2]) > 1.4
+    assert np.allclose(up, r[2])
+    assert crop_mask(wall_lidar, up, -1.2, 1.0).tolist() == [True]
+    assert crop_mask(wall_lidar, np.array([0, 0, 1.0]), -1.2, 1.0).tolist() == [False]
+
+
 # ------------------------------------------------------------------ grid helpers
 
 def corridor_grid():
@@ -524,6 +595,10 @@ def test_floor_accepted_standing_heights():
     assert floor_accepted(0.0, -0.35)              # nominal 0.35 m
     assert floor_accepted(0.0, -0.41)              # 0.41 m = drop + tolerance
     assert not floor_accepted(0.0, -0.45)          # 0.45 m: floor seen too low
+    # with a start-tile allowance (only for an arena that starts the robot on a raised tile)
+    assert floor_accepted(0.0, -0.45, start_tile=0.12)             # sim: 0.35 + 0.10
+    assert floor_accepted(0.0, -0.46, start_tile=0.12)             # robot 0.36 + 0.10
+    assert not floor_accepted(0.0, -0.55, start_tile=0.12)         # beyond any tile
     # 11:57: robot still rising, 0.26 m: not believable, retry instead
     assert not floor_accepted(0.304, 0.040)
     assert not floor_accepted(0.0, None)

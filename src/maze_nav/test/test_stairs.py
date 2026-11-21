@@ -407,11 +407,11 @@ def test_blocked_squaring_holds_instead_of_grinding():
 
 # ---------------------------------------------------------------- hand-over gate
 def test_low_risers_are_not_stairs():
-    """6-7 cm steps (robot clutter while standing up, real lab depth) average below
-    mean_rise_min; 8 cm stairs still start at their first riser (one faint step must not
-    shift the stairs a tread late)."""
+    """Steps count from 8 cm (user 2026-11-21): 6.5 cm chains (robot clutter while standing
+    up, real lab depth) are not stairs; 9 cm stairs still start at their first riser (one
+    faint step must not shift the stairs a tread late)."""
     assert detect(staircase(1.2, rise=0.065, tread=0.25, width=1.0), (0, 0, 0.35), 0.0) is None
-    det = detect(staircase(1.2, rise=0.08, tread=0.30, width=1.0), (0, 0, 0.35), 0.0)
+    det = detect(staircase(1.2, rise=0.09, tread=0.30, width=1.0), (0, 0, 0.35), 0.0)
     assert det is not None and det.distance == pytest.approx(1.2, abs=0.03)
 
 

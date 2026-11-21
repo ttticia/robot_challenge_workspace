@@ -61,7 +61,10 @@ class LidarParams:
     level_tol: float = 0.035            # m, a bin within this of a level's height belongs to it
     max_gap_bins: int = 3               # empty bins allowed inside a level
     riser_gap_max: float = 0.15         # m between two treads' bins where the riser is
-    rise_min: float = 0.06
+    rise_min: float = 0.06              # finding the steps; the height map reads a 13 cm step as
+    #                                     7-8 cm when sparse (> 2 m), so 0.08 here lost the riser and
+    #                                     put the centre 0.7 m off. The > 8 cm rule (user 2026-11-21)
+    #                                     is stair_detector's check_min_rise instead
     rise_max: float = 0.22
     rise_tol: float = 0.05
     tread_min: float = 0.10
@@ -115,9 +118,13 @@ class HeightMap:
         if len(z) == 0:
             return 0
         flat = i * self.n + j
-        cells, inv = np.unique(flat, return_inverse=True)
-        mx = np.full(len(cells), -np.inf)
-        np.maximum.at(mx, inv, z)                       # this scan's top per cell
+        # This scan's top per cell: sort by cell, max over each run (np.maximum.reduceat).
+        # Same result as np.unique + np.maximum.at, several times faster (ufunc.at is slow).
+        order = np.argsort(flat, kind='stable')
+        flat, z = flat[order], z[order]
+        starts = np.flatnonzero(np.r_[True, flat[1:] != flat[:-1]])
+        cells = flat[starts]
+        mx = np.maximum.reduceat(z, starts)
         ci, cj = cells // self.n, cells % self.n
         new = self.cnt[ci, cj] == 0
         old = self.top[ci, cj]
@@ -454,7 +461,8 @@ def detect(hm, base_xyz, floor_z, p=None):
         if span is None or span[1] - span[0] < p.min_width:
             continue
         est = StairEstimate(heading=wrap(heading), along=0.0, risers=max(len(b[1]) for b in same),
-                            rise=rise, source='lidar', anchored=any(b[3] for b in same))
+                            rise=rise, source='lidar', anchored=any(b[3] for b in same),
+                            width=float(span[1] - span[0]))
         est.along = float(base_xy @ est.d()) + float(np.median([b[1][0] for b in same]))
         est.centre = float(base_xy @ est.n()) + (span[0] + span[1]) / 2
         if not any(o.close_to(est, 0.15, math.radians(10)) for o in out):
@@ -520,11 +528,11 @@ def fuse(cam, lid, chk, base_xy, nearer_min=0.10, yaw_tol=math.radians(10), near
                 why.append(f'lidar map has the first riser {nearer:.2f} m nearer')
                 cam = StairEstimate(heading=cam.heading, along=chk.along, centre=cam.centre,
                                     risers=cam.risers + 1, rise=cam.rise, source='both',
-                                    anchored=chk.anchored)
+                                    anchored=chk.anchored, width=cam.width)
             else:
                 cam = StairEstimate(heading=cam.heading, along=cam.along, centre=cam.centre,
                                     risers=cam.risers, rise=cam.rise, source='both',
-                                    anchored=chk.anchored)
+                                    anchored=chk.anchored, width=cam.width)
             why.append(f'lidar confirms ({chk.why})')
     if cam is None or lid is None:
         out = cam if cam is not None else lid
@@ -539,7 +547,8 @@ def fuse(cam, lid, chk, base_xy, nearer_min=0.10, yaw_tol=math.radians(10), near
     out = StairEstimate(heading=cam.heading, along=0.0,
                         centre=cam.centre if cam.centre is not None else lid.centre,
                         risers=max(cam.risers, lid.risers), rise=cam.rise, source='both',
-                        anchored=cam.anchored or lid.anchored)
+                        anchored=cam.anchored or lid.anchored,
+                        width=max(cam.width, lid.width))
     out.along = float(np.dot(near.d() * near.along, out.d()))
     why.append(f'camera and lidar agree; first riser from {"lidar" if near is lid else "camera"}')
     return out, '; '.join(why)

@@ -30,9 +30,9 @@ Nav2 can't talk to the robot directly, so this glue stays:
   latch until restart (odom_jump_limit 0 = latch at the first jump, the old behaviour).
 - drive:=false: publishes to ~/cmd_vel_preview instead of /cmd_vel (dry run).
 - Gait: at startup, once the robot bridge subscribes /simple_cmd, sends Move mode
-  (0x21010D06, needed before gait requests) and then the `gait` (default `hstep` = H-Step,
-  the high-stepping RUG gait, 0x21010407, user 2026-11-20; `rug` = RUG gait General gear,
-  0x21010401, the gait before; robot_info.md §6.3), each once. The same gait is sent again
+  (0x21010D06, needed before gait requests) and then the `gait` (default `rug` = RUG gait General gear,
+  0x21010401, again since 2026-11-21; `hstep` = H-Step, the high-stepping RUG gait,
+  0x21010407, the default 2026-11-20/21; robot_info.md §6.3), each once. The same gait is sent again
   after Pose-mode looks, lying down and AI mode. `none` or drive:=false: nothing
   is sent. The operator sends lite3_auto AFTER this ("gait sent" in the log): the documented
   order is gait request, then auto mode. There is no gait feedback; watch the robot.
@@ -120,8 +120,9 @@ HARD_MAX_W = 0.5    # rad/s, team limit
 
 MOVE_MODE = 0x21010D06
 STAND_TOGGLE = 0x21010202   # stand <-> sit; only ever sent to a robot measured lying down
-# robot_info.md §6.3. hstep = H-Step (high-stepping RUG gait, gait state 13): the navigation
-# gait since 2026-11-20 (user); it made the robot unsteady once (2026-11-12): rug = before.
+# robot_info.md §6.3. hstep = H-Step (high-stepping RUG gait, gait state 13): the
+# navigation gait 2026-11-20/21; it made the robot unsteady once (2026-11-12). rug = RUG gait
+# General gear: the default again since 2026-11-21 (user).
 GAITS = {'hstep': 0x21010407, 'rug': 0x21010401, 'none': None}
 MANUAL_MODE = 0x21010C02
 AI_STATE = 0x21010528
@@ -168,7 +169,7 @@ class CmdVelBridge(Node):
         p('odom_jump_window', 60.0)     # s
         p('cloud_topic', '/livox/points')
         p('odom_topic', '/odom')
-        p('gait', 'hstep')              # sent once at startup; 'none' = leave the gait alone
+        p('gait', 'rug')              # sent once at startup; 'none' = leave the gait alone
         p('gait_wait', 20.0)            # s to wait for a /simple_cmd subscriber before giving up
         p('auto_stand', True)           # lying at launch -> send stand once (see module doc)
         p('stand_wait', 30.0)           # s from start to get a posture before giving up (not sent)

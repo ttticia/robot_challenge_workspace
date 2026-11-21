@@ -29,7 +29,9 @@ Detection is in maze_nav/stairs.py (risers in the depth image) and maze_nav/stai
      stairs found but further than trigger_distance or seen from beside, anything seen
      while maze_explorer is in a junction / dead-end / start look (`detect_states`: it
      detects there now, but never hands over: stair checks come after junction checking) -
-     is a CANDIDATE within `check_distance` m. Once the explorer is back in trigger_states
+     is a CANDIDATE within `check_distance` m - but only while the explorer is in a junction
+     look or dead-end stop (`look_states`, user 2026-11-21; candidates elsewhere are logged
+     and dropped, and must be > `check_min_width` m wide). Once the explorer is back in trigger_states
      (candidate <= `check_max_age` s old): HANDOVER, then turn on the spot to face its first
      riser and hold still `check_hold` s, detecting: camera frames with a chain of discrete
      risers near it (and lidar estimates, half weight) are hits. Confirmed by the trackers,
@@ -98,7 +100,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
-from std_msgs.msg import String
+from std_msgs.msg import Float32, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from maze_nav import stairs_lidar
@@ -175,6 +177,9 @@ class StairDetector(Node):
         p('check_horizon', 0.5)                # s each command is checked ahead
         p('lidar_topic', '/livox/points')      # '' = camera only
         p('lidar_rate', 2.0)                   # Hz lidar stair detection on the height map
+        # s between height-map scans while not looking (PAUSED, junction looks without the
+        # stair check, inspections...): the map stays current at ~1/3 the cost. 0 = every scan.
+        p('idle_lidar_period', 0.3)
         p('lidar_vote_window', 4)
         p('lidar_vote_need', 2)
         p('lidar_vote_pos_tol', 0.12)          # m; lidar risers are good to ~5-10 cm
@@ -187,6 +192,10 @@ class StairDetector(Node):
         # frames, lidar, far / beside stairs and the explorer's looks; checked after them.
         p('check', True)
         p('detect_states', ['JUNCTION', 'DEAD_END', 'SCANNING'])   # detect, never hand over
+        # Possible stairs are only taken (for a check) during these explorer looks (user
+        # 2026-11-21): the junction look and the dead-end stop; checked right after the look.
+        # Confirmed stairs still take over anywhere. [] = any time (the old behaviour).
+        p('look_states', ['JUNCTION', 'DEAD_END'])
         p('check_distance', 2.5)               # m: candidates nearer than this get checked
         p('check_max_age', 20.0)               # s a candidate stays worth checking
         p('check_hold', 3.0)                   # s still, facing it
@@ -194,6 +203,27 @@ class StairDetector(Node):
         p('check_hit_radius', 0.5)             # m: a hit's first riser this near the candidate
         p('check_forget', 120.0)               # s a rejected spot is left alone
         p('check_forget_radius', 0.8)          # m
+        # m of step edge seen across (each step is >= 0.6 m long, user 2026-11-21) before a
+        # possible-stairs check; the check's own hits and confirmed stairs (>= 2 risers,
+        # tracked) don't need it
+        p('check_min_width', 0.6)
+        # Possible stairs need >= check_min_risers steps averaging > check_min_rise m (user
+        # 2026-11-21: a single step-like obstacle was a false positive)
+        p('check_min_risers', 2)
+        p('check_min_rise', 0.08)
+        # Pose-mode pitch sweep during the check's hold (user 2026-11-21): level, nose up
+        # check_pitch_deg, nose down check_pitch_deg (cmd_vel_bridge /maze/pose_*), so the
+        # camera sees the upper steps and the bottom riser. Unavailable -> the plain hold.
+        p('check_pose', True)
+        p('check_pitch_deg', 10.0)
+        p('pose_yaw_topic', '/maze/pose_yaw')
+        p('pose_pitch_topic', '/maze/pose_pitch')
+        p('pose_status_topic', '/maze/pose_status')
+        # Curtains are checked before stairs (user 2026-11-21): no possible-stairs HANDOVER
+        # while curtain_detector is busy (/curtain/status not IDLE), nor within curtain_grace
+        # s after the explorer leaves a look (its held curtain inspection goes first).
+        p('curtain_status_topic', '/curtain/status')   # '' = don't wait for curtains
+        p('curtain_grace', 2.0)
         g = lambda n: self.get_parameter(n).value  # noqa: E731
 
         self.params = StairParams(standing_height=float(g('standing_height')),
@@ -229,6 +259,8 @@ class StairDetector(Node):
         self.clouds = []                # PointCloud2 waiting for TF
         self.floor_z = None             # odom z of the floor from the lidar map
         self.lidar_scans = 0
+        self.idle_lidar_period = float(g('idle_lidar_period'))
+        self.last_hmap_add = -1e9       # monotonic s of the last scan added to the height map
 
         self.tf = Buffer()
         self.tf_listener = TransformListener(self.tf, self)
@@ -268,12 +300,31 @@ class StairDetector(Node):
         self.stop_xy = None             # where AT_STAIRS was reached (standalone re-arm)
         self.check_on = bool(g('check'))
         self.detect_states = tuple(g('detect_states'))
+        self.look_states = tuple(g('look_states'))
         self.check_cfg = {n: float(g(n)) for n in (
             'check_distance', 'check_max_age', 'check_hit_radius', 'check_forget',
-            'check_forget_radius')}
+            'check_forget_radius', 'check_min_width', 'check_min_risers', 'check_min_rise')}
+        pitch = math.radians(float(g('check_pitch_deg')))
         self.check_params = CheckParams(hold=float(g('check_hold')), need=int(g('check_need')),
                                         turn_rate=float(g('max_turn_rate')),
-                                        min_turn_rate=float(g('min_turn_rate')))
+                                        min_turn_rate=float(g('min_turn_rate')),
+                                        pose=bool(g('check_pose')) and bool(g('pose_yaw_topic')),
+                                        pitches=((0.0, 1.0), (-pitch, 1.5), (pitch, 1.5),
+                                                 (0.0, 0.5)))
+        self.pose_status = None         # cmd_vel_bridge /maze/pose_status
+        self.pose_yaw_pub = self.create_publisher(Float32, g('pose_yaw_topic'), 10) \
+            if g('pose_yaw_topic') else None
+        self.pose_pitch_pub = self.create_publisher(Float32, g('pose_pitch_topic'), 10) \
+            if g('pose_pitch_topic') else None
+        if g('pose_status_topic'):
+            self.create_subscription(String, g('pose_status_topic'), self.on_pose_status,
+                                     LATCHED)
+        self.curtain_status = None      # curtain_detector state, None = not heard
+        self.curtain_grace = float(g('curtain_grace'))
+        self.look_left_at = -1e9        # monotonic s the explorer last left a look state
+        if g('curtain_status_topic'):
+            self.create_subscription(String, g('curtain_status_topic'), self.on_curtain_status,
+                                     LATCHED)
         self.candidate = None           # (StairEstimate odom, monotonic time, what)
         self.checking = False           # the pending HANDOVER is for a check
         self.check = None               # StairCheck while CHECKING
@@ -322,8 +373,28 @@ class StairDetector(Node):
     def on_depth(self, msg):
         self.depth, self.depth_new = msg, True
 
+    def on_pose_status(self, msg):
+        self.pose_status = msg.data
+
+    def on_curtain_status(self, msg):
+        self.curtain_status = msg.data.split(':', 1)[0].strip()
+
+    def send_look(self, look):
+        """StairCheck's look request -> /maze/pose_yaw + /maze/pose_pitch (float: keep the
+        Pose look going at that pitch; 'end': NaN)."""
+        if look is None or self.pose_yaw_pub is None:
+            return
+        yaw = float('nan') if look == 'end' else 0.0
+        pitch = float('nan') if look == 'end' else float(look)
+        self.pose_yaw_pub.publish(Float32(data=yaw))
+        if self.pose_pitch_pub is not None:
+            self.pose_pitch_pub.publish(Float32(data=pitch))
+
     def on_explorer(self, msg):
+        prev = self.explorer
         self.explorer = msg.data.split(':', 1)[0].strip()
+        if prev in self.look_states and self.explorer not in self.look_states:
+            self.look_left_at = time.monotonic()
         if self.state == 'HANDOVER' and self.explorer == 'STAIRS':
             self.start_check() if self.checking else self.start_manoeuvre()
 
@@ -362,6 +433,24 @@ class StairDetector(Node):
         d = abs(est.distance(np.asarray(xy, float)))
         if d > self.check_cfg['check_distance']:
             return
+        if self.status_topic and self.look_states and self.explorer not in self.look_states:
+            self.get_logger().info(f'possible stairs {d:.2f} m away ({what}) while '
+                                   f'{self.explorer}: checked only from a junction or dead-end '
+                                   'look', throttle_duration_sec=10.0)
+            return
+        if est.width < self.check_cfg['check_min_width']:
+            self.get_logger().info(f'step edge {d:.2f} m away ({what}) only {est.width:.2f} m '
+                                   f'wide < {self.check_cfg["check_min_width"]:.2f}: no '
+                                   'stair check', throttle_duration_sec=5.0)
+            return
+        if est.risers < self.check_cfg['check_min_risers'] or \
+                est.rise <= self.check_cfg['check_min_rise']:
+            self.get_logger().info(f'step-like edge {d:.2f} m away ({what}): {est.risers} '
+                                   f'step(s) of {est.rise * 100:.0f} cm; needs >= '
+                                   f'{self.check_cfg["check_min_risers"]:.0f} steps over '
+                                   f'{self.check_cfg["check_min_rise"] * 100:.0f} cm: no stair '
+                                   'check', throttle_duration_sec=5.0)
+            return
         now = time.monotonic()
         old = self.candidate
         if old is None or now - old[1] > 1.0 or d < abs(old[0].distance(np.asarray(xy))):
@@ -379,6 +468,8 @@ class StairDetector(Node):
             return
         if self.status_topic and self.explorer not in self.trigger_states:
             return                      # junction / dead-end / start looks come first
+        if self.curtain_status not in (None, 'IDLE') or now - self.look_left_at < self.curtain_grace:
+            return                      # curtains are checked first (user 2026-11-21)
         est, t, what = self.candidate
         if now - t > self.check_cfg['check_max_age']:
             self.candidate = None
@@ -408,8 +499,10 @@ class StairDetector(Node):
         self.check = StairCheck(est, pose[0], time.monotonic(), self.check_params)
         self.tracker.clear()            # fresh votes, facing them
         self.lidar_tracker.clear()
-        self.set_state('CHECKING', f'turning to face the possible stairs, then '
-                       f'{self.check_params.hold:.0f} s still looking for discrete steps')
+        self.set_state('CHECKING', 'turning to face the possible stairs, then '
+                       + ('Pose mode: level, nose up, nose down,' if self.check_params.pose
+                          else f'{self.check_params.hold:.0f} s still,')
+                       + ' looking for discrete steps')
 
     def end_check(self, stairs, why, found=None):
         """Check done: stairs -> line up (start_manoeuvre); else reject the spot."""
@@ -435,6 +528,9 @@ class StairDetector(Node):
     def check_control(self, now):
         if self.status_topic and self.explorer != 'STAIRS':
             self.stop_robot()
+            if self.check is not None and self.check.phase in ('POSE_ENTER', 'HOLD',
+                                                                 'POSE_LEAVE'):
+                self.send_look('end')
             self.check = None
             self.cooldown_until = now + 5.0
             return self.set_state('IDLE', f'stair check stopped: maze_explorer is '
@@ -444,13 +540,16 @@ class StairDetector(Node):
             self.cmd_pub.publish(Twist())
             return
         xy, yaw, _ = pose
-        w, phase = self.check.tick(now, xy, yaw)
+        w, phase, look = self.check.tick(now, xy, yaw, self.pose_status)
+        self.send_look(look)
         if phase == 'DONE':
             self.stop_robot()
             found, why = self.fused(now, xy)
             chk = self.check
             hits = (f'{chk.cam_hits} camera / {chk.lidar_hits} lidar hits in '
-                    f'{chk.p.hold:.0f} s')
+                    f'{chk.hold_time():.0f} s'
+                    + (' (Pose mode, pitched up and down)' if chk.posing else
+                       f' ({chk.pose_note})' if chk.pose_note else ''))
             if found is not None and not self.is_handled(found):
                 return self.end_check(True, f'confirmed: {found.risers} risers of '
                                       f'{found.rise * 100:.0f} cm, {why}; {hits}', found)
@@ -572,9 +671,13 @@ class StairDetector(Node):
     # ------------------------------------------------------------------ lidar
     def add_clouds(self):
         """Queued /livox/points into the odom height map (TF at each scan's stamp, never
-        blocking; scans whose TF isn't there within 0.5 s are dropped)."""
+        blocking; scans whose TF isn't there within 0.5 s are dropped). While not looking,
+        one scan per idle_lidar_period s; the others are dropped."""
         keep = []
+        idle, now = not self.looking(), time.monotonic()
         for msg in self.clouds[-10:]:
+            if idle and now - self.last_hmap_add < self.idle_lidar_period:
+                continue
             stamp = Time.from_msg(msg.header.stamp)
             try:
                 tf_l = self.tf.lookup_transform(self.odom_frame, msg.header.frame_id, stamp)
@@ -590,6 +693,7 @@ class StairDetector(Node):
                             msg.height, msg.is_bigendian)
             self.hmap.add(pts @ r_l.T + t_l, t_b, math.atan2(r_b[1, 0], r_b[0, 0]))
             self.lidar_scans += 1
+            self.last_hmap_add = now
         self.clouds[:] = keep
 
     def process_lidar(self):

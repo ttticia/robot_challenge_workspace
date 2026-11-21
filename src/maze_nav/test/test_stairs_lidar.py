@@ -172,3 +172,35 @@ def test_fuse_rules():
     # ... a step nearer, but not anchored on the floor: the camera's edge too.
     out, _ = L.fuse(cam, None, L.Check('confirm', along=1.35, anchored=False), xy)
     assert out.distance(np.zeros(2)) == pytest.approx(1.5)
+
+
+def test_height_map_add_matches_unique_maximum_at():
+    """HeightMap.add's sort + reduceat gives exactly the old np.unique + np.maximum.at map."""
+    rng = np.random.default_rng(3)
+    p = L.LidarParams()
+    new = L.HeightMap(p)
+    old_top = np.zeros_like(new.top)
+    old_cnt = np.zeros_like(new.cnt)
+    for _ in range(5):
+        pts = np.c_[rng.uniform(-3, 3, (4000, 2)), rng.uniform(-0.5, 0.25, 4000)]
+        base = np.array([0.1, -0.2, 0.0])
+        new.add(pts, base, 0.3)
+        # the old implementation, inline
+        dz = pts[:, 2] - base[2]
+        dx, dy = pts[:, 0] - base[0], pts[:, 1] - base[1]
+        c, s = math.cos(0.3), math.sin(0.3)
+        fx, fy = c * dx + s * dy, -s * dx + c * dy
+        own = (fx > -p.body_back) & (fx < p.body_front) & (np.abs(fy) < p.body_half_width)
+        keep = ~own & (dz > -p.keep_below) & (dz < p.keep_above)
+        i, j = new.index(pts[keep, :2])
+        ok = (i >= 0) & (i < new.n) & (j >= 0) & (j < new.n)
+        i, j, z = i[ok], j[ok], pts[keep][ok, 2]
+        cells, inv = np.unique(i * new.n + j, return_inverse=True)
+        mx = np.full(len(cells), -np.inf)
+        np.maximum.at(mx, inv, z)
+        ci, cj = cells // new.n, cells % new.n
+        fresh = old_cnt[ci, cj] == 0
+        old_top[ci, cj] = np.where(fresh, mx, (1 - p.alpha) * old_top[ci, cj] + p.alpha * mx)
+        old_cnt[ci, cj] += 1.0
+    assert np.array_equal(new.cnt, old_cnt)
+    assert np.allclose(new.top, old_top, atol=0, rtol=0)

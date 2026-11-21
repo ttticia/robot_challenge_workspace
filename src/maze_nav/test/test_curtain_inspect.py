@@ -114,3 +114,18 @@ def test_times_out_before_lying_but_never_while_lying():
                        InspectParams(timeout=2.0, lie_hold=6.0))      # lying outlasts timeout
     _, _, _, _, step, _, _ = run(plan, (0.0, 0.0), 0.0, Bridge())
     assert step.why == 'measured lying down'
+
+
+def test_gives_up_when_it_makes_no_progress_towards_the_look_point():
+    """2026-11-21 sim: the look point was behind a wall, the robot pinned, the inspection ran
+    the full 75 s. Now: stuck_time s without getting stuck_gain m closer -> done."""
+    plan = InspectPlan((3.0, 0.0), (1.0, 0.0), 0.0, InspectParams(stuck_time=5.0))
+    xy, t, step = np.array([0.0, 0.0]), 0.0, None
+    while t < 30.0:                                          # commanded, never moves
+        step = plan.tick(t, xy, 0.0, 'UNAVAILABLE: sim', 'IDLE')
+        if step.done:
+            break
+        t += 0.1
+    assert step.done and step.why.startswith('no progress towards the look point')
+    assert 5.0 < t < 6.0
+    assert plan.p.timeout == 45.0 and InspectParams().timeout == 45.0

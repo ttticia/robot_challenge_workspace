@@ -25,6 +25,8 @@ setup(
             'maze_explorer = maze_nav.explorer:main',
             'cmd_vel_bridge = maze_nav.cmd_vel_bridge:main',
             'scene_trigger = maze_nav.scene_understanding.scene_trigger:main',
+            'room_scene = maze_nav.scene_understanding.room_scene:main',
+            'task_reporter = maze_nav.task_reporter:main',
             'cpu_monitor = maze_nav.cpu_monitor:main',
             'stair_detector = maze_nav.stair_detector:main',
             'curtain_detector = maze_nav.curtain_detector:main',

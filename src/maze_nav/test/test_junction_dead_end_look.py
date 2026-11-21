@@ -2,6 +2,7 @@
 2026-11-20: "robot not going into pose mode at room scanning"), explorer side, no ROS.
 
 python3 -m pytest -q test/test_junction_dead_end_look.py"""
+import json
 import math
 from types import SimpleNamespace
 
@@ -16,14 +17,17 @@ from maze_nav.scene_understanding.scene_cells import CellGrid
 class Fake:
     for _n in ('plan_after_junction', 'after_junction_tick', 'next_after_junction',
                'look_tick', 'at_dead_end', 'pause_junction', 'pose_side_wall', 'use_pose',
-               'send_pose', 'release_pose', 'set_state'):
+               'send_pose', 'release_pose', 'set_state', 'capture_view', 'tilt_pitch',
+               'pose_tick', 'junction_pending'):
         locals()[_n] = getattr(Explorer, _n)
 
     def __init__(self, pose_status='READY'):
         self.cfg = {'junction_trace_cells': 4, 'junction_dead_end_hold': 0.0,
                     'dead_end_side_hold': 0.0, 'dead_end_look_angle': math.radians(60),
                     'pose_max_yaw': math.radians(20), 'turn_margin': 0.03,
-                    'junction_follow': True}
+                    'junction_follow': True, 'tilt_comp': True,
+                    'tilt_threshold': math.radians(30), 'pose_max_pitch': math.radians(20),
+                    'camera_frame': 'camera_link', 'pose_turn_time': 0.0, 'pose_wait': 6.0}
         self.state, self.logs, self.states = 'JUNCTION', [], []
         self.log = SimpleNamespace(info=self.logs.append, warn=self.logs.append)
         self.status_pub = SimpleNamespace(publish=lambda m: self.states.append(m.data))
@@ -35,6 +39,22 @@ class Fake:
         self.box, self.pivot = (0.37, 0.27, 0.23), (0.0, 0.0)
         self.xy, self.yaw = (0.0, 1.0), math.pi        # cell before the dead end, facing -x
         self.junction, self.paused_junction, self.curtain_left_at = None, None, None
+        self.captures, self.pitches = [], []
+        self.scene_capture_pub = SimpleNamespace(
+            publish=lambda m: self.captures.append(json.loads(m.data)))
+        self.pose_pitch_pub = None                     # no tilt compensation unless set
+        self.tilt = (0.0, 0.0)
+        self.dead_end_cells = set()
+        self.cells = CellGrid()
+
+    def ros_ns(self):
+        return 10 * 10**9
+
+    def body_tilt(self):
+        return self.tilt
+
+    def tf_pitch(self, frame):
+        return None
 
     def get_logger(self):
         return self.log
@@ -135,3 +155,104 @@ def test_pause_mid_look_resumes_without_repeating_it(monkeypatch):
             break
     assert len(e.junction['steps']) == 2      # not added twice
     assert e.junction['todo'] == []
+
+
+def run(e, todo, ticks=40):
+    """Drive the follow-up's actions, the pose looks finishing at once (bridge POSING)."""
+    e.junction = Explorer.new_look([])
+    e.junction['rec'] = {}
+    e.junction['todo'] = todo
+    for _ in range(ticks):
+        e.look_tick()
+        if e.pose is not None:
+            e.pose['since'] = -1e9                     # held long enough
+            e.pose_status = 'POSING'
+            e.pose_tick()
+        e.spin_busy = False
+        if not e.junction or not e.junction.get('todo'):
+            break
+
+
+def test_dead_end_views_are_captured_once_each_last_flagged(monkeypatch):
+    e = Fake()
+    e.cfg['dead_end_side_hold'] = 1.0
+    todo = plan(e, monkeypatch)
+    run(e, todo[2:4])                                 # hold facing in, then the side walls
+    views = [(c['cell'], c['view'], c['last']) for c in e.captures]
+    assert views == [([0, 1], 'centre', False), ([0, 1], 'left', False),
+                     ([0, 1], 'right', True)]
+    assert all(c['cell_centre'] == [0.0, 1.0] for c in e.captures)
+    assert float(e.captures[1]['stamp']) - float(e.captures[1]['hold_start']) == 1.0
+    assert e.captures[0]['pitch_cmd_deg'] is None
+
+
+def test_checked_dead_end_cell_is_kept_out_of(monkeypatch):
+    e = Fake()
+    plan(e, monkeypatch)
+    assert (0, 1) in e.dead_end_cells                 # no frontier goal anywhere in it
+
+
+def test_tilt_over_threshold_pitches_every_dead_end_view(monkeypatch):
+    e = Fake()
+    e.pose_pitch_pub = SimpleNamespace(publish=lambda m: e.pitches.append(m.data))
+    e.tilt = (math.radians(-34), 0.0)                 # nose 34 deg up on a slope
+    todo = plan(e, monkeypatch)
+    run(e, todo[2:4])
+    assert len(e.captures) == 3
+    assert e.pitches and all(abs(p - math.radians(20)) < 1e-9 for p in e.pitches)
+    assert all(c['pitch_cmd_deg'] == 20.0 for c in e.captures)   # pose_max_pitch limit
+    assert e.spins == []
+
+
+def test_tilt_under_threshold_sends_no_pitch(monkeypatch):
+    e = Fake()
+    e.pose_pitch_pub = SimpleNamespace(publish=lambda m: e.pitches.append(m.data))
+    e.tilt = (math.radians(12), 0.0)
+    todo = plan(e, monkeypatch)
+    run(e, todo[2:4])
+    assert e.pitches == [] and len(e.captures) == 3
+
+
+def test_quat_pitch_is_nose_down_positive():
+    q = SimpleNamespace(x=0.0, y=math.sin(0.1), z=0.0, w=math.cos(0.1))   # +0.2 rad about y
+    pitch, roll = explorer_mod.quat_pitch_roll(q)
+    assert abs(pitch - 0.2) < 1e-9 and abs(roll) < 1e-9
+
+
+def dead_end_look(e):
+    """A DEAD_END look as on_dead_end builds it: facing into (0, 1) from (1, 1), along -x."""
+    sides = [{'name': f'dead end {k} wall', 'point': xy, 'facing': math.pi, 'view': k,
+              'hold': 1.0, 'short': True} for k, xy in (('left', (0.0, 0.5)),
+                                                         ('right', (0.0, 1.5)))]
+    e.state = 'DEAD_END'
+    e.junction = Explorer.new_look(explorer_mod.dead_end_scene(
+        [{'name': 'dead end', 'hold': 0.5}] + sides, (0, 1), (0.0, 1.0)))
+    for _ in range(40):
+        e.look_tick()
+        if e.pose is not None:
+            e.pose['since'] = -1e9
+            e.pose_status = 'POSING'
+            e.pose_tick()
+        e.spin_busy = False
+        if e.junction is None or e.junction['hold_until'] is not None:
+            if e.junction is not None:
+                e.junction['hold_until'] = 0.0             # holds over at once
+        if e.junction is None:
+            break
+
+
+def test_flat_dead_end_holds_plain_then_poses_side_walls():
+    e = Fake()
+    dead_end_look(e)
+    assert [c['view'] for c in e.captures] == ['centre', 'left', 'right']
+    assert len(e.poses) >= 2 and e.pitches == []
+
+
+def test_tilted_dead_end_centre_view_is_a_pitched_pose_look():
+    e = Fake()
+    e.pose_pitch_pub = SimpleNamespace(publish=lambda m: e.pitches.append(m.data))
+    e.tilt = (math.radians(33), math.radians(4))   # nose 33 deg down
+    dead_end_look(e)
+    assert [c['view'] for c in e.captures] == ['centre', 'left', 'right']
+    assert e.poses[0] == 0.0                       # centre: no body yaw, only pitch
+    assert all(abs(p + math.radians(20)) < 1e-9 for p in e.pitches)   # nose up, clamped

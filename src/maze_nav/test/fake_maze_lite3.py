@@ -143,7 +143,16 @@ class Maze:
         x0, x1, y0, y1 = self.room
         g = np.stack(np.meshgrid(np.arange(x0, x1, fs), np.arange(y0, y1, fs), [0.0],
                                  indexing='ij'), -1).reshape(-1, 3)
-        add(g, False)                                                     # lab floor
+        # Lab floor only where no terrain covers it: floor never occludes here, so the lab
+        # floor under the 0.1 m tiles showed through, and wall_scan measured the floor at
+        # odom -0.45 (lab floor) instead of -0.35 (the tiles the robot stands on) and guessed.
+        covered = np.zeros(len(g), bool)
+        for s in self.solids:
+            if s['kind'] in ('tile', 'mat', 'block', 'wedge', 'stairs'):
+                lo, hi = s['min'], s['max']
+                covered |= (g[:, 0] >= lo[0]) & (g[:, 0] <= hi[0]) & \
+                    (g[:, 1] >= lo[1]) & (g[:, 1] <= hi[1])
+        add(g[~covered], False)                                           # lab floor
         for lo, hi in (((x0, y0, 0), (x1, y0, 1)), ((x0, y1, 0), (x1, y1, 1)),
                        ((x0, y0, 0), (x0, y1, 1)), ((x1, y0, 0), (x1, y1, 1))):
             add(surface(lo, hi, 0.05, 'all'), True)                       # lab walls

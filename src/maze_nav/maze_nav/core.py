@@ -32,6 +32,44 @@ def cloud_xyz(data, fields, point_step, row_step, width, height, big_endian=Fals
     sensor_msgs_py's read_points_numpy refuses clouds with mixed field types.
     fields: iterable of objects with .name, .offset, .datatype (sensor_msgs/PointField).
     """
+    pts, _ = _cloud_points(data, fields, point_step, row_step, width, height, big_endian)
+    xyz = np.empty((len(pts), 3), np.float64)       # one allocation, no stack + astype copy
+    xyz[:, 0], xyz[:, 1], xyz[:, 2] = pts['x'], pts['y'], pts['z']
+    return xyz[np.isfinite(xyz).all(axis=1)]
+
+
+def cloud_rows(data, fields, point_step, row_step, width, height, big_endian=False):
+    """(rows, xyz): a PointCloud2's points as raw rows (N, point_step) uint8 (every field
+    kept, padding trimmed) and their x, y, z (N, 3) float64, NaNs left in, row for row.
+    lidar_relay selects rows with a mask and republishes them unchanged."""
+    pts, buf = _cloud_points(data, fields, point_step, row_step, width, height, big_endian)
+    xyz = np.empty((len(pts), 3), np.float64)
+    xyz[:, 0], xyz[:, 1], xyz[:, 2] = pts['x'], pts['y'], pts['z']
+    return buf.reshape(-1, point_step), xyz
+
+
+def crop_mask(xyz, up=None, low=-1.2, high=1.0, max_range=12.0, min_range=0.01):
+    """Points (lidar frame, (N, 3)) worth passing on: finite, min_range < distance <=
+    max_range (the Mid-360's no-return points are exactly (0, 0, 0), ~20 % of a cloud), and,
+    when `up` (unit vector, world up in the lidar frame) is given, low <= height above the
+    lidar along it <= high. No `up` = no height crop."""
+    d2 = np.einsum('ij,ij->i', xyz, xyz)
+    keep = (d2 > min_range * min_range) & (d2 <= max_range * max_range)   # NaN -> False
+    if up is not None:
+        h = xyz @ np.asarray(up, float)
+        keep &= (h >= low) & (h <= high)
+    return keep
+
+
+def up_in_frame(qx, qy, qz, qw):
+    """World up (the parent frame's z axis) in the child frame of a rotation quaternion
+    (parent <- child): the third row of its rotation matrix."""
+    return np.array([2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw),
+                     1 - 2 * (qx * qx + qy * qy)])
+
+
+def _cloud_points(data, fields, point_step, row_step, width, height, big_endian):
+    """(structured x/y/z view, flat uint8 buffer of width * height points)."""
     by_name = {f.name: f for f in fields}
     missing = [n for n in 'xyz' if n not in by_name]
     if missing:
@@ -42,13 +80,15 @@ def cloud_xyz(data, fields, point_step, row_step, width, height, big_endian=Fals
                                   for n in 'xyz'],
                       'offsets': [by_name[n].offset for n in 'xyz'],
                       'itemsize': point_step})
-    buf = np.frombuffer(bytes(data), dtype=np.uint8)
+    try:        # rclpy gives array('B') (or bytes): read it in place, no 0.5 MB bytes() copy
+        buf = np.frombuffer(data, dtype=np.uint8)
+    except (TypeError, ValueError):                       # a list of ints
+        buf = np.frombuffer(bytes(data), dtype=np.uint8)
     if height > 1 and row_step != width * point_step:     # padded rows: trim each row
         buf = buf[:height * row_step].reshape(height, row_step)[:, :width * point_step]
         buf = np.ascontiguousarray(buf).ravel()
-    pts = buf[:width * height * point_step].view(dtype)
-    xyz = np.stack([pts['x'], pts['y'], pts['z']], axis=1).astype(np.float64)
-    return xyz[np.isfinite(xyz).all(axis=1)]
+    buf = buf[:width * height * point_step]
+    return buf.view(dtype), buf
 
 
 def wall_ranges(points_odom, robot_xy, robot_yaw, floor_z, band, angle_min, angle_inc,
@@ -163,18 +203,23 @@ FLOOR_MIN_BODY_HEIGHT = 0.27   # m: lowest base_link height a measured floor may
 
 
 def floor_accepted(base_z, seen, expected_drop=0.35, tolerance=0.06,
-                   min_height=FLOOR_MIN_BODY_HEIGHT):
+                   min_height=FLOOR_MIN_BODY_HEIGHT, start_tile=0.0):
     """Is a measured floor (odom z) believable for a standing robot at odom z `base_z`?
 
     Judged by the body height it implies, not by its distance to `expected_drop` alone: the
     Lite3 stood at 0.29 m on 2026-11-19 (RUG gait), 0.06 m under the nominal 0.35 m, so a
     +-0.06 m window round 0.35 threw away a correct floor. Below `min_height` the robot is
     still getting up (a floor measured there puts the wall band above the 0.45 m wall tops).
+
+    start_tile (m): allowance for a robot standing on a raised tile while the walls stand on
+    the floor below it. 0 = none (wall_scan's default: in the sim example maze the walls
+    stand on the robot's own 0.1 m plate and the lower layer is the lab floor outside the
+    maze, which must NOT be taken; it made every wall look raised 10 cm).
     """
     if seen is None:
         return False
     h = base_z - seen
-    return min_height <= h <= expected_drop + tolerance
+    return min_height <= h <= expected_drop + tolerance + start_tile
 
 
 class StandSettle:

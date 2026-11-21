@@ -32,8 +32,9 @@ from dataclasses import dataclass
 import math
 
 import numpy as np
+from scipy import ndimage
 
-from maze_nav.core import FREE_MAX, OCCUPIED_MIN
+from maze_nav.core import FREE_MAX, OCCUPIED_MIN, Grid
 
 # Neighbour directions in cell indices, with names for the messages.
 DIRECTIONS = {'+i': (1, 0), '+j': (0, 1), '-i': (-1, 0), '-j': (0, -1)}
@@ -299,3 +300,80 @@ class DeadEndDetector:
                 return None
         self.reported.add(n)
         return n, name, sides
+
+
+def cell_objects(grid, cells, border=0.12, min_extent=0.2, min_pixels=4, min_known=0.5):
+    """{cell: (extent_m, (x, y))}: cells with an object inside (user 2026-11-21: rooms may
+    hold objects with a footprint of at least 0.3 x 0.3 m; the robot must not enter them).
+
+    An object is a FREE-STANDING connected blob of occupied map cells (8-connected, over the
+    whole map): every one of its map cells lies in one cell's interior (more than `border` m
+    from its edges, where the walls and SLAM's blur of them are), it is at least `min_extent`
+    m across and `min_pixels` map cells big. A blob that reaches out of the interior is part
+    of the walls, however far into the cell it comes: the real walls are not on the grid lines
+    (the grid starts at the robot's start pose; robot 2026-11-21 08:32: walls 0.10-0.15 m off
+    them, 5 cells blocked) and some maze walls run through a cell's middle (sim example maze:
+    9 cells "0.75 m across" blocked). The price: an object touching a wall on the map is not
+    found (Nav2 still drives around it). The lidar only sees an object's faces, so a 0.3 m box
+    can show as a single 0.3 m line. Cells less than `min_known` mapped inside are skipped.
+    Only things in the wall band (wall_scan: 0.30-0.45 m above the floor) are on the map;
+    lower objects can't be seen here.
+    """
+    h, w = grid.data.shape
+    res = grid.resolution
+    occ_all = grid.data >= OCCUPIED_MIN
+    if not occ_all.any():
+        return {}
+    cols, rows = np.meshgrid(np.arange(w), np.arange(h))
+    u, v = cells.local((grid.origin[0] + (cols + 0.5) * res, grid.origin[1] + (rows + 0.5) * res))
+    ci, cj = np.floor(u + 0.5).astype(int), np.floor(v + 0.5).astype(int)
+    inner = np.maximum(np.abs(u - ci), np.abs(v - cj)) <= 0.5 - border / cells.size
+    lab, n = ndimage.label(occ_all, structure=np.ones((3, 3), int))
+    idx = np.arange(1, n + 1)
+    # Wall-connected: any map cell of the blob outside every cell interior.
+    walls = np.bincount(lab[occ_all & ~inner], minlength=n + 1)[1:] > 0
+    npx = np.bincount(lab[occ_all], minlength=n + 1)[1:]
+    out = {}
+    cand = idx[~walls & (npx >= min_pixels)]
+    if len(cand) == 0:
+        return out
+    umin, umax = ndimage.minimum(u, lab, cand), ndimage.maximum(u, lab, cand)
+    vmin, vmax = ndimage.minimum(v, lab, cand), ndimage.maximum(v, lab, cand)
+    umean, vmean = ndimage.mean(u, lab, cand), ndimage.mean(v, lab, cand)
+    for k, u0, u1, v0, v1, um, vm in zip(cand, umin, umax, vmin, vmax, umean, vmean):
+        extent = max(u1 - u0, v1 - v0) * cells.size + res
+        if extent < min_extent:
+            continue
+        cell = (int(math.floor(um + 0.5)), int(math.floor(vm + 0.5)))   # all in one interior
+        in_cell = inner & (ci == cell[0]) & (cj == cell[1])
+        if (grid.data[in_cell] >= 0).mean() < min_known:
+            continue
+        if cell not in out or extent > out[cell][0]:
+            xy = cells.world((float(um), float(vm)))
+            out[cell] = (float(extent), (float(xy[0]), float(xy[1])))
+    return out
+
+
+def block_cells(grid, cells, blocked, value=100):
+    """Copy of grid (core.Grid) with every map cell inside the given maze cells set to
+    `value` (occupied), so no frontier goal and no Nav2 path goes into them."""
+    if not blocked:
+        return grid
+    data = grid.data.copy()
+    h, w = data.shape
+    res = grid.resolution
+    for cell in blocked:
+        corners = np.array([cells.world((cell[0] + a, cell[1] + b))
+                            for a in (-0.5, 0.5) for b in (-0.5, 0.5)])
+        lo = np.floor((corners.min(axis=0) - np.array(grid.origin)) / res).astype(int)
+        hi = np.ceil((corners.max(axis=0) - np.array(grid.origin)) / res).astype(int)
+        c0, r0 = max(lo[0], 0), max(lo[1], 0)
+        c1, r1 = min(hi[0], w - 1), min(hi[1], h - 1)
+        if c1 < c0 or r1 < r0:
+            continue
+        cols, rows = np.meshgrid(np.arange(c0, c1 + 1), np.arange(r0, r1 + 1))
+        u, v = cells.local((grid.origin[0] + (cols + 0.5) * res,
+                            grid.origin[1] + (rows + 0.5) * res))
+        inside = np.maximum(np.abs(u - cell[0]), np.abs(v - cell[1])) <= 0.5
+        data[rows[inside], cols[inside]] = value
+    return Grid(data, grid.resolution, grid.origin)
