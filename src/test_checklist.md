@@ -13,9 +13,12 @@ Status at the 2026-11-22 wrap-up push:
   First item below: run the full suites.
 - Simulator: the example maze (`maze_cols:=0`, `depth_rate:=0`) reached `EXITED` in 128–309 s,
   slower than before because of the junction scans and queue checks. The curtain maze reached
-  `EXITED`. Minimum wall clearance 4.2 cm. On `challenge_a`, two clean runs (src-8b; src-e2's
-  rolling-pin rerun) both stuck at the curtain: `AT_CURTAIN` at (1.70, 1.0), "not through
-  after 120 s". No `challenge_*` maze has reached `AT_EXIT` yet.
+  `EXITED`. Minimum wall clearance 4.2 cm. **First full grid-exit pass:** `challenge_a_flat`
+  explored everything, chose the exit on the final map and parked `AT_EXIT` 0.03 m off the
+  launch cell's centre, 1° off facing the exit, never leaving the maze. On `challenge_a`, two
+  clean runs (src-8b; src-e2's rolling-pin rerun) both stuck at the curtain: `AT_CURTAIN` at
+  (1.70, 1.0) on the ribbed mat in (2, 1), "not through after 120 s". `challenge_a_no_curtain`
+  ended `AT_STAIRS: NOT LINED UP` after 45 s (21° off): a stair line-up problem, not the exit.
 - Robot: nothing from this list yet.
 
 ## 1. Before the robot (simulator and unit tests)
@@ -33,7 +36,12 @@ How to run: `skills.md` recipes 2 and 3. Use a free ROS domain; other sessions m
 - [ ] Rolling pin (18 cm, across `challenge_a` cell (2, 0)): exploration walks over it with
       H-Step and the sensors don't read it as a wall, stairs or curtain. The 22:30 run never left
       the start cell (CPU load 27: SENSOR STALE), so it's unverified (`to_do.md` obstacles).
-- [ ] Facing the exit at `AT_EXIT` works in the simulator (only unit-tested so far).
+- [x] Facing the exit at `AT_EXIT` works in the simulator: 2026-11-22, `challenge_a_flat`
+      (0.03 m off centre, 1° off the exit heading).
+- [ ] Fix the curtain stall on `challenge_a` (`AT_CURTAIN` on the ribbed mat in (2, 1)): the
+      post-curtain wiggle never clears the sensors there. Then rerun `challenge_a`.
+- [ ] Fix the stair line-up on `challenge_a_no_curtain` (`NOT LINED UP` after 45 s, 21° off),
+      then rerun it.
 - [ ] Example maze and curtain maze still reach `EXITED` with `maze_cols:=0`.
 - [ ] Presentation mazes (`maze_stairs.json`, `maze_curtains.json`) run to the end.
 - [ ] Simulator depth camera: at 640 px / 5 Hz it delays odometry about 1.5 s and no map forms.

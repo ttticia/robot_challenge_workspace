@@ -69,7 +69,13 @@ NOT done / not confirmed:
    got STUCK AT THE CURTAIN on the route (CURTAIN -> AT_CURTAIN "not through after 120 s", waiting for
    /maze/start) and timed out, so the exit / launch cell was never reached. Look at curtain_detector's
    walk-through in the sim (challenge_a's curtain: 13 cm gap, 1 m mount, between (1, 1) and (2, 1)).
-   Also logged: 0 cm from a wall at maze (0.24, 1.36). Rerun:
+   Also logged: 0 cm from a wall at maze (0.24, 1.36).
+   FIRST FULL PASS (23:2x): challenge_a_flat (no curtain, no stairs): explored everything, looked
+   into the object room without entering, exit chosen on the final map ([4, 2] +x, 73 replans),
+   crept 20 cm to the centre after Nav2 stopped short, AT_EXIT 0.03 m off centre, 1 deg off facing
+   the exit, never left the maze. challenge_a_no_curtain: stopped AT_STAIRS "NOT LINED UP after 45 s"
+   (0.85 m from the first riser, 21 deg off): the stair line-up needs work (and the AI-mode crossing
+   can't be simulated). Rerun:
    src/maze_nav/test/run_sim.sh 900 /tmp/sim_a challenge_a.json  (and _a_mirror, _b, _b_offset)
 2. maze_side auto (experimental; until fixed, set maze_side:=left / right for your arena). Weak
    spot: while undecided, goals on both sides are allowed, so the robot can leave the maze and
