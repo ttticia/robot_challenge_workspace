@@ -30,34 +30,39 @@ Nav2 can't talk to the robot directly, so this glue stays:
   latch until restart (odom_jump_limit 0 = latch at the first jump, the old behaviour).
 - drive:=false: publishes to ~/cmd_vel_preview instead of /cmd_vel (dry run).
 - Gait: at startup, once the robot bridge subscribes /simple_cmd, sends Move mode
-  (0x21010D06, needed before gait requests) and then the `gait` (default `rug` = RUG gait General gear,
-  0x21010401, again since 2026-11-21; `hstep` = H-Step, the high-stepping RUG gait,
-  0x21010407, the default 2026-11-20/21; robot_info.md §6.3), each once. The same gait is sent again
+  (0x21010D06, needed before gait requests) and then the `gait` (default `hstep` = H-Step,
+  the high-stepping RUG gait, 0x21010407, again since 2026-11-22 (user: for now); `rug` = RUG
+  gait General gear, 0x21010401, the default 2026-11-21; robot_info.md §6.3), each once. The same gait is sent again
   after Pose-mode looks, lying down and AI mode. `none` or drive:=false: nothing
   is sent. The operator sends lite3_auto AFTER this ("gait sent" in the log): the documented
   order is gait request, then auto mode. There is no gait feedback; watch the robot.
-- Auto stand (auto_stand:=true): before the gait, if wall_scan's /maze/body_height says the
-  robot is LYING DOWN, sends stand (0x21010202) once and waits until it stands (stand_timeout).
-  0x21010202 is a stand/sit TOGGLE: sent to a standing robot it sits down, so it is never sent
-  when the robot already stands or its posture is unknown (no height within stand_wait, e.g.
-  floor_z given). Runs at launch, before the explorer waits for /maze/start.
+- Standing check (wait_for_stand:=true, user 2026-11-21): before the gait, if wall_scan's
+  /maze/body_height says the robot is NOT standing, logs an ERROR every 5 s and waits (no
+  deadline) until it stands; nothing is sent to stand it up (0x21010202 is a stand/sit
+  toggle). Posture unknown (no height within stand_wait, e.g. floor_z given): the gait goes
+  out anyway. wall_scan doesn't measure the floor until the robot stands either, so there is
+  no map and the explorer doesn't reach PAUSED before that.
+- Sideways (user 2026-11-21, junction centring): `linear.y` is forwarded, clamped to
+  `max_lateral` (0.10 m/s).
 - AI mode at the stairs (ai_on_stairs:=true): when stair_detector reports AT_STAIRS lined up
   (not "NOT LINED UP"), this node stops forwarding velocity, sends one zero Twist if it was
   driving, then on /simple_cmd: manual mode (0x21010C02; AI mode can't be entered from auto
   mode), AI state (0x21010528), AI basic gait (0x2101052A), `ai_settle` s apart. While in AI
   mode Nav2 commands are dropped.
-  AI walk (ai_walk_distance > 0, default 1.2 m; the user's call 2026-11-19, overriding the
-  earlier "no velocity in AI mode" rule): `ai_walk_delay` s after the AI basic gait, this node
-  itself publishes straight-ahead /cmd_vel at `ai_walk_speed` (0.1 m/s, 10 Hz) until /odom
-  shows `ai_walk_distance` travelled in the plane, then ONE zero Twist and nothing more. It
-  also stops (zero Twist) when there is less than 0.1 m of progress in `ai_walk_timeout` s
-  (robot_info.md §6.3: AI state may ignore /cmd_vel; untested), when /odom or the cloud go
-  stale, on /maze/start, and on shutdown. Outside the walk, nothing goes to /cmd_vel in AI
-  mode, not even an idle stop.
-  /maze/start (the operator's, which also resumes the explorer) leaves AI mode: AI exit
-  (0x2101052B), manual mode, then Move mode + `gait` again (not valid in AI state, so lost),
-  then velocity is forwarded again; the robot follows it once the operator sends lite3_auto.
-  The same stairs don't switch again until /stairs/status has left AT_STAIRS.
+  AI walk (ai_walk_distance > 0, default 1.3 m, user 2026-11-21): `ai_walk_delay` s after the
+  AI basic gait, this node itself publishes straight-ahead /cmd_vel at `ai_walk_speed`
+  (0.1 m/s, 10 Hz) until /odom shows `ai_walk_distance` travelled in the plane, then ONE zero
+  Twist. It also stops (zero Twist) when there is less than 0.1 m of progress in
+  `ai_walk_timeout` s (robot_info.md §6.3: AI state may ignore /cmd_vel; untested), when /odom
+  or the cloud go stale, on /maze/start, and on shutdown. Outside the walk, nothing goes to
+  /cmd_vel in AI mode, not even an idle stop.
+  Walk done (`ai_auto_exit`, user 2026-11-21: carry on by itself): AI exit (0x2101052B),
+  manual mode, Move mode + `gait`, navigation (auto) mode, then velocity is forwarded again
+  and /maze/ai_status says DONE, which resumes the explorer. A walk that ended any other way
+  (no progress, stale sensors, odom jump) stays in AI mode, HOLDING, until /maze/start (the
+  operator's), which leaves AI mode the same way, without auto mode (lite3_auto by hand).
+  /maze/ai_status (latched String): IDLE, ENTERING, WALKING, LEAVING, DONE: why,
+  HOLDING: why. The same stairs don't switch again until /stairs/status has left AT_STAIRS.
   Descending stairs (AT_STAIRS "descending stairs: ...", stair_detector): the walk is
   `ai_walk_distance_down` (2.0 m: edge, 2-3 treads, the body off the last step) instead.
 - Terrain speed cap (`terrain_topic`, /maze/terrain from stair_detector, presentation mazes
@@ -128,12 +133,13 @@ from maze_nav.core import posture
 
 HARD_MAX_V = 0.25   # m/s, team limit
 HARD_MAX_W = 0.5    # rad/s, team limit
+HARD_MAX_VY = 0.10  # m/s sideways (junction centring only)
 
 MOVE_MODE = 0x21010D06
 STAND_TOGGLE = 0x21010202   # stand <-> sit; only ever sent to a robot measured lying down
 # robot_info.md §6.3. hstep = H-Step (high-stepping RUG gait, gait state 13): the
 # navigation gait 2026-11-20/21; it made the robot unsteady once (2026-11-12). rug = RUG gait
-# General gear: the default again since 2026-11-21 (user).
+# General gear: the default 2026-11-21; hstep the default again since 2026-11-22 (user, for now).
 GAITS = {'hstep': 0x21010407, 'rug': 0x21010401, 'none': None}
 MANUAL_MODE = 0x21010C02
 AI_STATE = 0x21010528
@@ -162,6 +168,10 @@ def clamp(value, limit):
     return max(-limit, min(limit, value))
 
 
+def moving(msg):
+    return msg.linear.x != 0.0 or msg.linear.y != 0.0 or msg.angular.z != 0.0
+
+
 def min_spin(v, w, min_w, v_eps=0.02, w_eps=0.01):
     """Turn on the spot (|v| < v_eps) slower than min_w -> min_w, same sign. Noise below
     w_eps and any turn while walking are left alone; min_w <= 0 = off."""
@@ -179,6 +189,7 @@ class CmdVelBridge(Node):
         p('drive', True)
         p('max_linear', HARD_MAX_V)
         p('max_angular', HARD_MAX_W)
+        p('max_lateral', HARD_MAX_VY)
         p('min_spin_rate', 0.15)        # rad/s: slowest turn on the spot sent (0 = off)
         p('idle_timeout', 0.5)          # s without Nav2 commands -> one stop
         p('sensor_timeout', 0.5)        # s without cloud or odom while driving -> stop, pause
@@ -191,15 +202,15 @@ class CmdVelBridge(Node):
         p('odom_jump_window', 60.0)     # s
         p('cloud_topic', '/livox/points')
         p('odom_topic', '/odom')
-        p('gait', 'rug')              # sent once at startup; 'none' = leave the gait alone
+        p('gait', 'hstep')            # sent once at startup; 'none' = leave the gait alone
         p('gait_wait', 20.0)            # s to wait for a /simple_cmd subscriber before giving up
-        p('auto_stand', True)           # lying at launch -> send stand once (see module doc)
-        p('stand_wait', 30.0)           # s from start to get a posture before giving up (not sent)
-        p('stand_timeout', 15.0)        # s after stand was sent to be standing, else no gait
+        p('wait_for_stand', True)       # not standing at launch -> ERROR, wait (see module doc)
+        p('stand_wait', 30.0)           # s from start to get a posture before going on anyway
         p('ai_on_stairs', True)         # AT_STAIRS lined up -> AI mode, no more velocity
         p('stairs_status_topic', '/stairs/status')
         p('ai_settle', 1.0)             # s still before the first mode command, and between them
-        p('ai_walk_distance', 1.2)      # m forward in AI mode after the switch; 0 = don't walk
+        p('ai_walk_distance', 1.3)      # m forward in AI mode after the switch; 0 = don't walk
+        p('ai_auto_exit', True)         # walk done -> leave AI mode, auto mode, explore on
         p('ai_walk_speed', 0.1)         # m/s for that walk (clamped to max_linear)
         p('ai_walk_delay', 2.0)         # s after the AI basic gait before walking
         p('ai_walk_timeout', 8.0)       # s with < 0.1 m progress -> stop the walk
@@ -244,6 +255,7 @@ class CmdVelBridge(Node):
         get = lambda name: self.get_parameter(name).value  # noqa: E731
         self.max_v = min(abs(get('max_linear')), HARD_MAX_V)
         self.max_w = min(abs(get('max_angular')), HARD_MAX_W)
+        self.max_vy = min(abs(get('max_lateral')), HARD_MAX_VY)
         self.min_spin = min(abs(get('min_spin_rate')), self.max_w)
         self.idle_timeout = get('idle_timeout')
         self.sensor_timeout = get('sensor_timeout')
@@ -277,8 +289,8 @@ class CmdVelBridge(Node):
         self.create_timer(0.1, self.watchdog)
         self.gait_steps = []
         self.stand = 'done'      # 'check' -> ('rising') -> 'done'
-        self.setup_gait(get('gait'), get('drive'), get('gait_wait'), get('auto_stand'),
-                        get('stand_wait'), get('stand_timeout'))
+        self.setup_gait(get('gait'), get('drive'), get('gait_wait'), get('wait_for_stand'),
+                        get('stand_wait'))
 
         self.seen = {'cloud': None, 'odom': None}
         self.last_cmd = 0.0
@@ -302,6 +314,13 @@ class CmdVelBridge(Node):
         self.walk_delay = float(get('ai_walk_delay'))
         self.walk_timeout = float(get('ai_walk_timeout'))
         self.walk = None         # dict while the AI walk is pending or driving
+        self.ai_auto_exit = bool(get('ai_auto_exit'))
+        self.ai_auto = False     # this AI exit is the automatic one: auto mode after it
+        self.ai_status = None
+        latched_ai = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                                durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.ai_status_pub = self.create_publisher(String, '/maze/ai_status', latched_ai)
+        self.set_ai_status('IDLE')
         self.create_timer(0.1, self.walk_tick)
         self.pose_max_yaw = max(1e-3, abs(float(get('pose_max_yaw'))))
         self.pose_manual = bool(get('pose_manual'))
@@ -369,12 +388,11 @@ class CmdVelBridge(Node):
             f"({'DRIVING' if get('drive') else 'DRY RUN'}), "
             f'limits {self.max_v} m/s, {self.max_w} rad/s')
 
-    def setup_gait(self, gait, drive, wait, auto_stand, stand_wait, stand_timeout):
+    def setup_gait(self, gait, drive, wait, wait_for_stand, stand_wait):
         if gait not in GAITS:
             self.get_logger().error(f'gait {gait!r} unknown (one of {sorted(GAITS)}); not sent')
             gait = 'none'
-        what = ' + '.join((['stand'] if auto_stand else [])
-                          + ([f'gait {gait}'] if GAITS[gait] is not None else []))
+        what = f'gait {gait}' if GAITS[gait] is not None else ''
         if not what:
             return
         if not drive:
@@ -384,11 +402,10 @@ class CmdVelBridge(Node):
             self.get_logger().warn('transfer_interfaces not found (source ~/lite3_ws); '
                                    f'{what} not sent')
             return
-        if auto_stand:
+        if wait_for_stand:
             self.stand = 'check'
             self.height = None
             self.stand_check_deadline = time.monotonic() + stand_wait
-            self.stand_timeout = stand_timeout
             latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                  durability=DurabilityPolicy.TRANSIENT_LOCAL)
             self.height_sub = self.create_subscription(
@@ -430,12 +447,17 @@ class CmdVelBridge(Node):
         self.walk_dist_now = self.walk_dist_down if 'descending' in why else self.walk_dist
         self.enter_ai(f'lined up at the stairs ({why.strip()})')
 
+    def set_ai_status(self, status):
+        if status != self.ai_status:
+            self.ai_status = status
+            self.ai_status_pub.publish(String(data=status))
+
     def on_start(self, _):
         """/maze/start while in AI mode: leave it (after entering has finished)."""
         if self.walk is not None:
             self.end_walk('/maze/start')
         if self.ai_mode and not self.ai_exit_wanted:
-            self.ai_exit_wanted = True
+            self.ai_exit_wanted, self.ai_auto = True, False
             self.get_logger().warn('/maze/start: leaving AI mode'
                                    + (' once it is entered' if self.ai_steps else ''))
             if not self.ai_steps:
@@ -445,14 +467,18 @@ class CmdVelBridge(Node):
         """Stop forwarding velocity, then manual -> AI state -> AI basic gait."""
         self.stop('switching to AI mode')       # one zero Twist, only if it was driving
         self.ai_mode, self.ai_armed, self.ai_exit_wanted = True, False, False
+        self.ai_auto = False
         if not self.drive:
             self.get_logger().warn(f'{reason}: DRY RUN, AI mode NOT sent; velocity '
                                    'forwarding stopped until /maze/start')
+            self.set_ai_status('HOLDING: DRY RUN')
             return
         if not self.simple_publisher():
             self.get_logger().error(f'{reason}: transfer_interfaces not found, AI mode NOT '
                                     'sent (lite3_ai by hand); velocity forwarding stopped')
+            self.set_ai_status('HOLDING: transfer_interfaces not found')
             return
+        self.set_ai_status('ENTERING')
         if getattr(self, 'gait_steps', None):
             self.finish_gait()                  # a gait still pending at launch: drop it
         self.get_logger().warn(f'{reason}: velocity forwarding STOPPED; switching to AI mode '
@@ -466,6 +492,7 @@ class CmdVelBridge(Node):
         if not self.drive:
             self.ai_mode = False
             self.get_logger().warn('DRY RUN: AI exit NOT sent; forwarding velocity again')
+            self.set_ai_status('IDLE')
             return
         if not self.simple_publisher():
             self.get_logger().error('transfer_interfaces not found: AI exit NOT sent '
@@ -475,6 +502,9 @@ class CmdVelBridge(Node):
         steps = [('AI exit', AI_EXIT), ('manual mode', MANUAL_MODE)]
         if self.gait_code is not None:
             steps += [('Move mode', MOVE_MODE), (f'gait {self.gait_req}', self.gait_code)]
+        if self.ai_auto:
+            steps.append(('navigation (auto) mode', AUTO_MODE))
+        self.set_ai_status('LEAVING')
         self.run_ai_steps(steps, 'exit')
 
     def run_ai_steps(self, steps, kind):
@@ -508,18 +538,33 @@ class CmdVelBridge(Node):
             elif self.walk_dist_now > 0.0 and self.walk_speed > 0.0:
                 self.walk = {'at': now + self.walk_delay, 'start': None,
                              'dist': self.walk_dist_now}
+                self.set_ai_status('WALKING')
                 self.get_logger().warn(
                     f'AI mode sent (no feedback: watch the robot / controller). Walking '
                     f'{self.walk_dist_now:.2f} m forward at {self.walk_speed:.2f} m/s in '
                     f'{self.walk_delay:.1f} s')
+            elif self.ai_auto_exit:
+                self.get_logger().warn('AI mode sent; no walk (ai_walk_distance 0): leaving '
+                                       'it again')
+                self.ai_auto = True
+                self.exit_ai()
             else:
+                self.set_ai_status('HOLDING: no walk')
                 self.get_logger().warn('AI mode sent (no feedback: watch the robot / '
                                        'controller). No velocity is sent until /maze/start')
         else:
             self.ai_exit_wanted = False
             self.ai_mode = False
-            self.get_logger().warn('AI mode left (no feedback: watch the robot). Forwarding '
-                                   'velocity again; the operator sends lite3_auto to drive')
+            if self.ai_auto:
+                self.ai_auto = False
+                self.set_ai_status('DONE: walked over the stairs, auto mode sent')
+                self.get_logger().warn('AI mode left, auto mode sent (no feedback: watch the '
+                                       'robot). Forwarding velocity again; exploring on')
+            else:
+                self.set_ai_status('IDLE')
+                self.get_logger().warn('AI mode left (no feedback: watch the robot). '
+                                       'Forwarding velocity again; the operator sends '
+                                       'lite3_auto to drive')
 
     # ------------------------------------------------------------------ AI walk
     def on_odom(self, msg):
@@ -590,7 +635,7 @@ class CmdVelBridge(Node):
         dx, dy = self.odom_xy[0] - w['start'][0], self.odom_xy[1] - w['start'][1]
         d = (dx * dx + dy * dy) ** 0.5
         if d >= w['dist']:
-            self.end_walk(f'{d:.2f} m done')
+            self.end_walk(f'{d:.2f} m done', done=True)
             return
         if d >= w['best'] + 0.1:
             w['best'], w['best_t'] = d, now
@@ -602,15 +647,22 @@ class CmdVelBridge(Node):
         out.linear.x = self.walk_speed
         self.pub.publish(out)
 
-    def end_walk(self, why, warn=False):
-        """One zero Twist if the walk was driving, then no more velocity in AI mode."""
+    def end_walk(self, why, warn=False, done=False):
+        """One zero Twist if the walk was driving. Done (the whole distance) and ai_auto_exit:
+        leave AI mode by itself; otherwise no more velocity in AI mode until /maze/start."""
         drove = self.walk is not None and self.walk['start'] is not None
         self.walk = None
         if drove:
             self.pub.publish(Twist())
+        auto = done and self.ai_auto_exit and self.ai_mode and not self.ai_exit_wanted
         log = self.get_logger().warn if warn else self.get_logger().info
         log(f'AI walk ended: {why}' + ('; sent stop' if drove else ' (had not started)')
-            + '. No velocity until /maze/start')
+            + ('. Leaving AI mode by itself' if auto else '. No velocity until /maze/start'))
+        if auto:
+            self.ai_auto = True
+            self.exit_ai()
+        elif self.ai_mode and not self.ai_exit_wanted:
+            self.set_ai_status(f'HOLDING: walk ended ({why})')
 
     def send_simple(self, name, code):
         self.simple_pub.publish(self.simple_cmd(cmd_code=code, size=0, type=0))
@@ -921,53 +973,44 @@ class CmdVelBridge(Node):
         self.set_lie_status(f'STANDING_UP: {why}; mode commands')
 
     def stand_tick(self, now):
-        """Auto stand; True once it's done (whatever the outcome) and the gait may follow."""
+        """Standing check: True once the gait may follow (standing, or posture unknown)."""
         h = self.height
         state = posture(h)
-        if self.stand == 'check':
-            if state == 'standing':
-                self.get_logger().info(f'robot already standing (base_link {h:.2f} m above '
-                                       'the floor): stand not sent')
-                self.stand = 'done'
-            elif state == 'lying':
-                self.get_logger().warn(f'robot LYING DOWN (base_link {h:.2f} m above the '
-                                       'floor): standing it up')
-                self.send_simple('stand', STAND_TOGGLE)
-                self.stand = 'rising'
-                self.stand_deadline = now + self.stand_timeout
-            elif now > self.stand_check_deadline:
-                why = ('no /maze/body_height from wall_scan' if h is None else
-                       f'base_link {h:.2f} m above the floor, neither lying nor standing')
-                self.get_logger().warn(f'posture unknown ({why}): stand NOT sent (stand it '
-                                       'with the handheld controller)')
-                self.stand = 'done'
-            return self.stand == 'done'
-        # rising
         if state == 'standing':
-            self.get_logger().info(f'robot standing (base_link {h:.2f} m above the floor)')
+            if getattr(self, 'stand_waited', False):
+                self.get_logger().info(f'robot standing now (base_link {h:.2f} m above the '
+                                       'floor): carrying on with the startup')
+                self.gait_next = now + 1.0              # let it settle before Move mode
+            else:
+                self.get_logger().info(f'robot standing (base_link {h:.2f} m above the floor)')
             self.stand = 'done'
-            self.gait_next = now + 1.0                  # let it settle before Move mode
             return True
-        if now > self.stand_deadline:
-            self.get_logger().error(
-                f'stand sent but the robot is not standing after {self.stand_timeout:.0f} s '
-                f'(base_link {"?" if h is None else f"{h:.2f}"} m above the floor): gait NOT '
-                'sent. Check the robot; stand it with the handheld controller')
+        if h is not None:
+            self.stand_waited = True
+            self.get_logger().error(f'robot NOT STANDING (base_link {h:.2f} m above the floor, '
+                                    'standing >= 0.25 m): stand it up with the handheld '
+                                    'controller. Waiting; gait not sent, no map until then',
+                                    throttle_duration_sec=5.0)
+            return False
+        if now > self.stand_check_deadline:
+            self.get_logger().warn('posture unknown (no /maze/body_height from wall_scan): '
+                                   'sending the gait anyway')
             self.stand = 'done'
-            self.gait_steps = []
             return True
         return False
 
     def gait_tick(self):
         now = time.monotonic()
+        if self.stand != 'done':
+            if not self.stand_tick(now):
+                return
+            self.gait_deadline = max(self.gait_deadline, now + 5.0)
         if self.simple_pub.get_subscription_count() == 0:
             # lite3_domain_bridge_4 subscribes only after it sees a publisher (robot_info §6.3)
             if now > self.gait_deadline:
                 self.get_logger().warn(f'no subscriber on /simple_cmd; {self.what} NOT sent '
                                        '(use the handheld controller)')
                 self.finish_gait()
-            return
-        if self.stand != 'done' and not self.stand_tick(now):
             return
         if not self.gait_steps:
             self.finish_gait()
@@ -1000,24 +1043,24 @@ class CmdVelBridge(Node):
 
     def on_cmd(self, msg):
         if self.ai_mode:
-            if msg.linear.x != 0.0 or msg.angular.z != 0.0:
+            if moving(msg):
                 self.get_logger().warn('AI mode: velocity command dropped',
                                        throttle_duration_sec=5.0)
             return
         if self.pose_phase != 'idle':
-            if msg.linear.x != 0.0 or msg.angular.z != 0.0:
+            if moving(msg):
                 self.get_logger().warn(f'pose mode ({self.pose_phase}): velocity command '
                                        'dropped', throttle_duration_sec=5.0)
             return
         if self.lie_phase != 'idle':
-            if msg.linear.x != 0.0 or msg.angular.z != 0.0:
+            if moving(msg):
                 self.get_logger().warn(f'lying down / standing up ({self.lie_phase}): velocity '
                                        'command dropped', throttle_duration_sec=5.0)
             return
         if self.blocked or self.paused:
             return
         stale = [n for n in self.seen if self.sensor_age(n) > self.sensor_timeout]
-        if stale and (msg.linear.x != 0.0 or msg.angular.z != 0.0):
+        if stale and (moving(msg)):
             self.pause(f'no {"/".join(stale)} for > {self.sensor_timeout} s')
             return
         out = Twist()
@@ -1030,8 +1073,10 @@ class CmdVelBridge(Node):
             self.get_logger().info(f'terrain ahead {self.terrain_level}: speed capped at '
                                    f'{cap:.2f} m/s', throttle_duration_sec=5.0)
         out.linear.x = max(0.0, clamp(msg.linear.x, cap))
+        out.linear.y = clamp(msg.linear.y, self.max_vy)
         out.angular.z = min_spin(out.linear.x, clamp(msg.angular.z, self.max_w),
-                                 self.min_spin)
+                                 self.min_spin) if out.linear.y == 0.0 else \
+            clamp(msg.angular.z, self.max_w)
         self.last_cmd, self.active = now, True
         self.pub.publish(out)
 

@@ -6,6 +6,11 @@ stairs were missed in 2nd last run. need to make stair check more robust.
 ## curtains
 some walls have a cavity that could be read as curtain gap. when checking for curtain look for curtain gap that extends >10cm behind the supposed curtain.
 
+## posture
+Check whether the robot's posture can be published to ROS. The motion host already sends `robot_basic_state` (1 sitting, 5 sit->stand, 6 standing, 7 stand->sit, 8 lose-control protection, ...) in its 50 Hz `RobotStateUpload` packet (code 0x0901, offset 0; robot_info.md §6.4.3), but `lite3_domain_bridge_4` only turns that packet into /leg_odom*, so ROS never sees it (robot_info.md §3.3). Same packet: `robot_gait_state` (offset 4) and `robot_motion_state` (offset 172: 0 still, 1 stepping).
+1. Ask whoever runs the robot's driver container (agent.md §12) whether the bridge can publish basic / gait / motion state (e.g. std_msgs/Int32 or one String JSON topic). We can't read the UDP packet ourselves: it goes to the bridge.
+2. If yes: cmd_vel_bridge's lying / standing check (core.posture on base_z - floor) and stair_detector's FloorTracker standing gate (/maze/lie_status) can use it instead of a floor-based height. The gait state would also confirm gait changes, which today can only be seen on the robot or the handheld controller.
+
 ## turning
 Costmap and path planning behaviour needs to be tuned. need to run with ros-bag and make turning avoid inner wall without inflating costmap too much.
 

@@ -18,7 +18,7 @@ def test_cell_and_centre():
 
 
 def test_same_convention_as_maze_nav():
-    cg = pytest.importorskip('maze_nav.scene_understanding.scene_cells')
+    cg = pytest.importorskip('maze_nav.scene_cells')
     rnd = random.Random(1)
     for _ in range(200):
         size, o, yaw = rnd.uniform(0.5, 1.5), (rnd.uniform(-1, 1), rnd.uniform(-1, 1)), \

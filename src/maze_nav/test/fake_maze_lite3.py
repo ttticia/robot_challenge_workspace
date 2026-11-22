@@ -50,11 +50,12 @@ from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs.msg import CameraInfo, Image, PointCloud2, PointField
 from std_msgs.msg import String
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 from extru_wall import extru_boxes  # noqa: E402  (test/, next to this script)
+from stair_scene import K as CAM_K, R_BASE_CAM, T_BASE_CAM  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STAND = 0.35                       # base_link above the feet
@@ -119,6 +120,58 @@ def steps_risers(s):
     return out
 
 
+BOX_EDGES = [(a, b) for a in range(8) for b in range(a + 1, 8) if bin(a ^ b).count('1') == 1]
+
+
+def render_depth(boxes, origin, r_oc, rays, k, near=0.05, max_range=3.5):
+    """Optical-axis depth (m, inf = no hit) per pixel: the floor plane z = 0 and boxes.
+
+    rays: (H, W, 3) camera-frame rays with z = 1, so the hit parameter t is the depth.
+    Each box is only tested against the pixel rectangle it can cover: its corners (and where
+    its edges cross the near plane) projected into the image. Boxes further than max_range
+    are skipped (the detectors use < 3 m)."""
+    fx, fy, cx, cy = k
+    h, w = rays.shape[:2]
+    dirs = rays @ r_oc.T                                   # world direction per pixel
+    with np.errstate(divide='ignore', invalid='ignore'):
+        t = -origin[2] / dirs[..., 2]
+        # one contiguous float32 plane per axis: the per-box slab test below is elementwise
+        inv = [np.ascontiguousarray(1.0 / dirs[..., a], dtype=np.float32) for a in range(3)]
+    depth = np.where(t > 0, t, np.inf).astype(np.float32)
+    bits = np.array([[(c >> 2) & 1, (c >> 1) & 1, c & 1] for c in range(8)])
+    for lo, hi in boxes:
+        if np.linalg.norm(np.clip(origin, lo, hi) - origin) > max_range:
+            continue
+        cam = (np.where(bits, hi, lo) - origin) @ r_oc      # corners in the camera frame
+        front = cam[:, 2] > near
+        if not front.any():
+            continue
+        pts = [cam[front]]
+        for a, b in BOX_EDGES:
+            if front[a] != front[b]:
+                f = (near - cam[a, 2]) / (cam[b, 2] - cam[a, 2])
+                pts.append((cam[a] + f * (cam[b] - cam[a]))[None])
+        p = np.concatenate(pts)
+        u = fx * p[:, 0] / p[:, 2] + cx
+        v = fy * p[:, 1] / p[:, 2] + cy
+        u0, u1 = max(0, int(np.floor(u.min()))), min(w - 1, int(np.ceil(u.max())))
+        v0, v1 = max(0, int(np.floor(v.min()))), min(h - 1, int(np.ceil(v.max())))
+        if u0 > u1 or v0 > v1:
+            continue
+        tmin = tmax = None
+        with np.errstate(invalid='ignore'):
+            for a in range(3):
+                i = inv[a][v0:v1 + 1, u0:u1 + 1]
+                t1, t2 = (lo[a] - origin[a]) * i, (hi[a] - origin[a]) * i
+                near_t, far_t = np.minimum(t1, t2), np.maximum(t1, t2)
+                tmin = near_t if tmin is None else np.maximum(tmin, near_t)
+                tmax = far_t if tmax is None else np.minimum(tmax, far_t)
+        sub = depth[v0:v1 + 1, u0:u1 + 1]
+        hit = (tmax >= tmin) & (tmin > 0) & (tmin < sub)
+        sub[hit] = tmin[hit]
+    return depth
+
+
 class Maze:
     """Example maze geometry: points for the lidar and a height map for the feet."""
 
@@ -164,6 +217,47 @@ class Maze:
                 n = 3 - min(2, int((abs(x - c) + 0.075) / 0.15)) if abs(x - c) < 0.375 else 0
                 h = max(h, 0.12 * n)
         return h
+
+    def depth_boxes(self):
+        """[(lo, hi)] boxes the depth camera's rays hit (the lab floor is a plane at z 0).
+        Stepped solids become boxes: one per tread for steps / stairs, four slices per wedge."""
+        out = []
+        x0, x1, y0, y1 = self.room
+        out += [((x0 - 0.05, y0, 0), (x0, y1, 1)), ((x1, y0, 0), (x1 + 0.05, y1, 1)),
+                ((x0, y0 - 0.05, 0), (x1, y0, 1)), ((x0, y1, 0), (x1, y1 + 0.05, 1))]
+        for s in self.solids:
+            k, lo, hi = s['kind'], s['min'], s['max']
+            if k == 'wall' and s.get('style') == 'extru':
+                out += [(tuple(b[:3]), tuple(b[3:])) for b in extru_boxes(lo, hi,
+                                                                       s.get('board_side', -1))]
+            elif k in ('wall', 'rail', 'curtain', 'tile', 'mat', 'block'):
+                out.append((tuple(lo), tuple(hi)))
+            elif k == 'steps':
+                axis = 0 if s['down'][1] == 'x' else 1
+                n = int(s.get('treads', 2))
+                length = hi[axis] - lo[axis]
+                for i in range(n):
+                    a, b = lo[axis] + i * length / n, lo[axis] + (i + 1) * length / n
+                    top = steps_height(s, *(((a + b) / 2, lo[1]) if axis == 0 else (lo[0], (a + b) / 2)))
+                    blo, bhi = list(lo), [hi[0], hi[1], top]
+                    blo[axis], bhi[axis] = a, b
+                    out.append((tuple(blo), tuple(bhi)))
+            elif k == 'stairs':                  # see height(): 3 up, 3 down about the middle
+                c = (lo[0] + hi[0]) / 2
+                for half, top in ((0.375, 0.12), (0.225, 0.24), (0.075, 0.36)):
+                    out.append(((c - half, lo[1], 0.0), (c + half, hi[1], top)))
+            elif k == 'wedge':
+                hx, hy = s['high_xy']
+                along_x = abs(hx - (lo[0] + hi[0]) / 2) > 1e-3
+                for i in range(4):
+                    blo, bhi = list(lo), list(hi)
+                    if along_x:
+                        blo[0], bhi[0] = lo[0] + i * (hi[0] - lo[0]) / 4, lo[0] + (i + 1) * (hi[0] - lo[0]) / 4
+                    else:
+                        blo[1], bhi[1] = lo[1] + i * (hi[1] - lo[1]) / 4, lo[1] + (i + 1) * (hi[1] - lo[1]) / 4
+                    bhi[2] = self.height((blo[0] + bhi[0]) / 2, (blo[1] + bhi[1]) / 2)
+                    out.append((tuple(blo), tuple(bhi)))
+        return out
 
     def points(self, dense=False):
         """(world points (N, 3), occluder mask): walls, rails, curtains, lab walls and
@@ -240,6 +334,11 @@ class FakeMazeLite3(Node):
         self.declare_parameter('track_csv', '')     # write t, x, y, yaw, clearance per step
         self.declare_parameter('occlusion', 'auto')  # auto = on with a curtain or extru wall
         self.declare_parameter('drape_depth', 0.45)  # m past a curtain the lidar is covered
+        # Depth camera (the robot's Orbbec mount and intrinsics, stair_scene.py): 16-bit mm on
+        # /camera/depth/image_raw, ray-cast against depth_boxes(). 0 Hz = off.
+        self.declare_parameter('depth_rate', 5.0)
+        # px (640 x 480 scaled; height = 3/4). Keep 640: stairs.py's grid strides are in px.
+        self.declare_parameter('depth_width', 640)
         self.maze = Maze(self.get_parameter('maze').value)
         occ = str(self.get_parameter('occlusion').value).lower()
         extru = any(s.get('style') == 'extru' for s in self.maze.solids)
@@ -267,10 +366,28 @@ class FakeMazeLite3(Node):
         st.transform.translation.x, st.transform.translation.z = LIDAR_T[0], LIDAR_T[2]
         st.transform.rotation.y = math.sin(PITCH / 2)
         st.transform.rotation.w = math.cos(PITCH / 2)
-        self.static_tf.sendTransform(st)
+        statics = [st]
+        # Camera like the robot: base_link -> camera_link (20 deg down) -> optical frame.
+        for parent, child, xyz, q in (
+                ('base_link', 'camera_link', T_BASE_CAM, (0.0, 0.1736, 0.0, 0.9848)),
+                ('camera_link', 'camera_depth_optical_frame', (0.0, 0.0, 0.0),
+                 (-0.5, 0.5, -0.5, 0.5))):
+            c = TransformStamped()
+            c.header.stamp = st.header.stamp
+            c.header.frame_id, c.child_frame_id = parent, child
+            (c.transform.translation.x, c.transform.translation.y,
+             c.transform.translation.z) = (float(v) for v in xyz)
+            (c.transform.rotation.x, c.transform.rotation.y, c.transform.rotation.z,
+             c.transform.rotation.w) = q
+            statics.append(c)
+        self.static_tf.sendTransform(statics)
         self.dt = 0.05
         self.create_timer(self.dt, self.step)
         self.create_timer(0.1, self.publish_cloud)
+        rate = float(self.get_parameter('depth_rate').value)
+        if rate > 0:
+            self.setup_depth(int(self.get_parameter('depth_width').value))
+            self.create_timer(1.0 / rate, self.publish_depth)
         self.create_timer(2.0, self.report)
         self.get_logger().info(f'{len(self.world)} world points; start {self.maze.start}'
                                + ('; lidar occlusion on' if self.occlusion else '')
@@ -311,12 +428,12 @@ class FakeMazeLite3(Node):
         return c * dx - s * dy, s * dx + c * dy, z, self.th - st[2]
 
     def step(self):
-        v, w = self.cmd.linear.x, self.cmd.angular.z
+        v, vy, w = self.cmd.linear.x, self.cmd.linear.y, self.cmd.angular.z
         if v != 0.0:
             w += self.drift
         self.th += w * self.dt
-        self.x += v * math.cos(self.th) * self.dt
-        self.y += v * math.sin(self.th) * self.dt
+        self.x += (v * math.cos(self.th) - vy * math.sin(self.th)) * self.dt
+        self.y += (v * math.sin(self.th) + vy * math.cos(self.th)) * self.dt
         ox, oy, oz, oth = self.odom_pose()
         stamp = self.get_clock().now().to_msg()
         q = (0.0, 0.0, math.sin(oth / 2), math.cos(oth / 2))
@@ -335,7 +452,7 @@ class FakeMazeLite3(Node):
          t.transform.rotation.z, t.transform.rotation.w) = q
         self.tf.sendTransform(t)
         self.clear = self.clearance()
-        if self.track and (v or w):
+        if self.track and (v or vy or w):
             self.track.write(f'{self.get_clock().now().nanoseconds * 1e-9:.2f},{self.x:.3f},'
                              f'{self.y:.3f},{self.th:.3f},{self.clear:.3f}\n')
         # The start cell is a dead end the robot only turns in: score the drive after it.
@@ -408,6 +525,50 @@ class FakeMazeLite3(Node):
         msg.data = array.array('B', out.tobytes())
         self.cloud_pub.publish(msg)
 
+
+    def setup_depth(self, width):
+        s = 640.0 / width
+        self.depth_w, self.depth_h = width, int(round(480 / s))
+        fx, fy, cx, cy = CAM_K[0] / s, CAM_K[1] / s, (CAM_K[2] + 0.5) / s - 0.5, \
+            (CAM_K[3] + 0.5) / s - 0.5
+        self.depth_k = (fx, fy, cx, cy)
+        u, v = np.meshgrid(np.arange(self.depth_w), np.arange(self.depth_h))
+        self.depth_rays = np.stack([(u - cx) / fx, (v - cy) / fy, np.ones_like(u, float)], -1)
+        self.depth_boxes = [(np.asarray(lo, float), np.asarray(hi, float))
+                            for lo, hi in self.maze.depth_boxes()]
+        info = CameraInfo()
+        info.header.frame_id = 'camera_depth_optical_frame'
+        info.width, info.height = self.depth_w, self.depth_h
+        info.distortion_model, info.d = 'plumb_bob', [0.0] * 5
+        info.k = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
+        info.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        info.p = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
+        self.depth_info = info
+        self.depth_pub = self.create_publisher(Image, '/camera/depth/image_raw', 10)
+        self.info_pub = self.create_publisher(CameraInfo, '/camera/depth/camera_info', 10)
+        self.depth_rng = np.random.default_rng(1)
+        self.get_logger().info(f'depth camera {self.depth_w}x{self.depth_h}, '
+                               f'{len(self.depth_boxes)} boxes')
+
+    def publish_depth(self):
+        stamp = self.get_clock().now().to_msg()
+        c, s = math.cos(self.th), math.sin(self.th)
+        r_ob = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+        origin = np.array([self.x, self.y, self.maze.height(self.x, self.y) + STAND]) \
+            + r_ob @ T_BASE_CAM
+        z = render_depth(self.depth_boxes, origin, r_ob @ R_BASE_CAM, self.depth_rays,
+                         self.depth_k)
+        ok = np.isfinite(z) & (z >= 0.1) & (z <= 10.0)
+        z = np.where(ok, z + self.depth_rng.normal(0.0, 1.0, z.shape) * (0.001 + 0.005 * z * z),
+                     0.0)
+        img = Image()
+        img.header.stamp, img.header.frame_id = stamp, 'camera_depth_optical_frame'
+        img.height, img.width = self.depth_h, self.depth_w
+        img.encoding, img.step = '16UC1', self.depth_w * 2
+        img.data = array.array('B', np.round(z * 1000).astype('<u2').tobytes())
+        self.depth_info.header.stamp = stamp
+        self.depth_pub.publish(img)
+        self.info_pub.publish(self.depth_info)
 
     def visible(self, lid, rng, elev, res=0.5):
         """Points not hidden behind an occluder (wall, rail, curtain) in 0.5 deg bins. The

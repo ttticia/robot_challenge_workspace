@@ -108,7 +108,9 @@ def maze_curtains():
     return {'source': 'presentation maze_curtains.jpg (2026-11-21), make_presentation_mazes.py;'
                       ' heights guessed',
             'units': 'm', 'room': [-2.5, 4.5, -2.0, 4.0], 'start': [0.0, 1.0, -1.5707963267948966],
-            'exit': {'axis': 'y', 'above': 2.0}, 'solids': s}
+            'exit': {'axis': 'y', 'above': 2.0},
+            # explorer grid: 2 cells along the start heading (-y), 3 to its left (+x)
+            'grid': {'cols': 2, 'rows': 3, 'cell_size': 1.0}, 'solids': s}
 
 
 def maze_stairs(seed=7):
@@ -137,7 +139,9 @@ def maze_stairs(seed=7):
     return {'source': 'presentation maze_stairs.jpg (2026-11-21), make_presentation_mazes.py;'
                       ' heights guessed',
             'units': 'm', 'room': [-2.5, 4.5, -2.5, 3.5], 'start': [2.0, 0.0, 1.5707963267948966],
-            'exit': {'axis': 'y', 'below': -0.9}, 'solids': s}
+            'exit': {'axis': 'y', 'below': -0.9},
+            # explorer grid: 2 cells along the start heading (+y), 3 to its left (-x)
+            'grid': {'cols': 2, 'rows': 3, 'cell_size': 1.0}, 'solids': s}
 
 
 def main():

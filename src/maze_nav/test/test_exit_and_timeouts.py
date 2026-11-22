@@ -38,13 +38,15 @@ def clock(monkeypatch):
 
 
 class Fake:
-    for _n in ('step', 'out_of_maze', 'in_open_space', 'goal_stalled', 'on_stairs'):
+    for _n in ('step', 'out_of_maze', 'in_open_space', 'goal_stalled', 'on_stairs',
+               'grid_known', 'in_grid'):
         locals()[_n] = getattr(Explorer, _n)
 
     def __init__(self, state, xy, g):
         self.state, self.map, self.xy, self.g = state, object(), xy, g
         self.cfg = {'open_space_no_looks': 0.8, 'max_runtime': 900.0, 'goal_timeout': 45.0,
-                    'goal_progress': 0.2, 'goal_max_time': 120.0}
+                    'goal_progress': 0.2, 'goal_max_time': 120.0,
+                    'maze_cols': 0, 'maze_rows': 0}    # size unknown: the open-floor exit
         self.exit = ExitDetector(dwell=2.0)
         self.exit.start, self.exit.seen_enclosed = (-6.0, 0.0), True   # came from the maze
         self.finished, self.started = [], explorer_mod.time.monotonic()
@@ -73,7 +75,7 @@ class Fake:
 
 
 @pytest.mark.parametrize('state', ['JUNCTION', 'DEAD_END', 'CURTAIN', 'STAIRS', 'SCANNING',
-                                   'FACING_QR', 'LOOKING', 'TURNING'])
+                                   'FACING_QR', 'TURNING'])
 def test_exit_found_in_any_moving_state(clock, state):
     """Outside the maze the junction looks ran back to back (0.1 s of EXPLORING between):
     the exit has to be seen from inside the look too, and hold exit_dwell s there."""

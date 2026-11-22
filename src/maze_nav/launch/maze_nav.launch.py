@@ -11,8 +11,8 @@ Pipeline:
                                                 -> nav_cmd_vel
   cmd_vel_bridge (QoS, clamp, sensor watchdog)  -> /cmd_vel
 
-Before launching: robot on the start cell, standing or lying down (auto_stand stands it up;
-wall_scan measures the floor height once it stands), operator holding the handheld controller (sends `lite3_auto` once the log says "gait sent"),
+Before launching: robot STANDING on the start cell (not standing: cmd_vel_bridge logs an
+ERROR and waits until it is stood up by hand; wall_scan measures the floor height once it stands), operator holding the handheld controller (sends `lite3_auto` once the log says "gait sent"),
 nothing else publishing /cmd_vel or running SLAM/Nav2 (`ros2 node list`). The launch checks
 the last part itself first (maze_nav/preflight.py) and warns if anything clashes.
 
@@ -20,8 +20,8 @@ Arguments:
   bringup:=false   Fast-LIO / odom already running (or a simulator)
   go:=false        explorer picks goals but doesn't send them (watch /maze/goal in RViz)
   drive:=false     Nav2 runs but nothing reaches /cmd_vel (cmd_vel_bridge preview topic)
-  gait:=rug        cmd_vel_bridge sends Move mode + RUG gait General gear once at startup
-                   (default again since 2026-11-21); hstep = H-Step (high-stepping RUG gait);
+  gait:=hstep      cmd_vel_bridge sends Move mode + H-Step (high-stepping RUG gait) once at
+                   startup (default again since 2026-11-22); rug = RUG gait General gear;
                    none = leave the gait alone. Send lite3_auto AFTER "gait sent"
   perception:=true also start team_perception (robot.launch.py: qr_scanner only; human /
                    poster detection removed 2026-11-19, too many camera copies for the
@@ -29,14 +29,17 @@ Arguments:
                    ends (explorer /maze/perceive).
                    Depth for them and stair_detector goes through ONE team_perception
                    depth_relay (raw depth once from the bridge, 10 Hz on /camera/depth_relay/*)
-  auto_stand:=true cmd_vel_bridge sends stand first, ONLY if the lidar shows the robot lying
-                   down (stand is a toggle: a standing robot would sit); false = never
+  wait_for_stand:=true  robot not standing at launch: cmd_vel_bridge logs an ERROR every 5 s
+                   and waits (gait not sent) until it stands; nothing is sent to stand it up
   wait_for_start:=true  hold still once everything is up until
                    `ros2 topic pub --once /maze/start std_msgs/msg/Empty`
   stairs:=true     stair_detector: stairs in the depth image within 1.5 m -> the explorer stops
                    Nav2, the robot turns to face them, centres, stops with base_link 0.45 m
-                   from the first riser, square to the steps (AT_STAIRS), and holds until
-                   /maze/start (maze_nav/stair_detector.py)
+                   from the first riser, square to the steps (AT_STAIRS); cmd_vel_bridge
+                   switches to AI mode, walks 1.3 m, leaves AI mode (auto mode) and the
+                   explorer carries on by itself (maze_nav/stair_detector.py). Possible
+                   stairs seen in a junction / dead-end look are queued and checked after
+                   the junction scan, nearest first
   curtains:=true   curtain_detector: a wall in front with a < 0.15 m gap at the bottom, wider
                    than 0.7 m, is a curtain: it is cleared from the wall scan and the map, the
                    explorer stops Nav2 (CURTAIN), and the robot walks through its middle at 70 %
@@ -58,7 +61,7 @@ Arguments:
                    as a hurdle): curtain_max_gap and curtain_gap_max both 0.25
   scene_trigger:=true  /scene/trigger (+ /junction_detected) when the robot faces a dead end
                    from the cell before it; /scene/junction for the explorer's junction look
-                   (maze_nav/scene_understanding/scene_trigger.py). The dead-end looks
+                   (maze_nav/scene_trigger.py). The dead-end looks
                    (hold facing in, Pose-mode side walls, tilt compensation over 30 deg)
                    and the junction follow-up run with it; a checked dead end is never
                    entered
@@ -69,6 +72,13 @@ Arguments:
   creep_distance:=0.10  m straight ahead (no steering) after start, onto the SLAM map and off the
                    back wall (0 = off)
   start_scan:=false  true = turn 30 deg left, 60 right, 30 left after the creep, before exploring
+  maze_cols:=5  maze_rows:=3  maze size in 1.02 m cells: cols along the start heading, rows to
+                   its left, start cell in the corner. The robot stays inside: it explores
+                   every cell, then parks standing in the cell inside the exit, facing out
+                   (AT_EXIT, /maze/launch_cell: where the drone launches). 0 = size unknown:
+                   it leaves the maze and ends EXITED on open floor as before
+  cell_size:=1.02  m, cell pitch of that grid (maze_explorer and scene_trigger; 1.0 for the
+                   older sim mazes)
   max_speed:=0.15  band_low:=0.30  band_high:=0.45  floor_z:=nan (measure)
   map_dir:=~/challenge_ws/maps   udp_only:=true   use_sim_time:=false
   fastlio_config:=<maze_nav>/config/fastlio_mid360.yaml  Fast-LIO settings: blind 0.3 m (was
@@ -92,6 +102,10 @@ Arguments:
   (startup)        everything starts at once; ~4 s later the log says `startup done (+4 s):
                    N processes running (...)` (running, not ready: Nav2 activates a few s
                    later, PAUSED = ready for /maze/start)
+  troubleshoot:=false  true = telemetry_snapshot (touble_shooting/telemetry_snapshot.py):
+                   map crop + state JSON every 5 s and on events into ~/live_debug/current
+                   (events.log, latest.*) for live review / tuning; see nav_launch.md.
+                   snapshot_camera:=event (camera only for event snapshots), always, none
   verbose:=true    false = Nav2 and slam_toolbox log warnings/errors only (no lifecycle and
                    per-goal chatter); maze_explorer, wall_scan and cmd_vel_bridge keep INFO
 """
@@ -440,15 +454,16 @@ def generate_launch_description():
                               'the curtain inspection (not measured yet)'),
         DeclareLaunchArgument('drive', default_value='true',
                               description='false = nothing is sent to /cmd_vel'),
-        DeclareLaunchArgument('gait', default_value='rug',
+        DeclareLaunchArgument('gait', default_value='hstep',
                               description='sent once on /simple_cmd at startup (after Move mode): '
                                           'hstep = H-Step (high-stepping RUG gait); rug = RUG '
                                           'gait General gear; none = leave it'),
         DeclareLaunchArgument('perception', default_value='true',
                               description='also start team_perception robot.launch.py '
                                           '(QR codes)'),
-        DeclareLaunchArgument('auto_stand', default_value='true',
-                              description='robot lying at launch: send stand once, before gait'),
+        DeclareLaunchArgument('wait_for_stand', default_value='true',
+                              description='robot not standing at launch: ERROR + wait until '
+                                          'it stands, before the gait (never sends stand)'),
         DeclareLaunchArgument('wait_for_start', default_value='true',
                               description='hold still once ready until /maze/start (std_msgs/Empty)'),
         DeclareLaunchArgument('stairs', default_value='true',
@@ -480,6 +495,15 @@ def generate_launch_description():
         DeclareLaunchArgument('pre_turn_max_creep', default_value='0.0',
                               description='m straight ahead the explorer may creep to find room '
                                           'for a turn blocked by walls both ways; 0 = off'),
+        DeclareLaunchArgument('maze_cols', default_value='5',
+                              description='maze cells along the start heading (start cell in '
+                                          'the corner); the robot explores inside it, then '
+                                          'parks in the cell inside the exit (AT_EXIT). '
+                                          '0 = size unknown: leaves the maze (EXITED)'),
+        DeclareLaunchArgument('maze_rows', default_value='3',
+                              description='maze cells to the left of the start heading'),
+        DeclareLaunchArgument('cell_size', default_value='1.02',
+                              description='m, maze cell pitch (maze_explorer and scene_trigger)'),
         DeclareLaunchArgument('start_scan', default_value='false',
                               description='true = after the creep: turn 30 deg left, 60 right, 30 left (back to the start heading; Nav2 spins, not Pose mode); off since 2026-11-21'),
         DeclareLaunchArgument('max_speed', default_value='0.15',
@@ -513,6 +537,10 @@ def generate_launch_description():
                                           "terminal's ROS_DOMAIN_ID; a number forces it"),
         DeclareLaunchArgument('log_tags', default_value='false',
                               description='terminal: false = no [INFO] or timestamps; true = full ROS prefix. Log files always full'),
+        DeclareLaunchArgument('troubleshoot', default_value='false',
+                              description='true = telemetry_snapshot (touble_shooting/): map + state snapshots in ~/live_debug/current for live review / tuning'),
+        DeclareLaunchArgument('snapshot_camera', default_value='event',
+                              description='telemetry_snapshot camera: event (subscribe only for event snapshots), always, none'),
         DeclareLaunchArgument('verbose', default_value='true',
                               description='false = Nav2 / slam_toolbox log warnings and errors only'),
 
@@ -575,8 +603,8 @@ def generate_launch_description():
              parameters=[sim_time, {'drive': ParameterValue(arg('drive'), value_type=bool),
                                     'cloud_topic': cloud,     # "lidar alive" check only
                                     'gait': arg('gait'),
-                                    'auto_stand': ParameterValue(arg('auto_stand'),
-                                                                 value_type=bool),
+                                    'wait_for_stand': ParameterValue(arg('wait_for_stand'),
+                                                                     value_type=bool),
                                     'pose_max_yaw': pose_max_yaw,
                                     'pose_axis_limit': pose_axis_limit,
                                     'pose_max_pitch': pose_max_pitch}]),
@@ -593,7 +621,10 @@ def generate_launch_description():
                           'bond_timeout': 10.0}, sim_time]),
 
         Node(package='maze_nav', executable='scene_trigger', name='scene_trigger',
-             output='both', parameters=[sim_time], condition=IfCondition(arg('scene_trigger'))),
+             output='both',
+             parameters=[sim_time, {'cell_size': ParameterValue(arg('cell_size'),
+                                                                value_type=float)}],
+             condition=IfCondition(arg('scene_trigger'))),
 
         Node(package='maze_nav', executable='maze_explorer', name='maze_explorer',
              output='both',
@@ -603,6 +634,9 @@ def generate_launch_description():
                  'map_dir': arg('map_dir'),
                  'creep_distance': ParameterValue(arg('creep_distance'), value_type=float),
                  'start_scan': ParameterValue(arg('start_scan'), value_type=bool),
+                 'maze_cols': ParameterValue(arg('maze_cols'), value_type=int),
+                 'maze_rows': ParameterValue(arg('maze_rows'), value_type=int),
+                 'cell_size': ParameterValue(arg('cell_size'), value_type=float),
                  'pre_turn_max_creep': ParameterValue(arg('pre_turn_max_creep'),
                                                       value_type=float),
                  'pose_looks': ParameterValue(arg('pose_looks'), value_type=bool),
@@ -617,9 +651,6 @@ def generate_launch_description():
                  'stairs_topic': ParameterValue(PythonExpression(
                      ["'/stairs/status' if '", arg('stairs'), "'.lower() in ('true', '1') "
                       "else ''"]), value_type=str),
-                 'look_topic': ParameterValue(PythonExpression(
-                     ["'/perception/look_request' if '", arg('perception'),
-                      "'.lower() in ('true', '1') else ''"]), value_type=str),
                  'curtain_topic': ParameterValue(PythonExpression(
                      ["'/curtain/status' if '", arg('curtains'), "'.lower() in ('true', '1') "
                       "else ''"]), value_type=str),
@@ -631,13 +662,18 @@ def generate_launch_description():
                       "'.lower() in ('true', '1') else ''"]), value_type=str),
              }]),
 
-        Node(package='maze_nav', executable='room_scene', name='room_scene',
+        Node(package='scene_understanding', executable='room_scene', name='room_scene',
              output='both', parameters=[sim_time],
              condition=IfCondition(arg('scene_understanding'))),
 
-        Node(package='maze_nav', executable='task_reporter', name='task_reporter',
+        Node(package='scene_understanding', executable='task_reporter', name='task_reporter',
              output='both', parameters=[sim_time],
              condition=IfCondition(arg('scene_understanding'))),
+
+        Node(package='maze_nav', executable='telemetry_snapshot', name='telemetry_snapshot',
+             output='both',
+             parameters=[sim_time, {'camera_mode': arg('snapshot_camera')}],
+             condition=IfCondition(arg('troubleshoot'))),
 
         OpaqueFunction(function=depth_users),
     ])

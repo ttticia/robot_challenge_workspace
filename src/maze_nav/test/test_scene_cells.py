@@ -1,11 +1,11 @@
-"""Unit tests for maze_nav.scene_understanding.scene_cells (no ROS needed): python3 -m pytest -q test"""
+"""Unit tests for maze_nav.scene_cells (no ROS needed): python3 -m pytest -q test"""
 import math
 
 import numpy as np
 import pytest
 
 from maze_nav.core import Grid
-from maze_nav.scene_understanding.scene_cells import (CellGrid, DeadEndDetector, JunctionDetector,
+from maze_nav.scene_cells import (CellGrid, DeadEndDetector, JunctionDetector,
                                                       NewCellTrigger, opening, run_active,
                                                       side_heading, side_walls)
 
@@ -291,7 +291,7 @@ def _edges(*pairs):
 
 
 def test_trace_way_dead_end_next_door():
-    from maze_nav.scene_understanding.scene_cells import trace_way
+    from maze_nav.scene_cells import trace_way
     op = _maze_openings(_edges(((0, 0), (1, 0))))
     t = trace_way(op, (0, 0), (1, 0))
     assert t['kind'] == 'dead_end'
@@ -300,7 +300,7 @@ def test_trace_way_dead_end_next_door():
 
 
 def test_trace_way_dead_end_round_a_bend():
-    from maze_nav.scene_understanding.scene_cells import trace_way
+    from maze_nav.scene_cells import trace_way
     # (0,0) -> (1,0) -> (1,1) -> (1,2) dead end
     op = _maze_openings(_edges(((0, 0), (1, 0)), ((1, 0), (1, 1)), ((1, 1), (1, 2))))
     t = trace_way(op, (0, 0), (1, 0))
@@ -310,7 +310,7 @@ def test_trace_way_dead_end_round_a_bend():
 
 
 def test_trace_way_junction_unknown_and_long():
-    from maze_nav.scene_understanding.scene_cells import trace_way
+    from maze_nav.scene_cells import trace_way
     # a T at (1,0): not a dead end
     op = _maze_openings(_edges(((0, 0), (1, 0)), ((1, 0), (1, 1)), ((1, 0), (1, -1))))
     assert trace_way(op, (0, 0), (1, 0))['kind'] == 'junction'
@@ -327,7 +327,7 @@ def test_trace_way_junction_unknown_and_long():
 # ------------------------------------------------------------------ occupied cells
 
 def test_cell_objects_finds_a_box_face_not_the_walls():
-    from maze_nav.scene_understanding.scene_cells import block_cells, cell_objects
+    from maze_nav.scene_cells import block_cells, cell_objects
     cells = CellGrid()
     g = open_grid(-0.5, -0.5, 3.0)                      # cells (0..2, 0..2) all mapped free
     for x in (0.5, 1.5):                                # walls on cell edges: not objects
@@ -347,7 +347,7 @@ def test_cell_objects_finds_a_box_face_not_the_walls():
 
 
 def test_cell_objects_skips_cells_mostly_unknown():
-    from maze_nav.scene_understanding.scene_cells import cell_objects
+    from maze_nav.scene_cells import cell_objects
     g = open_grid(-0.5, -0.5, 2.0, value=-1)
     draw_wall_x(g, 1.0, 0.85, 1.15)
     assert cell_objects(g, CellGrid()) == {}
@@ -357,7 +357,7 @@ def test_cell_objects_ignores_walls_off_the_grid_lines():
     """Robot 2026-11-21 08:32: real walls 0.10-0.15 m off the 1 m grid (it starts at the start
     pose) and sim walls through a cell's middle were blocked as objects. A blob that reaches
     out of the cell interior is a wall; a free-standing box still counts."""
-    from maze_nav.scene_understanding.scene_cells import cell_objects
+    from maze_nav.scene_cells import cell_objects
     cells = CellGrid()
     g = open_grid(-0.5, -0.5, 4.0)                      # cells (0..3, 0..3) all mapped free
     draw_wall_x(g, 0.65, -0.5, 3.5)                     # 0.15 m inside cells (1, *)
@@ -371,7 +371,7 @@ def test_cell_objects_ignores_walls_off_the_grid_lines():
 
 def test_cell_objects_box_touching_a_wall_is_not_found():
     """The documented price of the wall rule: a box drawn against a wall merges with it."""
-    from maze_nav.scene_understanding.scene_cells import cell_objects
+    from maze_nav.scene_cells import cell_objects
     g = open_grid(-0.5, -0.5, 3.0)
     draw_wall_x(g, 1.5, -0.5, 2.5)
     draw_wall_y(g, 1.0, 1.15, 1.5)                      # 0.35 m face, end on the wall
@@ -407,7 +407,7 @@ def _sim_maze_map(name):
 def test_cell_objects_sim_mazes():
     """Example maze (no objects; the sim run blocked 9 wall cells): none. Object maze: only
     the 0.3 m box at maze (-1, 2) = odom (2, 1)."""
-    from maze_nav.scene_understanding.scene_cells import cell_objects
+    from maze_nav.scene_cells import cell_objects
     assert cell_objects(_sim_maze_map('example_maze.json'), CellGrid()) == {}
     found = cell_objects(_sim_maze_map('object_maze.json'), CellGrid())
     assert list(found) == [(2, 1)]

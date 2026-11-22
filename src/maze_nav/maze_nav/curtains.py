@@ -431,23 +431,61 @@ def near_miss_segment(cells, p=None, max_gap=0.30, min_width=0.60):
     return None if best is None else best[:3]
 
 
+def floor_at_line(pts, p1, p2, n, floor_z, near=0.45, behind=0.8, clear=0.10, search=0.15,
+                  tol=0.03, min_pts=6, end_margin=0.10):
+    """Floor height (frame of pts) right at a curtain line, measured from the points
+    themselves, or None.
+
+    The floor the robot stands on is a poor reference for a curtain: the curtain cell can be
+    5-10 cm lower than the start plate, and the lidar never sees the floor under the robot
+    (nearest floor ~1.4 m ahead; stairs_lidar.floor_under), so the floor handed in is often
+    the start plate's. Here: points along the line (end_margin m in from each end: the side
+    walls the curtain hangs between reach down to the floor there), `clear` m or more off it
+    (the fabric's folds), within `search` of floor_z; their lowest dense layer (10th
+    percentile + tol). In front of the line (up to `near` m: the side the robot crosses
+    from) first, else behind it (up to `behind` m). pts / p1 / p2 / n as in gap_at_line.
+    """
+    pts = np.asarray(pts, float)
+    p1, p2, n = (np.asarray(v, float)[:2] for v in (p1, p2, n))
+    width = float(np.linalg.norm(p2 - p1))
+    if width < 1e-6 or len(pts) == 0:
+        return None
+    rel = pts[:, :2] - p1
+    t, d = rel @ ((p2 - p1) / width), rel @ n
+    z = pts[:, 2]
+    m = min(end_margin, 0.25 * width)
+    ok = (t >= m) & (t <= width - m) & (np.abs(z - floor_z) <= search)
+    for side in ((d <= -clear) & (d >= -near), (d >= clear) & (d <= behind)):
+        zs = z[ok & side]
+        if len(zs) >= min_pts:
+            low = zs[zs <= np.percentile(zs, 10) + tol]
+            return float(np.median(low))
+    return None
+
+
 def gap_at_line(pts, p1, p2, n, floor_z, face_depth=0.10, floor_tol=0.04, behind=0.8,
-                top=0.45, slices=8):
+                top=0.45, slices=8, local_floor=True):
     """Gap under a known curtain line, measured while the robot lies down (user 2026-11-20):
     the sensors sit ~0.15-0.25 m up, about level with the hem, so they see straight under it.
 
     pts (N, 3) in the frame of p1, p2 (curtain ends) and n (normal pointing away from the
-    robot); floor_z the floor's height there. The curtain is cut into `slices` along its
-    width. Per slice: hem = lowest point on the curtain (within face_depth of the line,
-    > floor + floor_tol, <= top), floor behind = points 0.05..behind past the line within
-    floor_tol of the floor. Returns (gap, coverage, slices_seen): gap = median hem height of
-    the slices that have both (None if none), coverage = that fraction of the slices.
+    robot); floor_z the floor's height there (local_floor: only a starting point, re-measured
+    at the line with floor_at_line when the points show the floor there). The curtain is cut
+    into `slices` along its width. Per slice: hem = lowest point on the curtain (within
+    face_depth of the line, > floor + floor_tol, <= top), floor behind = points 0.05..behind
+    past the line within floor_tol of the floor. Returns (gap, coverage, slices_seen): gap =
+    median hem height of the slices that have both (None if none), coverage = that fraction
+    of the slices.
     """
     pts = np.asarray(pts, float)
     p1, p2, n = (np.asarray(v, float)[:2] for v in (p1, p2, n))
     width = float(np.linalg.norm(p2 - p1))
     if width < 1e-6 or len(pts) == 0:
         return None, 0.0, 0
+    if local_floor:
+        f = floor_at_line(pts, p1, p2, n, floor_z, behind=behind)
+        if f is not None:
+            floor_z = f
     u = (p2 - p1) / width
     rel = pts[:, :2] - p1
     t = rel @ u                                  # along the curtain

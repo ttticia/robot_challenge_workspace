@@ -9,8 +9,9 @@ band_low and band_high above the maze floor and bins them by bearing around the 
 (ramps, mats <= 0.15 m), stair treads (<= 0.26 m) and the floor stay out; walls (0.45 m) and
 hand rails stay in. The floor height is measured once at startup (robot standing on the
 start cell) unless floor_z is given. Until then it publishes base_link's height above the
-floor on /maze/body_height (latched): cmd_vel_bridge uses it to stand a lying robot up, and
-the floor isn't measured while the robot is lying down or getting up.
+floor on /maze/body_height (latched): cmd_vel_bridge holds the gait until it reads standing,
+and the floor isn't measured while the robot isn't standing (ERROR every 5 s: stand it up
+by hand).
 
 Curtains (curtains_topic, from curtain_detector, in its map frame; '' = off): points of a
 curtain the robot is being walked through, or has been (curtains.scan_curtains), are
@@ -43,6 +44,7 @@ from sensor_msgs.msg import LaserScan, PointCloud2
 from std_msgs.msg import Float32, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
+from touble_shooting.live_params import attach as attach_live_params, value as live_value
 from maze_nav.core import (StandSettle, body_height, cloud_xyz, estimate_floor, floor_accepted,
                            posture, wall_ranges)
 from maze_nav.curtains import (BlockageMonitor, curtain_mask, curtains_from_json, invert_pose,
@@ -160,6 +162,31 @@ class WallScan(Node):
             f'{self.band[1]:.2f} m above the floor '
             + (f'(floor_z {self.floor:.3f} given)' if self.floor is not None
                else '(floor measured at startup: robot must be STANDING)'))
+        self.attach_live_params()
+
+    def attach_live_params(self):
+        """`ros2 param set /wall_scan <name> <value>` while running (touble_shooting).
+        floor_z / angle_increment / topics / frames stay startup-only."""
+        def val(n):
+            return live_value(self, n)
+
+        def setter(fn, *names):
+            return {n: (lambda _v: fn()) for n in names}
+        s = {}
+        s.update(setter(lambda: setattr(self, 'band', (float(val('band_low')),
+                                                       float(val('band_high')))),
+                        'band_low', 'band_high'))
+        s.update(setter(lambda: setattr(self, 'body', (float(val('body_back')),
+                                                       float(val('body_front')),
+                                                       float(val('body_half_width')))),
+                        'body_back', 'body_front', 'body_half_width'))
+        s.update(setter(lambda: setattr(self, 'rmin', float(val('range_min'))), 'range_min'))
+        s.update(setter(lambda: setattr(self, 'rmax', float(val('range_max'))), 'range_max'))
+        for name, attr in (('floor_tolerance', 'floor_tolerance'),
+                           ('lidar_min_range', 'lidar_min'), ('max_cloud_age', 'max_age'),
+                           ('voxel_size', 'voxel'), ('expected_floor_drop', 'drop')):
+            s.update(setter(lambda a=attr, n=name: setattr(self, a, float(val(n))), name))
+        attach_live_params(self, setters=s)
 
     def on_curtains(self, msg):
         frame, curtains = curtains_from_json(msg.data)
@@ -260,9 +287,10 @@ class WallScan(Node):
             if h is not None:
                 self.height_pub.publish(Float32(data=float(h)))
             if h is not None and posture(h) != 'standing':
-                self.get_logger().warn(
-                    f'robot not standing (base_link {h:.2f} m above the floor): floor '
-                    'measured once it stands', throttle_duration_sec=5.0)
+                self.get_logger().error(
+                    f'robot NOT STANDING (base_link {h:.2f} m above the floor): stand it up '
+                    'with the handheld controller; the floor is measured (and the map '
+                    'starts) once it stands', throttle_duration_sec=5.0)
                 return
             # Still getting up (0.25 m already counts as standing, fully up is ~0.35 m):
             # wait until the height stops changing. Give up waiting after ~5 s of clouds.

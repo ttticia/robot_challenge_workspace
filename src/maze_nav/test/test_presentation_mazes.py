@@ -14,9 +14,10 @@ import pytest
 
 from maze_nav import stairs_lidar as L
 from maze_nav.cmd_vel_bridge import terrain_cap
-from maze_nav.scene_understanding.scene_cells import (CellGrid, block_boxes, cell_objects,
+from maze_nav.scene_cells import (CellGrid, block_boxes, cell_objects,
                                                       grow_box, in_boxes, object_box)
-from stair_scene import R_BASE_LIDAR, STANDING, T_BASE_LIDAR, lidar_scan
+from stair_scene import (K, R_BASE_CAM, R_BASE_LIDAR, STANDING, T_BASE_CAM, T_BASE_LIDAR,
+                         lidar_scan, render)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -131,30 +132,55 @@ def test_presentation_mazes_no_false_stairs(name, path, yaw):
 PLATE = 0.10                      # start floor (wall_scan) in both mazes
 
 
+def walk_with_depth(boxes, path, yaw, step=0.1):
+    """walk() plus the depth camera's floor map (stair_detector's depth_floor): yields
+    (base, lidar HeightMap, depth HeightMap) at each step."""
+    dm = L.HeightMap()
+    for k, (base, hm) in enumerate(walk(boxes, path, yaw, step)):
+        depth, r_ob = render(boxes, base, yaw, seed=k)
+        dm.add(L.depth_floor_points(depth, K, r_ob, R_BASE_CAM, T_BASE_CAM, base), base, yaw)
+        yield base, hm, dm
+
+
+CURTAIN_WALK = ((1.0, -0.3), (1.0, 1.0))   # slats -> mid curtain cell, facing the curtain
+
+
+def test_lidar_alone_never_sees_the_floor_under_the_feet():
+    """The lidar's nearest floor is ~1.75 m ahead looking down onto a floor 10-16 cm lower
+    (lowest ray ~22 deg down), and this walk starts 1.3 m before mid-cell against a wall:
+    with the lidar alone the floor under the feet is never known in the curtain cell (the
+    cells within 0.5 m there are the side wall's top). This is why depth_floor exists."""
+    boxes = boxes_of(load('maze_curtains.json'))
+    seen = [(base[1], hm.floor_under(base))
+            for base, hm in walk(boxes, CURTAIN_WALK, math.pi / 2)]
+    assert all(u is None for y, u in seen if y >= 0.6)
+
+
 def test_floor_under_follows_the_lower_curtain_cell():
     """maze_curtains: the start plate is 10 cm above the curtain cell's lab floor. Walking
     from the slats into the curtain cell to where the curtain is inspected (mid-cell), the
-    floor under the feet is the lab floor (~0.0), not the start floor (0.10): the gap
-    measured lying down and the lying height would be 10 cm off with the start floor.
-    Nothing under the robot before it has walked ~1 m (the lidar is blind there)."""
+    floor under the feet is the lab floor (~0.0), not the start floor (0.10): the lying
+    height (cmd_vel_bridge) and the terrain reference would be 10 cm off with the start
+    floor. Known from the depth camera's floor map, which sees the floor from ~0.6 m ahead;
+    nothing under the robot at the first step."""
     boxes = boxes_of(load('maze_curtains.json'))
-    seen = []
-    for base, hm in walk(boxes, ((1.0, -0.3), (1.0, 1.0)), math.pi / 2):
-        seen.append((base[1], hm.floor_under(base)))
+    seen = [(base[1], hm.floor_under(base, also=(dm,)))
+            for base, hm, dm in walk_with_depth(boxes, CURTAIN_WALK, math.pi / 2)]
     assert seen[0][1] is None                                 # at the start of the walk
     on_floor = [u for y, u in seen if y >= 0.9 and u is not None]
     assert on_floor
     assert np.median(on_floor) == pytest.approx(0.0, abs=0.03)
+    on_slats = [u for y, u in seen if -0.1 <= y <= 0.3 and u is not None]
+    assert on_slats and min(on_slats) > 0.08                  # the plate / slat tops there
 
 
 def test_floor_under_is_none_lying_down():
     boxes = boxes_of(load('maze_curtains.json'))
-    hm = L.HeightMap()
-    for base, hm in walk(boxes, ((1.0, -0.3), (1.0, 1.0)), math.pi / 2):
+    for base, hm, dm in walk_with_depth(boxes, CURTAIN_WALK, math.pi / 2):
         pass
-    assert hm.floor_under(base) is not None
+    assert hm.floor_under(base, also=(dm,)) is not None
     lying = (base[0], base[1], base[2] - 0.20)
-    assert hm.floor_under(lying) is None
+    assert hm.floor_under(lying, also=(dm,)) is None
 
 
 # ---------------------------------------------------------------- terrain

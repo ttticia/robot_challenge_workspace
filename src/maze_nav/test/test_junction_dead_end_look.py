@@ -1,5 +1,8 @@
-"""A dead end visited by the junction follow-up scans its side walls in Pose mode (user
-2026-11-20: "robot not going into pose mode at room scanning"), explorer side, no ROS.
+"""Dead-end / room look actions (goto, align, hold, side-wall look) scan the side walls in
+Pose mode (user 2026-11-20: "robot not going into pose mode at room scanning"); after a
+junction scan the robot leaves by the nearest unexplored way and dead-end ways are only
+not taken; the one the scan viewed waits for scene understanding instead of being
+blacklisted (user 2026-11-21 / 11-22). Explorer side, no ROS.
 
 python3 -m pytest -q test/test_junction_dead_end_look.py"""
 import json
@@ -11,14 +14,16 @@ import numpy as np
 import maze_nav.explorer as explorer_mod
 from maze_nav.core import Grid
 from maze_nav.explorer import Explorer
-from maze_nav.scene_understanding.scene_cells import CellGrid
+from maze_nav.scene_cells import CellGrid, side_walls
 
 
 class Fake:
     for _n in ('plan_after_junction', 'after_junction_tick', 'next_after_junction',
                'look_tick', 'at_dead_end', 'pause_junction', 'pose_side_wall', 'use_pose',
                'send_pose', 'release_pose', 'set_state', 'capture_view', 'tilt_pitch',
-               'pose_tick', 'junction_pending'):
+               'pose_tick', 'junction_pending', 'start_queue', 'mark_explored',
+               'hold_dead_end', 'blacklist_dead_end', 'launch_cell', 'scene_candidate',
+               'no_go_cell'):
         locals()[_n] = getattr(Explorer, _n)
 
     def __init__(self, pose_status='READY'):
@@ -47,6 +52,11 @@ class Fake:
         self.tilt = (0.0, 0.0)
         self.dead_end_cells = set()
         self.cells = CellGrid()
+        self.visited, self.explored_cells, self.blocked_cells = set(), set(), {}
+        self.rooms_done, self.room_looks = set(), {}
+        self.cand_queue, self.queue_active = [], False
+        self.scene_pending, self.scanned_cells, self.scene_results = {}, set(), True
+        self.exit_side = None
 
     def ros_ns(self):
         return 10 * 10**9
@@ -73,7 +83,7 @@ class Fake:
         self.spins.append((angle, why))
 
 
-def plan(e, monkeypatch):
+def plan_after(e, monkeypatch):
     """Junction at cell (1, 1): way -i is a dead end at (0, 1), way +j unknown."""
     def trace(openings, cell, d, max_cells=10):
         if d == (-1, 0):
@@ -86,7 +96,43 @@ def plan(e, monkeypatch):
     return e.plan_after_junction(rec)
 
 
-def test_plan_adds_a_side_wall_look_after_the_hold(monkeypatch):
+def plan(e, monkeypatch=None):
+    """The look actions for dead end (0, 1) seen from cell (1, 1) facing -x (the shape a
+    room look-in uses too): goto, align, hold facing in, side-wall look, then a goto on."""
+    cells, dead, into = CellGrid(), (0, 1), (-1, 0)
+    face, group = cells.heading(into), 'dead end [0, 1]'
+    hold = {'do': 'hold', 's': float(e.cfg['junction_dead_end_hold']), 'group': group,
+            'name': f'{group}: facing in', 'view': 'centre'}
+    look = {'do': 'look', 'group': group, 'name': f'{group}: side walls',
+            'steps': [{'name': f'{group} {k} wall', 'point': xy, 'facing': face, 'view': k,
+                       'hold': e.cfg['dead_end_side_hold'], 'short': True}
+                      for k, xy in side_walls(cells, dead, into).items()]}
+    explorer_mod.dead_end_scene([hold] + look['steps'], dead, cells.centre(dead))
+    return [{'do': 'goto', 'xy': cells.centre((1, 1)), 'yaw': face, 'group': group,
+             'name': 'to cell [1, 1]'},
+            {'do': 'align', 'heading': face, 'group': group, 'tries': 0,
+             'name': f'{group}: squaring up facing in'},
+            hold, look,
+            {'do': 'goto', 'xy': cells.centre((1, 2)), 'yaw': math.pi / 2, 'group': 'on',
+             'name': 'on'}]
+
+
+def test_after_a_junction_scan_leave_by_the_nearest_unexplored_way(monkeypatch):
+    e = Fake()
+    e.xy, e.yaw = (1.0, 1.0), math.pi
+    todo = plan_after(e, monkeypatch)
+    assert [(a['do'], a['group']) for a in todo] == [('goto', 'leave')]
+    assert todo[0]['xy'] == (1.0, 2.0)                 # way +j; -i is a dead end
+    assert (0, 1) not in e.dead_end_cells              # not taken, but not blacklisted
+
+
+def test_after_a_junction_scan_queued_candidates_come_first(monkeypatch):
+    e = Fake()
+    e.cand_queue = [{'kind': 'stairs', 'id': 1, 'target': (1.0, 3.0), 'heading': 0.0}]
+    assert plan_after(e, monkeypatch) == [] and e.queue_active
+
+
+def test_side_wall_look_actions(monkeypatch):
     todo = plan(Fake(), monkeypatch)
     kinds = [a['do'] for a in todo]
     assert kinds == ['goto', 'align', 'hold', 'look', 'goto']
@@ -187,10 +233,13 @@ def test_dead_end_views_are_captured_once_each_last_flagged(monkeypatch):
     assert e.captures[0]['pitch_cmd_deg'] is None
 
 
-def test_checked_dead_end_cell_is_kept_out_of(monkeypatch):
+def test_scanned_dead_end_cell_waits_for_scene_understanding(monkeypatch):
     e = Fake()
-    plan(e, monkeypatch)
-    assert (0, 1) in e.dead_end_cells                 # no frontier goal anywhere in it
+    e.scanned_cells = {(0, 1)}                        # the junction scan viewed it
+    plan_after(e, monkeypatch)
+    assert (0, 1) not in e.dead_end_cells             # not blacklisted (user 2026-11-22)
+    assert e.no_go_cell((0, 1))                       # but no frontier goal into it yet
+    assert e.scene_pending[(0, 1)]['captured'] is not None   # result timeout running
 
 
 def test_tilt_over_threshold_pitches_every_dead_end_view(monkeypatch):
@@ -298,3 +347,35 @@ def test_bridge_clamps_the_yaw_axis():
     assert axis(math.radians(40)) == -int(AXIS_MAX * 0.8)       # + = left -> negative axis
     assert axis(math.radians(-40)) == int(AXIS_MAX * 0.8)
     assert axis(math.radians(8)) == -round(AXIS_MAX / 2)
+
+
+class CentreFake(Fake):
+    centre_tick = Explorer.centre_tick
+
+    def __init__(self):
+        super().__init__()
+        self.cfg.update({'centre_tol': 0.03, 'centre_max': 0.35, 'centre_speed': 0.06,
+                         'centre_timeout': 10.0})
+        self.cmds = []
+        self.cmd_pub = SimpleNamespace(publish=self.cmds.append)
+
+    def stop_robot(self):
+        self.cmds.append('stop')
+
+
+def test_junction_centring_moves_sideways_onto_the_centre_line():
+    e = CentreFake()
+    e.xy, e.yaw = (1.0, 1.2), 0.0                      # facing +x, 0.2 m left of the line
+    st = {'name': 'junction way +i', 'centre': (1.0, 1.0)}
+    assert not e.centre_tick(st, 0.0)                  # plan the move
+    assert not e.centre_tick(st, 0.1)
+    assert e.cmds[-1].linear.y < 0 and e.cmds[-1].linear.x == 0.0   # to the right
+    e.xy = (1.0, 1.01)
+    assert e.centre_tick(st, 0.2) and st['centred'] and e.cmds[-1] == 'stop'
+
+
+def test_junction_centring_skipped_when_already_centred():
+    e = CentreFake()
+    e.xy, e.yaw = (1.0, 1.01), math.pi / 2             # facing +y, 1 cm off: nothing to do
+    st = {'name': 'junction way +j', 'centre': (1.0, 1.0)}
+    assert e.centre_tick(st, 0.0) and e.cmds == []

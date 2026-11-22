@@ -16,6 +16,11 @@
   "axis": "y",
   "above": 5.2
  },
+ "grid": {
+  "cols": 0,
+  "rows": 0,
+  "cell_size": 1.0
+ },
  "solids": [
   {
    "kind": "wall",

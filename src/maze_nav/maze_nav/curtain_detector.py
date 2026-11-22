@@ -12,7 +12,7 @@ with curtains:=true (default).
      (camera pose from `camera_link_frame` + the optical rotation, odom -> base_link at
      its stamp), last `depth_accumulate` frames. Range from base_link: lidar ~1.2-2.6 m,
      depth ~0.7-2.0 m, both ~0.6-2.6 m; closer than ~0.55 m nothing sees under a curtain.
-  1. IDLE: at `rate` Hz, while maze_explorer is EXPLORING, TURNING, LOOKING or FACING_QR
+  1. IDLE: at `rate` Hz, while maze_explorer is EXPLORING, TURNING or FACING_QR
      (`trigger_states`), and also DEAD_END / JUNCTION (`detect_states`: detection only, no
      handover - a curtain looks like a dead end), curtains.detect_curtains on the history.
      `vote_need` hits within `vote_window` s confirm a curtain. Wall band = band_low /
@@ -42,12 +42,15 @@ with curtains:=true (default).
      to `inspect_trigger_distance` (2.5) m ahead and within `inspect_max_bearing` (35 deg)
      of the heading, its line facing the robot (normal within 45 deg of the heading: the
      extru walls' side windows read as 12-46 cm gaps on the side walls 0.4-0.6 m away),
-     while maze_explorer is in trigger_states -> the same HANDOVER. Candidates are only
-     taken during a junction look or dead-end stop (`look_states`, user 2026-11-21); ones
-     seen elsewhere are logged and dropped (confirmed curtains are still crossed anywhere).
-     Junction looks, dead-end and start scans come first: a candidate seen during DEAD_END /
-     JUNCTION / SCANNING is kept and inspected once the explorer is back in trigger_states
-     (within 20 s, still in range). Then (`inspect_mode` lie): drive to the middle of the
+     Candidates are only taken during a junction look or dead-end stop (`look_states`,
+     user 2026-11-21); ones seen while exploring are remembered for the next look
+     (confirmed curtains are still crossed anywhere). A candidate in a look is HELD, not
+     inspected (user 2026-11-21: candidates are verified after the whole junction scan,
+     nearest first): published on /curtain/candidate ({id, frame, centre, normal, width,
+     gap, what}, odom) and kept until maze_explorer, standing in front of it, releases it
+     on /maze/curtain_release ({id}); then the same HANDOVER (while maze_explorer is in
+     trigger_states, within 20 s and inspect_trigger_distance + 0.5 m). A candidate seen
+     again near a held one joins it. Then (`inspect_mode` lie): drive to the middle of the
      cell in front (`inspect_distance` 0.5 m before the line, at its centre; forward only),
      square up, hold still, LIE DOWN (/maze/lie -> cmd_vel_bridge's stand/sit toggle, the
      height checked) - status LYING, which maze_explorer doesn't pre-empt - and measure the
@@ -96,6 +99,8 @@ Topics
        /maze/status (latched), /maze/floor_z (std_msgs/Float32, latched, from wall_scan),
        /maze/local_floor_z (Float32, stair_detector: the floor under the feet; used instead
        of floor_z while fresh: the curtain cell can be lower than the start plate),
+       /maze/floor_est (String JSON {"z", "source"}, stair_detector's tracked floor: used
+       when no local_floor_z is fresh, before floor_z),
        /map (latched) + TF map -> odom for the wall checks, depth_topic (optional)
   out: /curtain/status   std_msgs/String latched "STATE: why", STATE one of IDLE, HANDOVER,
                          FACING, APPROACHING, THROUGH, WIGGLING, CREEPING, CHECKING, PASSED,
@@ -114,6 +119,7 @@ Topics
     ros2 run maze_nav curtain_detector --ros-args -p drive:=false    # detect + log only
 """
 import collections
+import json
 import math
 import time
 
@@ -133,9 +139,11 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from maze_nav.core import Grid, cloud_xyz, free_distance_ahead, max_turn
 from maze_nav.curtains import (BlockageMonitor, Curtain, CurtainParams, CurtainTracker,
                                clear_curtains, curtains_to_json, depth_blockage, depth_points,
-                               detect_curtains, diagnose, gap_at_line, invert_pose,
+                               detect_curtains, diagnose, floor_at_line, gap_at_line,
+                               invert_pose,
                                lidar_blockage, near_miss_segment, wall_between, wrap)
 from maze_nav.curtain_branch import CurtainHold
+from touble_shooting.live_params import attach as attach_live_params, value as live_value
 from maze_nav.curtain_inspect import InspectParams, InspectPlan
 from maze_nav.stairs import WallCheck, camera_from_link
 
@@ -178,7 +186,9 @@ class CurtainDetector(Node):
         p('base_frame', 'base_link')
         p('map_frame', 'map')
         p('status_topic', '/maze/status')      # '' = no explorer handshake (drives at once)
-        p('trigger_states', ['EXPLORING', 'TURNING', 'LOOKING', 'FACING_QR'])
+        p('trigger_states', ['EXPLORING', 'TURNING', 'FACING_QR'])
+        p('candidate_topic', '/curtain/candidate')        # held candidates (see 2b.)
+        p('release_topic', '/maze/curtain_release')       # '' = inspect without a release
         # Detect (publish, clear from the map) but never hand over in these too: a curtain
         # looks like a dead end, and there the robot holds still facing it (user 2026-11-20).
         p('detect_states', ['DEAD_END', 'JUNCTION'])
@@ -303,8 +313,15 @@ class CurtainDetector(Node):
         self.inspection = None          # InspectPlan while INSPECTING
         self.inspect_done_at = None     # plan finished: waiting for Pose mode to end
         self.rejected = []              # (xy in odom, monotonic time) not-a-curtain spots
-        self.deferred = None            # (candidates, time) seen during a look: inspect after
         self.remembered = []            # (p1, p2, gap, what, time) seen outside looks
+        self.held = {}                  # id -> (p1, p2, gap, what) odom: until released
+        self.next_held_id = 1
+        self.released = None            # ((p1, p2, gap, what), monotonic time): inspect next
+        self.cand_pub = self.create_publisher(String, g('candidate_topic'), 10) \
+            if g('candidate_topic') else None
+        self.hold_candidates = bool(g('release_topic')) and self.cand_pub is not None
+        if self.hold_candidates:
+            self.create_subscription(String, g('release_topic'), self.on_release, 10)
         self.pose_live = False
         self.pose_status = None
         self.pose_yaw_pub = self.create_publisher(Float32, g('pose_yaw_topic'), 10) \
@@ -334,6 +351,10 @@ class CurtainDetector(Node):
         # down are taken from this floor while it is fresh.
         self.local_floor, self.local_floor_at = None, -1e9
         self.create_subscription(Float32, '/maze/local_floor_z', self.on_local_floor, 10)
+        # ...and stair_detector's tracked floor (FloorTracker: the last measured one carried
+        # along by base_link's height while standing) when none is measured right now.
+        self.floor_est, self.floor_est_at = None, -1e9
+        self.create_subscription(String, '/maze/floor_est', self.on_floor_est, 10)
         if self.status_topic:
             self.create_subscription(String, self.status_topic, self.on_explorer, LATCHED)
             self.create_subscription(PoseStamped, '/maze/goal', self.on_goal, LATCHED)
@@ -396,6 +417,23 @@ class CurtainDetector(Node):
             if self.status_topic else ' (no explorer handshake: drives on its own)')
             + ('' if self.cfg['drive'] else '; drive:=false, detect only'))
         self.publish_curtains()
+        self.attach_live_params()
+
+    def attach_live_params(self):
+        """`ros2 param set /curtain_detector <name> <value>` while running (touble_shooting).
+        cfg / inspect_cfg entries apply at once; CurtainParams fields get setters."""
+        def field(attr, cast=float):
+            return lambda v: setattr(self.params, attr, cast(v))
+
+        def band(_):
+            self.params.band = (float(live_value(self, 'band_low')),
+                                float(live_value(self, 'band_high')))
+        setters = {'max_gap': field('max_gap'), 'min_width': field('min_width'),
+                   'max_range': field('max_range'), 'band_low': band, 'band_high': band,
+                   'diag_period': lambda v: setattr(self, 'diag_period', float(v))}
+        # drive: turning motion on mid-run is a restart decision, not a tuning knob
+        attach_live_params(self, cfgs=[self.cfg, self.inspect_cfg], setters=setters,
+                           locked=('drive',))
 
     # ------------------------------------------------------------------ inputs
     def set_state(self, state, why=''):
@@ -422,11 +460,23 @@ class CurtainDetector(Node):
     def on_local_floor(self, msg):
         self.local_floor, self.local_floor_at = float(msg.data), time.monotonic()
 
+    def on_floor_est(self, msg):
+        try:
+            self.floor_est = float(json.loads(msg.data)['z'])
+            self.floor_est_at = time.monotonic()
+        except (ValueError, KeyError, TypeError):
+            self.get_logger().warn(f'bad /maze/floor_est {msg.data[:80]!r}',
+                                   throttle_duration_sec=30.0)
+
     def floor_here(self, max_age):
         """Floor height for the curtain: the floor under the feet if younger than max_age s,
-        else the start floor (wall_scan), else the guess from the first cloud."""
-        if self.local_floor is not None and time.monotonic() - self.local_floor_at <= max_age:
+        else the tracked one (stair_detector FloorTracker, same age limit), else the start
+        floor (wall_scan), else the guess from the first cloud."""
+        now = time.monotonic()
+        if self.local_floor is not None and now - self.local_floor_at <= max_age:
             return self.local_floor
+        if self.floor_est is not None and now - self.floor_est_at <= max_age:
+            return self.floor_est
         return self.floor_z if self.floor_z is not None else self.floor_guess
 
     def on_map(self, msg):
@@ -643,6 +693,8 @@ class CurtainDetector(Node):
                                        'detection', throttle_duration_sec=10.0)
             else:
                 pts, origin = self.detection_points()
+                if self.state == 'INSPECTING' and pts is not None:
+                    self.note_line_floor(pts)       # closer up: a better view of the line
                 cells = []
                 found_odom = [] if pts is None else detect_curtains(
                     pts, origin[:2], yaw, floor, self.params, cells_out=cells)
@@ -734,13 +786,12 @@ class CurtainDetector(Node):
 
     # ------------------------------------------------------------------ inspection
     def inspect_tick(self, found_odom, cells, xy):
-        """Candidates only from the explorer's looks (`look_states`, user 2026-11-21). Dead-end
-        stops come first (user 2026-11-20): candidates seen in DEAD_END are remembered
-        (`deferred`) and inspected once maze_explorer is back in one of trigger_states (within
-        20 s, still in range). In a JUNCTION look the inspection comes first: maze_explorer
-        pauses the look for it. Outside the looks only those deferred candidates count;
-        candidates seen while exploring are logged and `remembered` (`inspect_remember` s) for
-        the next look, where the usual distance / bearing limits decide (user 2026-11-21)."""
+        """Candidates only from the explorer's looks (`look_states`, user 2026-11-21), held
+        there for maze_explorer (hold) and inspected only once it releases one (on_release),
+        nearest first after the whole junction scan. Candidates seen while exploring are
+        logged and `remembered` (`inspect_remember` s) for the next look, where the usual
+        distance / bearing limits decide. Without the release topic: inspected right away
+        in a look (the old behaviour)."""
         now = time.monotonic()
         cands = [(c.p1, c.p2, c.gap, 'unconfirmed curtain') for c in found_odom]
         seg = near_miss_segment(cells, self.params, self.inspect_cfg['inspect_max_gap'],
@@ -759,18 +810,54 @@ class CurtainDetector(Node):
         if in_look and self.remembered:
             cands = cands + [(*r[:3], r[3] + f', seen {now - r[4]:.0f} s ago while exploring')
                              for r in self.remembered]
-        if self.status_topic and self.explorer not in self.trigger_states + ('JUNCTION',):
-            if cands and in_look:
-                self.deferred = (cands, now)
+        if self.hold_candidates and self.status_topic:
+            if in_look and cands:
+                for c in cands:
+                    self.hold_candidate(c, xy)
+            if self.released is not None and self.explorer in self.trigger_states and \
+                    now >= self.cooldown_until:
+                cand, t = self.released
+                self.released = None
+                if now - t < 20.0:
+                    self.maybe_inspect([cand], xy, released=True)
             return
         if self.status_topic and not in_look:
             cands = []
-        if self.deferred is not None:
-            if now - self.deferred[1] < 20.0:
-                cands += [(*c[:3], c[3] + ', seen during the look') for c in self.deferred[0]]
-            self.deferred = None
         if now >= self.cooldown_until:
             self.maybe_inspect(cands, xy)
+
+    def hold_candidate(self, cand, xy):
+        """A candidate seen in a look: hold it for maze_explorer (published once per spot)."""
+        tg = self.candidate_target(cand, xy)
+        if tg is None:
+            return
+        p1, p2, gap, what = cand
+        centre = tg['centre']
+        for hid, old in self.held.items():
+            if np.linalg.norm((np.asarray(old[0]) + np.asarray(old[1])) / 2 - centre) < 0.5:
+                self.held[hid] = (np.asarray(p1, float), np.asarray(p2, float), gap, what)
+                return
+        hid, self.next_held_id = self.next_held_id, self.next_held_id + 1
+        self.held[hid] = (np.asarray(p1, float), np.asarray(p2, float), gap, what)
+        self.cand_pub.publish(String(data=json.dumps({
+            'id': hid, 'frame': self.odom, 'centre': [float(v) for v in centre],
+            'normal': [float(v) for v in tg['n']], 'width': round(tg['width'], 2),
+            'gap': round(float(gap), 3), 'distance': round(tg['dist'], 2), 'what': what})))
+        self.get_logger().info(f'possible curtain ({tg["what"]}) while {self.explorer}: held '
+                               f'(id {hid}) until maze_explorer releases it')
+
+    def on_release(self, msg):
+        """maze_explorer is in front of a held candidate: inspect it next."""
+        try:
+            hid = int(json.loads(msg.data)['id'])
+        except (ValueError, KeyError, TypeError):
+            self.get_logger().warn(f'bad {msg.data[:80]!r} on the release topic')
+            return
+        if hid not in self.held:
+            return
+        self.released = (self.held.pop(hid), time.monotonic())
+        self.cooldown_until = 0.0
+        self.get_logger().info(f'held curtain candidate {hid} released: inspecting it')
 
     def remember(self, cands, xy, now):
         """Possible curtains seen outside a look: keep them for the next look (one per spot,
@@ -794,53 +881,88 @@ class CurtainDetector(Node):
                 f'{self.explorer}: kept {self.inspect_cfg["inspect_remember"]:.0f} s for the '
                 'next junction / dead-end look', throttle_duration_sec=5.0)
 
-    def maybe_inspect(self, cands, xy):
-        """A wall ahead with a suitable gap but no confirmed curtain -> HANDOVER to inspect.
-        Candidates: single unconfirmed detections and near misses (near_miss_segment), as
-        (p1, p2, gap, what) in odom."""
+    def candidate_target(self, cand, xy, slack=0.0):
+        """Inspection target dict (centre, n away from the robot, p1, p2, what, width, dist)
+        of a candidate (p1, p2, gap, what) in odom, or None when it doesn't qualify: out of
+        range (slack m extra), off to the side, rejected recently, already a curtain, or
+        behind a wall on the map."""
         now = time.monotonic()
-        if self.state != 'IDLE':
-            return
         self.rejected = [r for r in self.rejected
                          if now - r[1] < self.inspect_cfg['inspect_forget']]
-        known = self.curtains_odom()
+        p1, p2, gap, what = cand
+        p1, p2 = np.asarray(p1, float), np.asarray(p2, float)
         rxy = np.asarray(xy, float)
-        for p1, p2, gap, what in cands:
-            p1, p2 = np.asarray(p1, float), np.asarray(p2, float)
-            centre = (p1 + p2) / 2
-            d = p2 - p1
-            n = np.array([d[1], -d[0]]) / max(np.linalg.norm(d), 1e-9)
-            if np.dot(centre - rxy, n) < 0:
-                n = -n                                   # away from the robot
-            dist = float(np.dot(centre - rxy, n))
-            if dist > self.inspect_cfg['inspect_trigger_distance'] or \
-                    dist < self.inspect_cfg['inspect_min_distance']:
-                continue
-            pose = self.pose()
-            yaw = pose[1] if pose is not None else None
-            if yaw is not None and (
-                    abs(wrap(math.atan2(*(centre - rxy)[::-1]) - yaw)) >
-                    self.inspect_cfg['inspect_max_bearing'] or
-                    abs(wrap(math.atan2(n[1], n[0]) - yaw)) > math.radians(45)):
-                continue        # off to the side, or a wall along the way (extru side windows)
-            if any(np.linalg.norm(centre - r[0]) < self.inspect_cfg['inspect_forget_radius']
-                   for r in self.rejected):
-                continue
-            if any(np.linalg.norm(centre - k.centre) < 0.5 for k in known):
-                continue                                 # already a curtain
-            if self.behind_wall(rxy, centre):
-                self.get_logger().info(
-                    f'possible curtain ({what}, {dist:.2f} m ahead) is behind a wall on the '
-                    'map: not reachable from here, not inspected', throttle_duration_sec=5.0)
-                continue
-            width = float(np.linalg.norm(d))
-            self.inspect_target = {'centre': centre, 'n': n, 'p1': p1, 'p2': p2,
-                                   'what': f'{what}: {width:.2f} m wide, gap '
-                                   f'{gap * 100:.0f} cm, {dist:.2f} m ahead'}
-            self.lock, self.lock_id = None, None
-            self.set_state('HANDOVER', f'possible curtain ({self.inspect_target["what"]}): '
-                           'asking maze_explorer to stop Nav2 so it can be inspected')
+        centre = (p1 + p2) / 2
+        d = p2 - p1
+        n = np.array([d[1], -d[0]]) / max(np.linalg.norm(d), 1e-9)
+        if np.dot(centre - rxy, n) < 0:
+            n = -n                                       # away from the robot
+        dist = float(np.dot(centre - rxy, n))
+        if dist > self.inspect_cfg['inspect_trigger_distance'] + slack or \
+                dist < self.inspect_cfg['inspect_min_distance']:
+            return None
+        pose = self.pose()
+        yaw = pose[1] if pose is not None else None
+        if yaw is not None and (
+                abs(wrap(math.atan2(*(centre - rxy)[::-1]) - yaw)) >
+                self.inspect_cfg['inspect_max_bearing'] + (math.radians(20) if slack else 0) or
+                abs(wrap(math.atan2(n[1], n[0]) - yaw)) > math.radians(45)):
+            return None         # off to the side, or a wall along the way (extru side windows)
+        if any(np.linalg.norm(centre - r[0]) < self.inspect_cfg['inspect_forget_radius']
+               for r in self.rejected):
+            return None
+        if any(np.linalg.norm(centre - k.centre) < 0.5 for k in self.curtains_odom()):
+            return None                                  # already a curtain
+        if self.behind_wall(rxy, centre):
+            self.get_logger().info(
+                f'possible curtain ({what}, {dist:.2f} m ahead) is behind a wall on the '
+                'map: not reachable from here, not inspected', throttle_duration_sec=5.0)
+            return None
+        width = float(np.linalg.norm(d))
+        return {'centre': centre, 'n': n, 'p1': p1, 'p2': p2, 'width': width, 'dist': dist,
+                'what': f'{what}: {width:.2f} m wide, gap {gap * 100:.0f} cm, '
+                        f'{dist:.2f} m ahead'}
+
+    def maybe_inspect(self, cands, xy, released=False):
+        """A wall ahead with a suitable gap but no confirmed curtain -> HANDOVER to inspect.
+        Candidates: single unconfirmed detections and near misses (near_miss_segment), as
+        (p1, p2, gap, what) in odom. released: a held one maze_explorer drove up to (a
+        little more range and bearing allowed)."""
+        if self.state != 'IDLE':
             return
+        for cand in cands:
+            tg = self.candidate_target(cand, xy, slack=0.5 if released else 0.0)
+            if tg is None:
+                if released:
+                    self.get_logger().warn(f'released curtain candidate ({cand[3]}) not in '
+                                           'front of the robot from here: not inspected')
+                continue
+            self.inspect_target = tg
+            self.note_line_floor()
+            self.lock, self.lock_id = None, None
+            self.set_state('HANDOVER', f'possible curtain ({tg["what"]}): asking maze_explorer '
+                           'to stop Nav2 so it can be inspected')
+            return
+
+    def note_line_floor(self, pts=None):
+        """Standing: the floor height at the inspection target's line (floor_at_line) into
+        inspect_target['floor'], the reference measure_gap starts from lying down. The floor
+        under the feet / the start floor is 5-10 cm off when the curtain cell is lower than
+        the start plate. Kept from the last view that showed it."""
+        tg = self.inspect_target
+        floor = self.floor_here(3.0)
+        if tg is None or floor is None:
+            return
+        if pts is None:
+            pts, _ = self.detection_points()
+        if pts is None:
+            return
+        f = floor_at_line(pts, tg['p1'], tg['p2'], tg['n'], tg.get('floor', floor))
+        if f is not None:
+            if 'floor' not in tg or abs(f - tg['floor']) > 0.02:
+                self.get_logger().info(f'floor at the curtain line {f:.3f} (vs {floor:.3f} '
+                                       'under the feet / start floor)')
+            tg['floor'] = f
 
     def behind_wall(self, robot_odom, target_odom):
         """A /map wall between the robot and a candidate (curtains.wall_between), both in
@@ -880,7 +1002,9 @@ class CurtainDetector(Node):
         if pts is None:
             return
         tg = self.inspect_target
-        gap, cov, _ = gap_at_line(pts, tg['p1'], tg['p2'], tg['n'], floor)
+        # From the floor at the line seen standing (note_line_floor), else the one under the
+        # feet; gap_at_line re-measures it at the line from these points when it can.
+        gap, cov, _ = gap_at_line(pts, tg['p1'], tg['p2'], tg['n'], tg.get('floor', floor))
         if gap is not None:
             self.gaps.append((gap, cov))
             self.get_logger().info(f'lying: gap {gap * 100:.0f} cm under '

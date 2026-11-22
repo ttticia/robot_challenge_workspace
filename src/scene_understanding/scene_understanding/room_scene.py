@@ -12,22 +12,28 @@ decoded). For each capture the frame stamped inside [hold_start, stamp] nearest 
 taken. Camera stamps come from the robot's clock: if none falls inside, the newest frame
 that ARRIVED during the hold is taken instead (logged 'by arrival'), else the view has no
 frame. A room is complete on `last`, or `room_timeout` s after its newest view (the look was
-cut short: stairs, a curtain). Each cell is analysed once; later captures of it are ignored.
+cut short: stairs, a curtain). Each (cell, attempt) is analysed once; later captures of it
+are ignored. `attempt` (default 1) is the explorer's try. With no /scene/result within its
+scene_result_timeout (and the cell still a dead end with no object on the map) the explorer
+asks again on /scene/retry {cell, attempt: 2}: the views already captured for that cell are
+sent to the VLM again as attempt 2 (the robot has usually moved on; no new look). Captures
+tagged attempt 2 are analysed afresh too. At most `max_attempts` (2) tries per cell go to
+the VLM; later retries / captures are ignored.
 
 Complete rooms go to a worker thread through a queue, so a slow VLM never drops a room.
 VLM: NOT wired yet (`vlm` = 'none'): the record is saved and published with
 scene_type 'unknown' and vlm 'none', which task_reporter ignores. Saved to
 `save_dir`/<YYYY-MM-DD>/<HHMMSS>_cell_<i>_<j>_<view>.jpg + rooms.jsonl.
 
-  /scene/result  std_msgs/String JSON: {cell, cell_centre, kind (dead_end | room: an object
-                 cell looked into from outside), views: [{view, frame, how,
+  /scene/result  std_msgs/String JSON: {cell, cell_centre, attempt, kind (dead_end | room: an
+                 object cell looked into from outside), views: [{view, frame, how,
                  tilt_deg, pitch_cmd_deg, camera_pitch_deg}], complete, scene_type,
                  hazards, objects, signs, humans, vlm}
 
 Off by default (maze_nav.launch.py scene_understanding:=false): it is one more colour
 subscriber, i.e. one more copy of the camera stream over the robot bridge.
 
-    ros2 run maze_nav room_scene
+    ros2 run scene_understanding room_scene
 """
 import collections
 import datetime
@@ -71,20 +77,27 @@ class RoomScene(Node):
         p('scene_capture_topic', '/scene/capture')
         p('camera_topic', '/camera/color/image_raw/compressed')
         p('scene_result_topic', '/scene/result')
-        p('buffer_s', 4.0)             # s of camera frames kept
+        p('scene_retry_topic', '/scene/retry')
+        p('buffer_s', 4.0)            # s of camera frames kept
         p('room_timeout', 20.0)        # s after a room's newest view without `last`
         p('save_dir', os.path.expanduser('~/challenge_ws/logs/scene'))
         p('vlm', 'none')               # VLM backend; only 'none' (not wired yet)
+        p('max_attempts', 2)           # VLM tries per cell (the explorer retries on no reply)
         g = lambda n: self.get_parameter(n).value  # noqa: E731
+        self.max_attempts = int(g('max_attempts'))
         self.buffer_s, self.room_timeout = float(g('buffer_s')), float(g('room_timeout'))
         self.save_dir, self.vlm = g('save_dir'), g('vlm')
 
         self.frames = collections.deque(maxlen=400)   # (stamp_ns, arrival_s, msg)
-        self.rooms = {}                # cell -> {'cell', 'cell_centre', 'views', 'updated'}
-        self.done = set()              # cells already sent to the worker
+        self.rooms = {}                # (cell, attempt) -> {'cell', 'cell_centre', 'attempt',
+        #                                'views', 'updated'}
+        self.done = set()              # (cell, attempt) already sent to the worker
+        self.sent = {}                 # cell -> its newest room sent (views kept for a retry)
         self.work = queue.Queue()
         self.result_pub = self.create_publisher(String, g('scene_result_topic'), 10)
         self.create_subscription(String, g('scene_capture_topic'), self.on_capture, 10)
+        if g('scene_retry_topic'):
+            self.create_subscription(String, g('scene_retry_topic'), self.on_retry, 10)
         self.create_subscription(CompressedImage, g('camera_topic'), self.on_image,
                                  qos_profile_sensor_data)
         self.create_timer(1.0, self.check_timeouts)
@@ -108,12 +121,18 @@ class RoomScene(Node):
             c = json.loads(msg.data)
             cell = (int(c['cell'][0]), int(c['cell'][1]))
             start, end = stamp_ns(c['hold_start']), stamp_ns(c['stamp'])
+            attempt = int(c.get('attempt') or 1)
         except (ValueError, KeyError, TypeError, IndexError) as e:
             self.get_logger().warn(f'bad /scene/capture ({e}): {msg.data[:200]}')
             return
-        if cell in self.done:
-            self.get_logger().info(f'cell {list(cell)} {c.get("view")}: already analysed; '
-                                   'ignored')
+        key = (cell, attempt)
+        if attempt > self.max_attempts:
+            self.get_logger().warn(f'cell {list(cell)} {c.get("view")}: attempt {attempt} > '
+                                   f'max_attempts {self.max_attempts}; not sent to the VLM')
+            return
+        if key in self.done:
+            self.get_logger().info(f'cell {list(cell)} {c.get("view")} (attempt {attempt}): '
+                                   'already analysed; ignored')
             return
         now = time.monotonic()
         frame, how = pick_frame(self.frames, start, end, now - (end - start) / 1e9 - 0.2, now)
@@ -123,8 +142,8 @@ class RoomScene(Node):
         elif how == 'arrival':
             self.get_logger().info(f'cell {list(cell)} {c.get("view")}: no frame stamped in '
                                    'the hold (robot clock offset?); took one by arrival')
-        room = self.rooms.setdefault(cell, {'cell': list(cell),
-                                            'cell_centre': c.get('cell_centre'), 'views': []})
+        room = self.rooms.setdefault(key, {'cell': list(cell), 'attempt': attempt,
+                                           'cell_centre': c.get('cell_centre'), 'views': []})
         room['updated'] = now
         room['views'].append({'view': c.get('view'), 'msg': frame, 'how': how,
                               'capture': c})
@@ -132,19 +151,50 @@ class RoomScene(Node):
                                f'({len(room["views"])} so far)'
                                + (', last: queued' if c.get('last') else ''))
         if c.get('last'):
-            self.finish(cell, complete=True)
+            self.finish(key, complete=True)
 
     def check_timeouts(self):
         now = time.monotonic()
-        for cell in [k for k, r in self.rooms.items() if now - r['updated'] > self.room_timeout]:
-            self.get_logger().warn(f'cell {list(cell)}: no last view for '
+        for key in [k for k, r in self.rooms.items() if now - r['updated'] > self.room_timeout]:
+            self.get_logger().warn(f'cell {list(key[0])} (attempt {key[1]}): no last view for '
                                    f'{self.room_timeout:.0f} s (look cut short); queued as is')
-            self.finish(cell, complete=False)
+            self.finish(key, complete=False)
 
-    def finish(self, cell, complete):
-        room = self.rooms.pop(cell)
+    def finish(self, key, complete):
+        room = self.rooms.pop(key)
         room['complete'] = complete
-        self.done.add(cell)
+        self.done.add(key)
+        self.sent[key[0]] = room
+        self.work.put(room)
+
+    def on_retry(self, msg):
+        """/scene/retry {cell, attempt}: no answer for that cell in time; send the views
+        already captured to the VLM again as `attempt`."""
+        try:
+            r = json.loads(msg.data)
+            cell = (int(r['cell'][0]), int(r['cell'][1]))
+            attempt = int(r.get('attempt') or 2)
+        except (ValueError, KeyError, TypeError, IndexError) as e:
+            self.get_logger().warn(f'bad /scene/retry ({e}): {msg.data[:200]}')
+            return
+        if attempt > self.max_attempts:
+            self.get_logger().warn(f'cell {list(cell)}: retry attempt {attempt} > max_attempts '
+                                   f'{self.max_attempts}; not sent to the VLM')
+            return
+        if (cell, attempt) in self.done or (cell, attempt) in self.rooms:
+            self.get_logger().info(f'cell {list(cell)}: attempt {attempt} already queued; '
+                                   'retry ignored')
+            return
+        prev = self.sent.get(cell)
+        if prev is None:
+            self.get_logger().warn(f'cell {list(cell)}: retry {attempt}, but no views of it '
+                                   'were captured; nothing to send')
+            return
+        room = dict(prev, attempt=attempt, views=list(prev['views']))
+        self.done.add((cell, attempt))
+        self.sent[cell] = room
+        self.get_logger().info(f'cell {list(cell)}: no answer in time; sending its '
+                               f'{len(room["views"])} view(s) again (attempt {attempt})')
         self.work.put(room)
 
     def worker(self):
@@ -165,7 +215,8 @@ class RoomScene(Node):
             if v['msg'] is not None:
                 ext = 'png' if 'png' in (v['msg'].format or '') else 'jpg'
                 name = (f'{day.strftime("%H%M%S")}_cell_{room["cell"][0]}_{room["cell"][1]}'
-                        f'_{v["view"]}.{ext}')
+                        + (f'_try{room["attempt"]}' if room['attempt'] > 1 else '')
+                        + f'_{v["view"]}.{ext}')
                 with open(os.path.join(folder, name), 'wb') as f:
                     f.write(bytes(v['msg'].data))
             cap = v['capture']
@@ -173,7 +224,8 @@ class RoomScene(Node):
                           **{k: cap.get(k) for k in ('tilt_deg', 'pitch_cmd_deg',
                                                      'camera_pitch_deg', 'robot')}})
         kind = (room['views'][0]['capture'].get('kind') if room['views'] else None) or 'dead_end'
-        result = {'cell': room['cell'], 'cell_centre': room['cell_centre'], 'kind': kind,
+        result = {'cell': room['cell'], 'cell_centre': room['cell_centre'],
+                  'attempt': room['attempt'], 'kind': kind,
                   'views': views,
                   'complete': room['complete'], 'scene_type': 'unknown', 'hazards': [],
                   'objects': [], 'signs': [], 'humans': False, 'vlm': self.vlm}
