@@ -46,6 +46,7 @@ Built 2026-11-21, OFF by default (`scene_understanding:=false`; dead-end looks +
 - task_reporter: QR text (/qr/read is plain text) + the dead-end cell; objects/hazards only from analysed results.
 - checked dead-end cells never entered (frontier filter + goal cancel; a confirmed curtain on the edge re-opens it).
 - tilt > 30 deg -> Pose-mode pitch on every view of that dead end (TF odom->base_link, zeroed at /maze/start).
+- 2026-11-22: dead ends wait for the AI verdict instead of being blacklisted on the trigger (explorer hold_dead_end / on_scene_result / scene_timeout_tick): room (scene_type kitchen/market/workshop/clinic/cleaning_room, or any object) -> blacklisted; stairs / curtain -> candidate queue, checked after the junctions; else open. No answer 15 s after the last view -> map re-check (object -> blacklisted, not a dead end -> open), else /scene/retry (room_scene resends the stored views, max 2 tries), then blacklisted. With scene_understanding:=false: blacklisted at once (as before).
 
 STILL TO DO:
 1. VLM backend in room_scene.process (decide: on-robot model vs Claude API dev-only; needs internet).
@@ -55,6 +56,14 @@ STILL TO DO:
 5. Roll on cambered floor: logged only (no roll axis).
 6. logs/scene/ is pruned by the daily >7 d cron (only cpu/ and junctions/ are kept).
 7. Room look-in (2026-11-21): object cells (toy kitchen etc.) are looked into from an open neighbour (hold + left/right walls, perception on, never entered) + Nav2 KeepoutFilter on the object cells. Sim-tested only (object_maze.json). Depends on block_objects being right: a false object cell gets a pointless look and is lethal for Nav2 (08:32 run: NO_EXIT) - add the "unblock before NO_EXIT" fallback. Sim 10:45 (object_maze): look-in from [1, 1] worked and never entered, but squaring up failed (-77 deg turn blocked both ways: Nav2 stopped the robot 6-16 cm off the cell centre, the cell's own walls block the turn; not the painted room), so the centre view faced 77 deg away; same risk for junction dead-end visits (turning in a 1 m cell, see ## turning).
+
+Toy-market sim test (2026-11-22, paused, fix during the actual run): object_maze.json with market-sized boxes (stand, counter, trolley) in dead-end cell grid [2, 1] + a fake colour camera playing the market photos (scene_understanding/test/data/photo_*). Hold -> retry -> blacklist worked, but:
+8. AI not connected: room_scene still has vlm 'none', so the market came back scene_type 'unknown', no objects. Needs the organisers' AI server address + request/response format (scene-understanding lab, group id group04_grp4) and the client code from ~/test_scene_understanding (not on this machine). Expected answer for this room: scene_type 'market'.
+9. Dead end met during a junction scan gets only the junction's single frame (facing in), no left/right wall views: photo 2 (counter) and photo 3 (trolley, right wall) never captured; QR codes / signs on side walls would be missed. Give such a dead end the full dead-end look (hold + left + right) before leaving the junction.
+10. block_objects saw no object in the market cell: the toys stand against the walls and merge into them on /map, so the "object on the map -> room" shortcut on a timeout never fires. Expect the same for real props against walls.
+11. Possible false stairs next to the market: stair_detector reported 2 risers of 12 cm twice (camera at 1.76 m during the junction scan, then lidar), lined up 0.37 m from them and handed over to AI mode (transfer_interfaces not found in the sim). Probably the ramp wedges in the cell before the market (maze (-1, 1)), not the toys - check on the real ramp.
+12. room_scene saves into the real logs dir (~/challenge_ws/logs/scene/); save_dir isn't a launch argument, so sim test images land there too.
+13. The empty ament marker scene_understanding/resource/scene_understanding was deleted at 17:17 (when the photos were dropped into resource/) and launch failed with "package 'scene_understanding' not found". Recreated; photos moved to scene_understanding/test/data/. Keep resource/ for the marker only.
 
 ## obstacles
 evaluate feasibility of adjusting gait based on obstacle height/terrain type. Some terrains, like slats or barriers, work better with rug mode h-step.
