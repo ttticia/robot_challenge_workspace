@@ -20,7 +20,7 @@ from maze_nav.scene_cells import CellGrid
 class Fake:
     for _n in ('hold_dead_end', 'blacklist_dead_end', 'launch_cell', 'scene_candidate',
                'no_go_cell', 'on_scene_result', 'scene_timeout_tick', 'still_dead_end',
-               'queue_candidate'):
+               'queue_candidate', 'deferred_candidates'):
         locals()[_n] = getattr(Explorer, _n)
 
     def __init__(self):
@@ -31,11 +31,15 @@ class Fake:
         self.cells = CellGrid()
         self.blacklist, self.dead_end_cells, self.scene_pending = [], set(), {}
         self.cand_queue, self.blocked_cells, self.exit_side = [], {}, None
+        self.defers = []
         self.scene_results = True
         self.retries = []
         self.scene_retry_pub = SimpleNamespace(
             publish=lambda m: self.retries.append(json.loads(m.data)))
         self.grid = dead_end_grid()
+
+    def publish_curtain_map(self):
+        pass
 
     def get_logger(self):
         return self.log

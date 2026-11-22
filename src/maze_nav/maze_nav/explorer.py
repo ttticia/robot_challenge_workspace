@@ -84,6 +84,14 @@ NO_EXIT) the explorer works the queue, nearest first along free space: drive to 
 `stairs_approach` / `curtain_check_approach` m in front of it, face it (TURNING), release it
 (/maze/stairs_release, /maze/curtain_release), and wait `candidate_wait` s for the detector's
 HANDOVER (stair check / lie-down inspection); then the next. Queue empty: explore on.
+Stairs last (user 2026-11-22): queued stairs (stair_detector holds stairs seen while exploring
+too, `hold_while_exploring`) are worked only when nothing else is left to explore (the final
+queue pass); until then the cell up from their first riser is drawn as wall on the
+explorer's map and /maze/map, so neither a frontier goal nor a Nav2 path goes up them.
+Curtains beside another way (user 2026-11-22): curtain_detector holds curtains seen while
+exploring too; one in front of a cell with another open way (no junction look there: one
+solid wall, the curtain, one open way, the way in) is held back until that way is explored
+(defer_side_curtains), then checked.
 Curtains (curtain_detector.py, `curtain_topic` / `curtains_topic`; '' = ignore): confirmed
 curtains (/curtain/curtains, map frame) are cleared on the explorer's copy of /map (a wall with a
 low gap is passable), so frontiers behind one count. A goal within `curtain_goal_radius` of a
@@ -144,7 +152,12 @@ are queued by their detectors; an object room scanned this way is marked explore
 into it, no room look-in later). Then (`junction_follow`): queued candidates -> work the
 queue (see Candidate queue); none -> trace each way on the map (scene_cells.trace_way, up to
 `junction_trace_cells` cells), blacklist the ones ending in a dead end, and drive one cell
-into the nearest way to an unexplored cell, then explore on. Status stays JUNCTION
+into the nearest way to an unexplored cell, then explore on. A possible curtain queued on
+one of the junction's ways while another unexplored way is open (user 2026-11-22: a
+corridor beside a curtain most likely leads to a room) is taken out of the queue: that
+curtain way is not taken, only frontiers down the other ways are goals (curtain_branch
+branch_mask) until none are left for `done_confirm` replans, then the curtain goes back into
+the queue and is checked (lie-down inspection, crossing). Status stays JUNCTION
 throughout. Requests older than `junction_timeout` s or more than `junction_radius` m from
 the cell centre are dropped.
 Dead end (`dead_end_topic`: scene_trigger's /scene/trigger, kind dead_end, fired from the
@@ -461,9 +474,10 @@ class Explorer(Node):
         p('maze_cols', 5)
         p('maze_rows', 3)
         # The two arenas are mirrored (booklet D, F): the maze lies to the left of the start
-        # heading (+j) or to its right. auto = both until the robot stands in a cell off the
-        # start row, which shows the side.
-        p('maze_side', 'auto')
+        # heading (+j) or to its right; set it for the arena you run in. auto = both until the
+        # robot stands in a cell off the start row: EXPERIMENTAL, it decided the wrong side in
+        # the sim (2026-11-22: frontiers outside the real maze are allowed until it decides).
+        p('maze_side', 'left')
         p('exit_cell_margin', 0.15)
         p('exit_confirm', 3)
         p('launch_tolerance', 0.25)
@@ -815,6 +829,7 @@ class Explorer(Node):
         self.at_stairs_since = None  # monotonic time AT_STAIRS began
         self.cand_queue = []         # candidates to check: {'kind', 'id', 'target', 'heading'}
         self.queue_active = False    # working the queue (after a junction scan / at the end)
+        self.queue_final = False     # nothing else to explore: stairs are worked too
         self.queue_wait = None       # (candidate, monotonic time) released, detector's turn
         self.visited = set()         # self.cells cells the robot has stood in
         self.scanned_cells = set()   # cells viewed from a junction scan (scene understanding)
@@ -1102,7 +1117,11 @@ class Explorer(Node):
                                 'heading': heading})
         self.get_logger().info(
             f'possible {kind} {cid} at ({target[0]:.2f}, {target[1]:.2f}) ({what}): queued; '
-            f'checked after the junction scan, nearest first ({len(self.cand_queue)} queued)')
+            + ('kept out of Nav2 and checked only once nothing else is left to explore'
+               if kind == 'stairs' else 'checked after the junction scan, nearest first')
+            + f' ({len(self.cand_queue)} queued)')
+        if kind == 'stairs':
+            self.publish_curtain_map()              # its cell drawn as wall for Nav2
 
     def on_stairs_candidate(self, msg):
         """stair_detector holds possible stairs seen in a junction / dead-end look: queue
@@ -1133,6 +1152,52 @@ class Explorer(Node):
         if m is None:
             return self.release('curtain', cid, f'no TF map -> {frame}; inspecting now')
         self.queue_candidate('curtain', cid, m[0], m[1], d.get('what', 'curtain'))
+        if self.state != 'JUNCTION' and self.paused_junction is None:
+            self.defer_side_curtains()               # a junction look decides its own
+
+    def defer_side_curtains(self, half_width=0.35):
+        """User 2026-11-22: a possible curtain in front of a cell that has another way on
+        (e.g. one solid wall, the curtain, one open way and the way in; no junction look
+        there, the curtain reads as a wall) is noted but held back: that cell's other open
+        ways are explored fully first (Deferral with candidates; branch_frontiers), then it
+        goes back into the queue. Each candidate is held back once at most ('side_done')."""
+        grid = self.grid_now()
+        if grid is None:
+            return
+        cells = self.cells
+        pose = self.robot_pose()
+        for c in [c for c in self.cand_queue
+                  if c['kind'] == 'curtain' and not c.get('side_done')]:
+            h, (tx, ty) = c['heading'], c['target']
+            cell = cells.cell((tx - 0.5 * cells.size * math.cos(h),
+                               ty - 0.5 * cells.size * math.sin(h)))
+            cx, cy = cells.centre(cell)
+            cdir = min(DIRECTIONS.values(), key=lambda d: abs(wrap(cells.heading(d) - h)))
+            rdir = None                              # the way towards the robot: the way in
+            if pose is not None and math.hypot(pose[0][0] - cx, pose[0][1] - cy) > \
+                    0.6 * cells.size:
+                b = math.atan2(pose[0][1] - cy, pose[0][0] - cx)
+                rdir = min(DIRECTIONS.values(), key=lambda d: abs(wrap(cells.heading(d) - b)))
+            others = []
+            for d in DIRECTIONS.values():
+                nxt = (cell[0] + d[0], cell[1] + d[1])
+                centre = cells.centre(nxt)
+                if d in (cdir, rdir) or nxt in self.visited or self.back_to_start(centre) or \
+                        nxt in self.explored_cells | set(self.blocked_cells) or \
+                        self.no_go_cell(nxt):
+                    continue
+                if opening(grid, cells, cell, d, half_width=half_width) == 'open':
+                    others.append(d)
+            if not others:
+                continue
+            c['side_done'] = True
+            self.cand_queue.remove(c)
+            self.defers.append(Deferral(None, tuple(cell), cells, others, candidates=[c]))
+            self.branch_cache = None
+            self.get_logger().info(
+                f'possible curtain {c["id"]} in front of cell {list(cell)} (way {cdir}): '
+                f'noted; exploring that cell\'s other way(s) {others} fully first (likely a '
+                'room), then checking it')
 
     def release(self, kind, cid, why):
         if cid is None:                      # not held by a detector (e.g. from /scene/result)
@@ -1147,12 +1212,40 @@ class Explorer(Node):
         if msg.data.startswith('DONE'):
             self.ai_done_at = time.monotonic()
 
-    def start_queue(self, why):
-        """Work the candidate queue from now on (nearest first), if there is one."""
-        if not self.cand_queue or self.queue_active:
-            return bool(self.cand_queue)
+    def workable(self):
+        """Queued candidates to check now: stairs only once nothing else is left to explore
+        (user 2026-11-22: cross stairs only when every other way is exhausted)."""
+        return [c for c in self.cand_queue if self.queue_final or c['kind'] != 'stairs']
+
+    def held_stair_cells(self):
+        """Cells of queued stairs not being worked yet (the cell up from the first riser):
+        drawn as wall on the explorer's map and /maze/map, so Nav2 never plans up them."""
+        if self.queue_final:
+            return set()
+        half = self.cells.size / 2
+        out = {self.cells.cell((c['target'][0] + half * math.cos(c['heading']),
+                                c['target'][1] + half * math.sin(c['heading'])))
+               for c in self.cand_queue if c['kind'] == 'stairs'}
+        if out:
+            pose = self.robot_pose()                # never wall the robot in
+            if pose is not None:
+                out.discard(self.cells.cell(pose[0]))
+        return out
+
+    def start_queue(self, why, final=False):
+        """Work the candidate queue from now on (nearest first), if there is one. Possible
+        curtains with another way on beside them are held back first (defer_side_curtains)."""
+        if self.cand_queue and not self.queue_active:
+            self.defer_side_curtains()
+        if final and not self.queue_final and any(c['kind'] == 'stairs'
+                                                  for c in self.cand_queue):
+            self.queue_final = True
+            self.publish_curtain_map()              # the held stairs open for Nav2 now
+        self.queue_final = self.queue_final or final
+        if not self.workable() or self.queue_active:
+            return bool(self.workable())
         self.queue_active = True
-        self.get_logger().info(f'{why}: checking {len(self.cand_queue)} queued candidate(s), '
+        self.get_logger().info(f'{why}: checking {len(self.workable())} queued candidate(s), '
                                'nearest first')
         return True
 
@@ -1172,9 +1265,14 @@ class Explorer(Node):
             self.get_logger().warn(f'{c["kind"]} {c["id"]}: no check {self.cfg["candidate_wait"]:.0f}'
                                    ' s after the release; next candidate')
             self.queue_wait = None
-        if not self.cand_queue:
+        if not self.workable():
             self.queue_active = False
-            self.get_logger().info('candidate queue done: exploring on')
+            if self.queue_final:
+                self.queue_final = False
+                self.publish_curtain_map()          # held stair cells (none left) redrawn
+            self.get_logger().info('candidate queue done: exploring on' + (
+                f' ({len(self.cand_queue)} stairs held until nothing else is left)'
+                if self.cand_queue else ''))
             return []
         field = path_field(grid, xy, self.cfg['robot_radius'])
 
@@ -1185,7 +1283,7 @@ class Explorer(Node):
                 if grid.contains(g) and math.isfinite(field[g[1], g[0]]):
                     return float(field[g[1], g[0]])
             return math.hypot(sx - xy[0], sy - xy[1]) + 100.0      # no path: last
-        c = min(self.cand_queue, key=dist)
+        c = min(self.workable(), key=dist)
         spot = self.candidate_spot(c)
         if any(math.hypot(spot[0] - f[0], spot[1] - f[1]) < 0.4 for f in self.failed):
             self.cand_queue.remove(c)
@@ -1259,6 +1357,8 @@ class Explorer(Node):
                 return None
             d.released = True
             if cand:                                 # back into the queue: lie-down check
+                for c in d.candidates:
+                    c['side_done'] = True
                 self.defers.remove(d)
                 self.branch_cache = None
                 self.cand_queue.extend(d.candidates)
@@ -1339,7 +1439,7 @@ class Explorer(Node):
         if self.map is None:
             return None
         cs = self.curtains_in_map()
-        if not cs and not self.paint_cells:
+        if not cs and not self.paint_cells and not self.held_stair_cells():
             return self.map
         g = self.block_objects(clear_curtains(Grid.from_msg(self.map), cs))
         out = OccupancyGrid()
@@ -1364,6 +1464,9 @@ class Explorer(Node):
 
     def block_objects(self, grid):
         """grid with the painted objects drawn as wall: their boxes, or whole cells."""
+        stairs = self.held_stair_cells()
+        if stairs:
+            grid = block_cells(grid, self.cells, stairs)
         if self.footprint_keepout():
             return block_boxes(grid, self.painted_boxes())
         return block_cells(grid, self.cells, self.paint_cells)
@@ -1945,7 +2048,7 @@ class Explorer(Node):
                 return
             if self.failed:
                 return self.recover_or_finish(grid, xy, 'only failed frontiers left')
-            if self.start_queue('nothing else to explore'):
+            if self.start_queue('nothing else to explore', final=True):
                 self.empty_replans = 0
                 return
             if self.go_to_exit('maze explored'):
@@ -2933,7 +3036,8 @@ class Explorer(Node):
             return []
         hw = rec['half_width']
         curtains = self.curtains_at_junction(cells, cell)
-        cdirs = {d for _, d in curtains}
+        cdirs = {d for _, d in curtains} | {d for _, d in self.curtains_at_junction(
+            cells, cell, cands=self.deferred_candidates())}   # held back while exploring
 
         def openings(c, d):
             return opening(grid, cells, c, d, half_width=hw)
@@ -2974,6 +3078,8 @@ class Explorer(Node):
                 continue
             dist = math.hypot(centre[0] - xy[0], centre[1] - xy[1])
             ways.append((dist, abs(wrap(heading - yaw)), name, nxt, centre, heading, d))
+        for c, _ in curtains:                        # this junction decides: not again
+            c['side_done'] = True
         if curtains and ways:
             held = [c for c, _ in curtains]
             for c in held:
@@ -2997,13 +3103,15 @@ class Explorer(Node):
         return [{'do': 'goto', 'xy': centre, 'yaw': heading, 'group': 'leave',
                  'name': f'nearest unexplored way {name}: to cell {list(nxt)}'}]
 
-    def curtains_at_junction(self, cells, cell, reach=1.6, max_off=math.radians(35)):
-        """Queued possible curtains on one of junction `cell`'s ways: within `reach` cells
-        of its centre and within `max_off` of a way's heading. [(candidate, (di, dj))]."""
+    def curtains_at_junction(self, cells, cell, reach=1.6, max_off=math.radians(35),
+                             cands=None):
+        """Possible curtains (default: queued, not held back before) on one of junction
+        `cell`'s ways: within `reach` cells of its centre and within `max_off` of a way's
+        heading. [(candidate, (di, dj))]."""
         cx, cy = cells.centre(cell)
         out = []
-        for c in self.cand_queue:
-            if c['kind'] != 'curtain':
+        for c in (self.cand_queue if cands is None else cands):
+            if c['kind'] != 'curtain' or cands is None and c.get('side_done'):
                 continue
             tx, ty = c['target']
             if math.hypot(tx - cx, ty - cy) > reach * cells.size:
@@ -3190,7 +3298,7 @@ class Explorer(Node):
         """Goals keep failing: retry while open frontiers remain, else NO_EXIT."""
         open_ = self.in_reach(self.find(grid, xy, self.blacklist), xy)
         if (not open_ or self.recoveries >= self.cfg['max_recoveries']) and \
-                self.start_queue(f'{why}; nothing else to explore'):
+                self.start_queue(f'{why}; nothing else to explore', final=True):
             self.failed, self.failures, self.empty_replans = [], 0, 0
             return
         if not open_:

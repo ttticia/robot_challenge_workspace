@@ -28,6 +28,9 @@ A "steps" solid is a staircase with explicit size: its min/max box is the footpr
 the high end) is at max_z - i * rise, rise = (max_z - min_z) / treads, and the ground past
 the last tread is at min_z. test/maze_curtains.json, test/maze_stairs.json: the two
 presentation mazes (resource/Presentation, 2026-11-21; make_presentation_mazes.py).
+A "pin" solid is a low bar the robot steps over with the H-Step gait (the ~18 cm rolling pin
+across a cell, user 2026-11-22): the lidar and depth camera see it (and it hides what is
+behind it), but the body neither rides up on it nor collides with it (H-Step clears it).
 
 Always run it on a spare domain so it cannot meet the real robot:
 
@@ -230,7 +233,7 @@ class Maze:
             if k == 'wall' and s.get('style') == 'extru':
                 out += [(tuple(b[:3]), tuple(b[3:])) for b in extru_boxes(lo, hi,
                                                                        s.get('board_side', -1))]
-            elif k in ('wall', 'rail', 'curtain', 'tile', 'mat', 'block'):
+            elif k in ('wall', 'rail', 'curtain', 'tile', 'mat', 'block', 'pin'):
                 out.append((tuple(lo), tuple(hi)))
             elif k == 'steps':
                 axis = 0 if s['down'][1] == 'x' else 1
@@ -298,6 +301,8 @@ class Maze:
                 add(surface(lo, hi, 0.01, 'all'), True)
             elif k in ('tile', 'mat', 'block'):
                 add(surface(lo, hi, 0.04, 'top'), False)
+            elif k == 'pin':                     # stepped over: seen (faces), never ridden on
+                add(surface(lo, hi, ws, 'all'), True)
             elif k == 'wedge':
                 xs, ys = np.arange(lo[0], hi[0], 0.03), np.arange(lo[1], hi[1], 0.03)
                 xx, yy = np.meshgrid(xs, ys)

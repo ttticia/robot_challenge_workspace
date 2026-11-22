@@ -311,6 +311,11 @@ class StairDetector(Node):
         # nearest, faces it and releases it on /maze/stairs_release ({id}). Stairs seen again
         # near a held one join it.
         p('junction_defer', True)
+        # User 2026-11-22: stairs are crossed only once every other way is explored. Stairs
+        # seen while exploring (possible or confirmed, even right in front) are held and
+        # published on /stairs/candidate too, never handed over at once; maze_explorer keeps
+        # them out of Nav2 and releases them last. false = the old immediate handover.
+        p('hold_while_exploring', True)
         p('stairs_release_topic', '/maze/stairs_release')
         g = lambda n: self.get_parameter(n).value  # noqa: E731
 
@@ -419,6 +424,8 @@ class StairDetector(Node):
         self.curtain_grace = float(g('curtain_grace'))
         self.look_left_at = -1e9        # monotonic s the explorer last left a look state
         self.junction_defer = bool(g('junction_defer'))
+        self.hold_exploring = bool(g('hold_while_exploring'))
+        self.released_ests = []          # stairs maze_explorer released: never held again
         self.held = {}                  # id -> (StairEstimate, what): held until released
         self.next_held_id = 1
         self.cand_pub = self.create_publisher(String, '/stairs/candidate', 10)
@@ -676,7 +683,8 @@ class StairDetector(Node):
         d = abs(est.distance(np.asarray(xy, float)))
         if d > self.check_cfg['check_distance']:
             return
-        if self.status_topic and self.look_states and self.explorer not in self.look_states:
+        if self.status_topic and self.look_states and self.explorer not in self.look_states \
+                and not (self.hold_exploring and self.junction_defer):
             self.get_logger().info(f'possible stairs {d:.2f} m away ({what}) while '
                                    f'{self.explorer}: checked only from a junction or dead-end '
                                    'look', throttle_duration_sec=10.0)
@@ -708,14 +716,14 @@ class StairDetector(Node):
     def hold_candidate(self, est, xy, d, what):
         """Possible stairs in a junction / dead-end look: hold them for maze_explorer
         (True = held)."""
-        if not (self.junction_defer and self.status_topic):
+        if not (self.junction_defer and self.status_topic) or self.is_released(est, xy):
             return False
         pt = np.asarray(est.edge_point(np.asarray(xy, float)), float)
         sid = self.held_id(est, xy)
         if sid is not None:
             self.held[sid] = (est, what)              # seen again: same hold
             return True
-        if self.explorer not in self.look_states:
+        if self.explorer not in self.look_states and not self.hold_exploring:
             return False
         sid, self.next_held_id = self.next_held_id, self.next_held_id + 1
         self.held[sid] = (est, what)
@@ -726,6 +734,12 @@ class StairDetector(Node):
                                f'{self.explorer}: held (id {sid}) until maze_explorer '
                                'releases them')
         return True
+
+    def is_released(self, est, xy):
+        """est is stairs maze_explorer already released (it wants them checked / crossed)."""
+        pt = np.asarray(est.edge_point(np.asarray(xy, float)), float)
+        return any(np.linalg.norm(np.asarray(old.edge_point(np.asarray(xy, float))) - pt) <
+                   self.check_cfg['check_forget_radius'] for old in self.released_ests)
 
     def held_id(self, est, xy):
         """Id of the held stairs est is (first riser within check_forget_radius), or None."""
@@ -746,6 +760,7 @@ class StairDetector(Node):
         if sid not in self.held:
             return
         est, what = self.held.pop(sid)
+        self.released_ests.append(est)
         self.candidate = (est, time.monotonic(), f'{what}, held from a look')
         self.cooldown_until = 0.0
         self.get_logger().info(f'held stairs {sid} released: checking them')
@@ -1143,6 +1158,12 @@ class StairDetector(Node):
                     + (f'{off:.2f} m off their centre line' if off is not None else
                        'its line misses the risers in view')
                     + '): not taking over until it is in front', throttle_duration_sec=3.0)
+                return
+            if self.hold_exploring and self.hold_candidate(
+                    found, xy, dist, f'confirmed, {found.risers} risers'):
+                self.get_logger().info(f'stairs {dist:.2f} m ahead: held for maze_explorer '
+                                       '(crossed only once every other way is explored)',
+                                       throttle_duration_sec=5.0)
                 return
             if not self.cfg['drive']:
                 self.announce(found, dist)

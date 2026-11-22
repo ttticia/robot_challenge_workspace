@@ -75,7 +75,7 @@ The onboard perception nodes publish no debug images; QR and poster snapshots ar
 starts. Without an override the recorder misses them, and a replay has no map and no
 camera/lidar mounting frames. The `rec_*` aliases create
 `~/challenge_ws/ROS_bags/qos_overrides.yaml` the first time and pass it to the recorder for you
-(except `rec_video`, which doesn't need it). Its contents, for reference:
+Its contents, for reference:
 
 ```yaml
 /map:
@@ -118,8 +118,8 @@ For dense per-pixel depth you need `/camera/depth/image_raw`. Don't record
 > **Recording while the robot drives itself (Nav2):** leave out
 > `/camera/depth/image_raw`. On 2026-11-13, recording it during an autonomous run made
 > `/livox/points` arrive about 1.2 s late (normal ≈ 0.14 s); collision_monitor ignored the
-> stale lidar and the robot never moved. Use `rec_nav` (section 2.2), or record depth only
-> during teleop runs. `rec_full` and `rec_perception` refuse to start while Nav2 is running.
+> stale lidar and the robot never moved. Use `rec_maze` (section 2.2), or record depth only
+> during teleop runs. `rec_full` and `rec_curtain` refuse to start while Nav2 is running.
 
 ---
 
@@ -143,25 +143,22 @@ press **Ctrl+C** to stop:
 | Run | Alias | Groups | Depth? | Section |
 |---|---|---|---|---|
 | Teleop, record everything | `rec_full` | A–G | yes | [2.1](#21-full-run-teleop-rec_full) |
-| Full `maze_nav` run: navigation + perception | `rec_maze` | A, B, D–H | **no** | [2.2](#22-autonomous-run-rec_nav-rec_maze) |
-| Nav2 driving (not `maze_nav`) | `rec_nav` | A, B, D–G | **no** | [2.2](#22-autonomous-run-rec_nav-rec_maze) |
-| Debug posters / QR | `rec_perception` | A, B, C, E, G | yes | [2.3](#23-perception-debug-rec_perception-rec_detections) |
-| Check detections only (small) | `rec_detections` | A, `/map`, G | no | [2.3](#23-perception-debug-rec_perception-rec_detections) |
-| Debug navigation (why it stopped or turned) | `rec_navdebug` | A, lidar, E, F | no | [2.4](#24-navigation-debug-rec_navdebug) |
-| Re-run Fast-LIO / SLAM offline | `rec_lidar` | A, D | no | [2.5](#25-raw-sensors-for-fast-lio--slam-rec_lidar) |
-| Video only | `rec_video` | B (compressed colour) | no | [2.6](#26-camera-only-rec_video) |
+| Full `maze_nav` run: navigation + perception | `rec_maze` | A, B, D–H | **no** | [2.2](#22-autonomous-run-rec_maze) |
+| Debug navigation (why it stopped or turned) | `rec_navdebug` | A, lidar, E, F | no | [2.3](#23-navigation-debug-rec_navdebug) |
+| Re-run Fast-LIO / SLAM offline | `rec_lidar` | A, D | no | [2.4](#24-raw-sensors-for-fast-lio--slam-rec_lidar) |
+| Curtain YOLO training data (teleop) | `rec_curtain` | A, B, C, lidar, `/odom` | yes | [2.5](#25-curtain-yolo-training-data-rec_curtain) |
 
 Every alias works the same way:
 
 ```bash
-rec_nav                     # bag named nav_<date>_<time>, e.g. ROS_bags/nav_20261114_153000
+rec_maze                    # bag named maze_<date>_<time>, e.g. ROS_bags/maze_20261114_153000
 rec_full teleop_run2        # choose the name yourself
-rec_nav maze_try3 -- /camera/aligned_depth_to_color/image_raw   # name + extra topics after --
-rec_nav -n                  # print the full ros2 bag record command, don't record
+rec_maze maze_try3 -- /stairs/status /scene/result   # name + extra topics after --
+rec_maze -n                 # print the full ros2 bag record command, don't record
 rec_list                    # every preset and its exact topics
 rec_last                    # ros2 bag info for the newest bag
 rec_rename maze_ok          # rename the newest bag to maze_ok
-rec_rename nav_20261114_153000 maze_try3   # rename any bag
+rec_rename maze_20261114_153000 maze_try3   # rename any bag
 ```
 
 **Names:** use letters, digits, `.`, `_` and `-` only (no spaces or `/`), for example
@@ -178,13 +175,13 @@ After Ctrl+C it prints the duration, size and any topic with `Count: 0`, then as
 name:
 
 ```
-Name for this bag (Enter keeps 'nav_20261114_153000'): maze_try3_exited
-Renamed: ~/challenge_ws/ROS_bags/nav_20261114_153000 -> ~/challenge_ws/ROS_bags/maze_try3_exited
+Name for this bag (Enter keeps 'maze_20261114_153000'): maze_try3_exited
+Renamed: ~/challenge_ws/ROS_bags/maze_20261114_153000 -> ~/challenge_ws/ROS_bags/maze_try3_exited
 ```
 
 Press **Enter** to keep the name. This is handy for naming a bag after you know how the run
 went. A bad or already-used name is refused, and you are asked again. To skip the question
-(for example in scripts), set `REC_ASK_NAME=0`, e.g. `REC_ASK_NAME=0 rec_nav`.
+(for example in scripts), set `REC_ASK_NAME=0`, e.g. `REC_ASK_NAME=0 rec_maze`.
 
 Without the aliases, run the script directly: `~/challenge_ws/ROS_bags/record.sh <preset> [name]`
 (rename: `record.sh --rename [old] new`).
@@ -195,12 +192,12 @@ edit the command.
 
 Everything, for replaying navigation and perception together. Teleop only, because of depth.
 
-#### 2.2 Autonomous run: `rec_nav`, `rec_maze`
+#### 2.2 Autonomous run: `rec_maze`
 
-The same as `rec_full` without depth, so the lidar isn't delayed and collision_monitor
-doesn't stop the robot. Navigation and perception are recorded together in one bag: lidar,
-localization, map, plan and velocity chain, plus the colour camera and every detection.
-`rec_maze` is `rec_nav` plus the `maze_nav` explorer topics (group H); use it for maze runs.
+The same as `rec_full` without depth, plus the `maze_nav` explorer topics (group H), so the
+lidar isn't delayed and collision_monitor doesn't stop the robot. Navigation and perception are
+recorded together in one bag: lidar, localization, map, plan and velocity chain, plus the
+colour camera and every detection. Use it for any autonomous run (Nav2 alone too).
 **Lidar topic (all presets).** Every preset records `/livox/points_local` (maze_nav
 `lidar_relay`'s copy, same messages), never the raw `/livox/points`: a second subscriber on the
 raw topic pulls another full copy across the bridge and makes the lidar and Fast-LIO odom late
@@ -234,7 +231,7 @@ records it all. Use three terminals on the robot computer.
    ```bash
    rec_maze maze_run1
    ```
-   Don't use `rec_full` or `rec_perception` here (raw depth stalls Nav2; both refuse to start
+   Don't use `rec_full` or `rec_curtain` here (raw depth stalls Nav2; both refuse to start
    anyway).
 
 3. **Terminal 3: check the lidar delay, then start the run.**
@@ -278,34 +275,44 @@ records it all. Use three terminals on the robot computer.
 
    `rec_rename` doesn't rename `_extras/`, so rename it by hand if you rename the bag.
 
-#### 2.3 Perception debug: `rec_perception`, `rec_detections`
-
-`rec_perception` (teleop) records what's needed to replay `qr_scanner` and `poster_detector`
-and get the same results: colour, depth, both `camera_info`s, TF to `map`, the map, and what
-the robot decided live.
-
-`rec_detections` only checks *whether* detection worked. It is a much smaller bag, with
-no camera images or depth, but it still has `/tf`, `/map` and the detection topics.
-
-#### 2.4 Navigation debug: `rec_navdebug`
+#### 2.3 Navigation debug: `rec_navdebug`
 
 Why the robot moved, stopped or turned: lidar, localization, the plan and every stage of the
 velocity chain. Small enough to leave running during autonomous runs.
 
-#### 2.5 Raw sensors for Fast-LIO / SLAM: `rec_lidar`
+#### 2.4 Raw sensors for Fast-LIO / SLAM: `rec_lidar`
 
 The inputs to re-run Fast-LIO and `slam_toolbox` offline. On replay, leave `/tf` out of
 `--topics` so it doesn't clash with the `odom → base_link` that Fast-LIO publishes again.
 
-#### 2.6 Camera only: `rec_video`
+#### 2.5 Curtain YOLO training data: `rec_curtain`
 
-Small bag for `bag_to_video.py` (section 4).
+Bags for training the curtain YOLO model (`maze_nav/curtain_yolo.py`; plan in
+`src/to_do.md`, "YOLO curtain detector"). It records what `maze_nav/tools/curtain_yolo_frames.py`
+reads: compressed colour + `camera_info`, raw depth + `camera_info`, `/tf_static` (camera pose),
+plus `/livox/points_local` for its `--lidar` draft labels and `/odom`. Teleop only: it records
+raw depth, so it refuses to start while Nav2 runs. Without maze_nav running, use
+`RAW_LIDAR=1 rec_curtain` so the lidar is recorded as `/livox/points`. About 1.5 GB/min, so keep
+each bag to one approach of 1-2 minutes.
+
+```bash
+rec_curtain curtain_spec_square_lit_01        # name: curtain, angle, lighting, number
+RAW_LIDAR=1 rec_curtain neg_extru_cavity_01   # negatives too (walls, cavities, doorways)
+nice -n 19 python3 src/maze_nav/tools/curtain_yolo_frames.py ~/challenge_ws/ROS_bags/<bag> \
+    ~/challenge_ws/datasets/curtain --every 3            # add --lidar (and
+    # --cloud-topic /livox/points_local for a bag recorded with maze_nav running)
+```
+
+What to record: the spec curtain (gap < 15 cm) and the lab curtain, approaching from 2.5 m to
+0.5 m, square on and 30-45° off, lit and in shadow, still and swaying, from both sides. Record
+negatives too: plain walls, extrusion walls with cavities or windows, doorways, slats, open
+floor, people. Spread the bags over several sessions and days.
 
 #### While recording
 
 - Start recording **before** you start driving, and stop with **Ctrl+C** in Terminal 2.
 - Depth and lidar make bags large (roughly 1 GB per minute or more). Keep runs short.
-- The recording is saved as a folder (for example `~/challenge_ws/ROS_bags/nav_20261114_153000/`)
+- The recording is saved as a folder (for example `~/challenge_ws/ROS_bags/maze_20261114_153000/`)
   containing a `.db3` file and `metadata.yaml`.
 
 ---
@@ -331,7 +338,7 @@ ls -dt ~/challenge_ws/ROS_bags/*/metadata.yaml | xargs -n1 dirname
 
 ```bash
 rec_rename maze_try3                       # newest bag -> maze_try3
-rec_rename nav_20261114_153000 maze_try3   # a specific bag
+rec_rename maze_20261114_153000 maze_try3   # a specific bag
 ```
 
 Use `rec_rename` rather than `mv`. It renames the folder, the `.db3` files inside,
@@ -395,7 +402,6 @@ The robot computer has no screen, so use your own computer:
 ```bash
 rec_list                     # presets and topics
 rec_full run1                # teleop, everything (Ctrl+C to stop)
-rec_nav                      # Nav2 / maze_nav driving, no depth
 rec_maze maze_run1           # full maze_nav run: navigation + perception, no depth (section 2.2)
 rec_last                     # check: every topic Count > 0
 rec_rename run1_good         # rename the newest bag (or: rec_rename <old> <new>)
@@ -420,10 +426,10 @@ python3 ~/bag_to_video.py ~/challenge_ws/ROS_bags/run1   # -> run1.mp4
 | `Package 'image_view' not found` | Not needed. Use `bag_to_video.py`. |
 | `Topic ... not in bag` (bag_to_video.py) | The script lists the topics that are in the bag. Pass one of them as the 3rd argument. |
 | `ros2: command not found` | Run `source /opt/ros/humble/setup.bash`. |
-| `rec_nav: command not found` | Run `source ~/challenge_ws/ROS_bags/aliases.sh` (section 1). |
+| `rec_maze: command not found` | Run `source ~/challenge_ws/ROS_bags/aliases.sh` (section 1). |
 | `... already exists. Pick another name.` | Give a new name, or leave the name out to get a timestamped one. |
 | `Bad name '...'` | Names may only use letters, digits, `.`, `_` and `-`. Replace spaces with `_`. |
 | Renamed a bag folder with `mv` and the files inside still have the old name | Harmless (`metadata.yaml` refers to the files by their own names), but to tidy up rename it back and use `rec_rename` |
 | `rec_rename: command not found` | Open a new terminal or `source ~/challenge_ws/ROS_bags/aliases.sh` (alias added 2026-11-14). |
-| `Nav2 is running and preset ... records raw depth` | Use `rec_maze` / `rec_nav`, or stop Nav2 first. |
+| `Nav2 is running and preset ... records raw depth` | Use `rec_maze`, or stop Nav2 first. |
 | Disk filling up | Check with `df -h`. Don't record uncompressed color. Delete or copy off old bag folders. |

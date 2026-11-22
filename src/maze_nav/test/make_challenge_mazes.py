@@ -10,7 +10,8 @@ curtain (passable, mounted ~1 m up), rooms with survivors (QR codes on their sid
 object of interest and a hazard; the final cell is the exit / drone launch cell, with its
 outer wall towards the target left out (a plain opening, never stairs or a curtain). The
 layout changes on competition morning, so the interiors below are made up, and so are all
-heights (terrain <= 12 cm, steps 11 cm, walls 0.45 m on a flat floor).
+heights (terrain <= 12 cm, steps 11 cm, walls 0.45 m on a flat floor), except the rolling
+pin in challenge_a (18 cm, user 2026-11-22).
 
 challenge_a.json (maze to the left), exit +x of the final cell (4, 2):
 
@@ -19,7 +20,8 @@ challenge_a.json (maze to the left), exit +x of the final cell (4, 2):
     j=1   (0,1)-(1,1) : (2,1)   (3,1) (4,1)
                   |             |     |
     j=0   START-(1,0)---(2,0)---(3,0)-(4,0)
-    terrain: (2,0) slats, (4,0) block field, (2,1) ribbed mat, (2,2) low block field
+    terrain: (2,0) rolling pin (18 cm, across x: stepped over), (4,0) block field,
+             (2,1) ribbed mat, (2,2) low block field
     rooms: (0,2), (1,2) survivors; (3,1) object (free-standing box); (4,1) hazard (cabinet)
 
 challenge_b.json (maze to the left), exit +y of the final cell (2, 2):
@@ -33,6 +35,9 @@ challenge_b.json (maze to the left), exit +y of the final cell (2, 2):
     rooms: (0,1) survivor behind the curtain, (2,1) survivor, (3,1) object
 
 challenge_a_mirror.json   challenge_a mirrored (maze to the right of the start)
+challenge_a_no_curtain.json   challenge_a without the curtain (its passage open)
+challenge_a_flat.json     challenge_a without the curtain or the stairs (cell (3, 2) flat): the
+                          exit and launch cell without the two features the sim can't cross yet
 challenge_b_offset.json   challenge_b with the robot placed 5 cm forward, 4 cm right and
                           5 deg left of the start cell's centre and heading (by hand)
 
@@ -107,6 +112,17 @@ def slats(cell, along, pitch=0.2, width=0.04, height=0.06):
             out.append(box('block', cx - 0.45, cy + k - width / 2, cx + 0.45,
                            cy + k + width / 2, 0.0, height))
     return out
+
+
+def rolling_pin(cell, across, top=0.18, depth=0.06):
+    """The rolling pin (user 2026-11-22): ~18 cm tall, in the middle of the cell, wall to wall,
+    running along x or y (the robot crosses it at right angles). fake_maze_lite3's "pin" kind:
+    seen by the sensors, stepped over by the body (H-Step)."""
+    cx, cy = c(*cell)
+    r = H - T / 2                                    # the walls' inner faces
+    if across == 'y':
+        return [box('pin', cx - depth / 2, cy - r, cx + depth / 2, cy + r, 0.0, top)]
+    return [box('pin', cx - r, cy - depth / 2, cx + r, cy + depth / 2, 0.0, top)]
 
 
 def block_field(cell, rng, size=0.2, heights=(0.03, 0.05, 0.07, 0.09, 0.12)):
@@ -215,12 +231,12 @@ def challenge_a():
                 ((4, 0), (4, 1)), ((3, 0), (3, 1)), ((1, 0), (1, 1)), ((1, 1), (0, 1)),
                 ((0, 1), (0, 2)), ((0, 2), (1, 2)), ((1, 1), (2, 1)), ((2, 1), (2, 2)),
                 ((2, 2), (3, 2)), ((3, 2), (4, 2))}
-    solids = (slats((2, 0), 'y') + block_field((4, 0), rng) + mat((2, 1))
+    solids = (rolling_pin((2, 0), 'y') + block_field((4, 0), rng) + mat((2, 1))
               + block_field((2, 2), rng, heights=(0.03, 0.05)) + stairs((3, 2))
               + [curtain((1, 1), (2, 1)), object_box((3, 1), (0, 1)),
                  cabinet((4, 1), (0, 1))])
     features = {'terrain': [[2, 0], [4, 0], [2, 1], [2, 2]], 'stairs': [3, 2],
-                'curtain': [[1, 1], [2, 1]],
+                'curtain': [[1, 1], [2, 1]], 'rolling_pin': [2, 0],
                 'rooms': {'survivor': [[0, 2], [1, 2]], 'object': [3, 1], 'hazard': [4, 1]}}
     return arena('challenge_a', passages, ((4, 2), (1, 0)), solids, features, '')
 
@@ -282,11 +298,33 @@ def offset(a, start):
     return m
 
 
+def without(a, name, features):
+    """challenge_a with features left out ('curtain': its passage stays open; 'stairs': the
+    cell is flat floor), to test the rest (exit, launch cell) without them."""
+    m = copy.deepcopy(a)
+    m['source'] = a['source'].replace('challenge_a', name) + \
+        '; without ' + ' or '.join(features)
+    drop = []
+    if 'curtain' in features:
+        drop += [s for s in m['solids'] if s['kind'] == 'curtain']
+    if 'stairs' in features:
+        cx, cy = c(*m['features']['stairs'])
+        drop += [s for s in m['solids'] if s['kind'] in ('steps', 'tile')
+                 and abs((s['min'][0] + s['max'][0]) / 2 - cx) < H
+                 and abs((s['min'][1] + s['max'][1]) / 2 - cy) < H]
+    m['solids'] = [s for s in m['solids'] if not any(s is d for d in drop)]
+    for f in features:
+        del m['features'][f]
+    return m
+
+
 def mazes():
     a, b = challenge_a(), challenge_b()
     return {'challenge_a.json': a, 'challenge_a_mirror.json': mirrored(a),
             'challenge_b.json': b,
-            'challenge_b_offset.json': offset(b, (0.05, -0.04, math.radians(5.0)))}
+            'challenge_b_offset.json': offset(b, (0.05, -0.04, math.radians(5.0))),
+            'challenge_a_no_curtain.json': without(a, 'challenge_a_no_curtain', ['curtain']),
+            'challenge_a_flat.json': without(a, 'challenge_a_flat', ['curtain', 'stairs'])}
 
 
 def main():

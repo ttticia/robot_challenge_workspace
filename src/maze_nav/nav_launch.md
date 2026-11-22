@@ -378,6 +378,10 @@ If you are unsure about anything (what the robot is doing, whether it is wrong, 
 or value would fix it, or whether a change is safe), stop and ask me instead of guessing. Say
 what you saw, what you are unsure about, and what would settle it (a MARK, a look at the robot,
 another snapshot). Don't suggest a change until it is cleared up.
+If carrying on would teach us nothing more, ask me for a run reset: start the message with
+"RESET REQUESTED", then say why, what to change before relaunching (parameters, launch args,
+the robot's placement), and what the next run should show. Never stop, kill or relaunch
+anything yourself; I decide and do the reset.
 ```
 
 To have Claude check at a fixed interval instead: `/loop 30s review ~/live_debug/current/latest.*
@@ -396,6 +400,26 @@ it isn't sure, for example:
 - a change would touch safety margins (footprint, clearances, timeouts) or rejects a value it
   expected to be live;
 - the data is stale or missing (an old `latest.*`, no camera frame, `age_s` of several seconds).
+
+**Asking for a run reset.** Some problems can't be fixed mid-run, and a run that has gone wrong
+only wastes time and battery. So the prompt lets Claude ask for a reset (it never does one): it
+writes "RESET REQUESTED", why, what to change first, and what the next run should show. The
+person at the robot decides, then Ctrl+Cs the launch, puts the robot back square on the start
+cell (the maze grid comes from the start pose) and relaunches. Reasons to ask:
+
+- the change needs a new launch: startup-only parameters (`cell_size`, `maze_cols` /
+  `maze_rows` / `maze_side`, `map_dir`, launch args such as `gait` or `fastlio_config`),
+  which `ros2 param set` rejects or which only take effect at startup;
+- the map or grid is broken: a SLAM jump, walls drawn twice or skewed, "grid fitted" far off
+  (several degrees, or a jump between snapshots), the wrong maze side, or the run already
+  heading to a false exit;
+- the robot is stuck or lost beyond what one parameter change can fix (`STUCK` that doesn't
+  clear, repeated failed goals in the same place, Nav2 down);
+- the robot left the maze, or the explorer reached an end state (`AT_EXIT`, `NO_EXIT`,
+  `STOPPED`, `EXITED`) and more data from this layout is needed.
+
+Each reset costs a few minutes, so Claude should first say what it would change, and batch
+several changes into one reset where it can.
 
 The person at the robot answers in the same session. Expect questions: a wrong change made from
 a guess costs a run, and a question costs a few seconds. To help it decide, flag moments

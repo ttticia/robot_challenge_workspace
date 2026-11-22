@@ -46,17 +46,22 @@ the nodes stay thin.
    session has a run going: queue behind it, or use another domain (4th argument).
 2. Build (recipe 1), then:
    ```bash
-   src/maze_nav/test/run_sim.sh 600 /tmp/maze_sim_<you>                              # example maze
-   src/maze_nav/test/run_sim.sh 600 /tmp/maze_sim_<you> challenge_exit_left.json 117  # any maze, domain 117
+   src/maze_nav/test/run_sim.sh 900 /tmp/maze_sim_<you>                              # challenge_a
+   src/maze_nav/test/run_sim.sh 900 /tmp/maze_sim_<you> challenge_b_offset.json 117  # any maze, domain 117
    ```
-   Mazes and what each tests: agent.md §9. Before a robot run, run all five `challenge_*`
-   mazes.
+   Mazes and what each tests: agent.md §9. Test with the four `challenge_*` arenas (shaped
+   like the competition arena); before a robot run, run all four.
 3. Exit 0 = parked in the maze's launch cell (`AT_EXIT`) without leaving the maze; mazes
    without a launch cell pass on `AT_EXIT` or `EXITED`. Read
    `<log_dir>/launch.log` (explorer states, failed goals, deaths) and `<log_dir>/sim.log`
    (`OUT OF THE MAZE`, wall clearance). Map in `<log_dir>/maps`, track in `track.csv`.
 4. Never `pkill -f <node>`: it kills other sessions' runs. `run_sim.sh` cleans up its own
    process groups; if it leaves something, kill only those PIDs.
+5. **Never edit `run_sim.sh` while any run is using it** (check `pgrep -af run_sim.sh`). Bash
+   reads the script as it runs, so an edit mid-run gives a syntax error and the cleanup step
+   never runs. On 2026-11-22 this left whole simulator launches orphaned (parent = init) on
+   domains 93 and 121, and they polluted every later run on those domains. After a run, check
+   `ROS_DOMAIN_ID=<d> ros2 node list` is empty.
 
 ## 4. Simulator by hand (to watch it in RViz or change sim parameters)
 
@@ -64,10 +69,10 @@ the nodes stay thin.
 export ROS_DOMAIN_ID=117 ROS_LOCALHOST_ONLY=1        # any unused domain; check `ros2 node list`
 export FASTRTPS_DEFAULT_PROFILES_FILE=$PWD/src/maze_nav/config/fastdds_udp.xml
 python3 src/maze_nav/test/fake_maze_lite3.py --ros-args \
-    -p maze:=$PWD/src/maze_nav/test/challenge_exit_far.json -p track_csv:=/tmp/track.csv &
+    -p maze:=$PWD/src/maze_nav/test/challenge_a.json -p track_csv:=/tmp/track.csv &
 ros2 launch maze_nav maze_nav.launch.py bringup:=false udp_only:=true floor_z:=-0.35 \
     wait_for_start:=false perception:=false map_dir:=/tmp/maze_maps \
-    maze_cols:=4 maze_rows:=3 cell_size:=1.02          # the maze file's "grid"
+    maze_cols:=5 maze_rows:=3 cell_size:=1.02 maze_side:=auto   # the maze file's "grid"
 ```
 
 Sim parameters: `depth_rate` (5 Hz, 0 = no depth camera), `depth_width` (640; keep it, the stair
@@ -78,15 +83,17 @@ detector's strides are in pixels), `occlusion` (auto = on with curtains or extru
 
 ```bash
 cd src/maze_nav
-python3 test/make_challenge_mazes.py                                 # challenge_*.json
+python3 test/make_challenge_mazes.py                                 # challenge_*.json (use these)
+python3 -m pytest -q test/test_challenge_mazes.py
+# out of date, only for the tests that still use them:
 python3 test/make_presentation_mazes.py                              # maze_curtains.json + maze_stairs.json
 python3 tools/step_to_boxes.py "tools/example maze.step" > test/example_maze.json
-python3 -m pytest -q test/test_challenge_mazes.py test/test_presentation_mazes.py
 ```
 
 Fix mazes in their scripts, never in the JSON (`test_files_match_the_generator` checks).
-The presentation-maze heights and the challenge mazes' interior walls are made up; change
-`PASSAGES` / `EXITS` in `make_challenge_mazes.py` once the real layout is known.
+The challenge arenas' interiors and heights are made up (the real layout changes on
+competition morning); when the practice arena is set up, add an arena copying it to
+`make_challenge_mazes.py` (passages, terrain / stairs / curtain cells, exit side).
 
 ## 6. Real robot run
 
@@ -118,6 +125,7 @@ After: Ctrl+C the launch, `lite3_manual` (or `lite3_ai_off` if it ended in AI mo
 rec_list                     # presets and their topics
 rec_maze                     # maze_nav run, no depth (never record raw depth while Nav2 drives)
 rec_full <name>              # teleop only: everything incl. depth, ~1.6 GB/min (check df -h)
+rec_curtain <name>           # teleop only: curtain YOLO training bag (ROSBAG_GUIDE 2.5)
 rec_last                     # ros2 bag info of the newest bag
 rec_rename [old] new
 python3 ~/bag_to_video.py ~/challenge_ws/ROS_bags/<name>

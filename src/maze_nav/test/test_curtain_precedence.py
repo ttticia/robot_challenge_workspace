@@ -461,20 +461,28 @@ def test_crossing_back_triggers_with_looser_limits():
 
 class QueueFake(Fake):
     for _n in ('to_map', 'queue_candidate', 'on_stairs_candidate', 'on_curtain_candidate',
-               'release', 'start_queue', 'candidate_spot', 'queue_goal'):
+               'release', 'start_queue', 'candidate_spot', 'queue_goal',
+               'deferred_candidates', 'defer_side_curtains', 'workable', 'held_stair_cells'):
         locals()[_n] = getattr(Explorer, _n)
 
     def __init__(self, state):
         super().__init__(state)
         self.cfg.update({'stairs_approach': 1.2, 'curtain_check_approach': 1.2,
                          'candidate_wait': 15.0, 'robot_radius': 0.25, 'turn_margin': 0.03})
-        self.cand_queue, self.queue_active = [], False
+        self.cand_queue, self.queue_active, self.queue_final = [], False, False
         self.released, self.spins = [], []
+        self.cells = CellGrid()
         pub = lambda kind: SimpleNamespace(  # noqa: E731
             publish=lambda m: self.released.append((kind, json.loads(m.data)['id'])))
         self.stairs_release_pub, self.curtain_release_pub = pub('stairs'), pub('curtain')
         self.spin = SimpleNamespace(server_is_ready=lambda: True)
         self.box, self.pivot = (0.37, 0.27, 0.23), (0.0, 0.0)
+
+    def grid_now(self):                          # no map: nothing held back beside a way
+        return None
+
+    def publish_curtain_map(self):
+        self.map_pubs = getattr(self, 'map_pubs', 0) + 1
 
     def halt_for_look(self):
         pass
@@ -508,7 +516,7 @@ def test_queue_goes_to_the_nearest_spot_faces_it_and_releases_it():
     e = QueueFake('EXPLORING')
     e.on_stairs_candidate(stairs_msg(edge=(2.0, 0.0)))           # spot (0.8, 0.0)
     e.on_curtain_candidate(curtain_msg(centre=(1.0, 3.5)))       # spot (1.0, 2.3), further
-    e.start_queue('junction scanned')
+    e.start_queue('nothing else to explore', final=True)       # stairs worked too
     g = maze_grid()
     out = e.queue_goal(g, (1.0, 1.0), 0.0)
     assert len(out) == 1 and out[0].goal == (0.8, 0.0) and out[0].yaw == 0.0
@@ -525,6 +533,26 @@ def test_queue_goes_to_the_nearest_spot_faces_it_and_releases_it():
     assert len(out) == 1 and out[0].goal == pytest.approx((1.0, 2.3))
     e.cand_queue.clear()
     assert e.queue_goal(g, (1.0, 2.3), math.pi / 2) == [] and not e.queue_active
+
+
+def test_stairs_wait_until_nothing_else_is_left():
+    """User 2026-11-22: cross stairs only once every other way is exhausted."""
+    e = QueueFake('EXPLORING')
+    e.on_stairs_candidate(stairs_msg(edge=(2.0, 0.0)))           # nearer
+    e.on_curtain_candidate(curtain_msg(centre=(1.0, 3.5)))
+    assert e.map_pubs >= 1                                       # stairs cell walled for Nav2
+    assert e.held_stair_cells() == {(3, 0)}
+    assert e.start_queue('junction scanned')
+    g = maze_grid()
+    out = e.queue_goal(g, (1.0, 1.0), 0.0)
+    assert out[0].goal == pytest.approx((1.0, 2.3))              # the curtain, not the stairs
+    e.cand_queue = [c for c in e.cand_queue if c['kind'] == 'stairs']
+    assert e.queue_goal(g, (1.0, 2.3), 0.0) == [] and not e.queue_active
+    assert not e.start_queue('another junction scanned')        # stairs alone: not yet
+    assert e.start_queue('nothing else to explore', final=True)
+    assert e.held_stair_cells() == set()                         # open for Nav2 now
+    out = e.queue_goal(g, (1.0, 1.0), 0.0)
+    assert out[0].goal == (0.8, 0.0)
 
 
 def test_candidate_without_a_detector_id_is_not_released():

@@ -30,7 +30,7 @@ dies mid-run, navigation carries on.
 **Before a real run:** robot **standing on the start cell**, square to it (the floor height is measured
 at launch; not standing → an ERROR every 5 s and startup waits, `wait_for_stand`), area clear, operator holding the handheld controller. The launch sets the H-Step gait on
 `/simple_cmd` (`gait:=rug` = RUG General gear); the operator sends `lite3_auto` once the log says `gait sent` (`gait:=none` skips the gait), nothing else running SLAM/Nav2 or publishing `/cmd_vel` (`ros2 node list`). Watch
-`/maze/status`. Once it reads `PAUSED`, start the recording (`rec_nav`), then send
+`/maze/status`. Once it reads `PAUSED`, start the recording (`rec_maze`), then send
 `ros2 topic pub --once /maze/start std_msgs/msg/Empty`; the robot waits for this
 (`wait_for_start:=false` skips it). It then drives 10 cm straight ahead (`CREEPING`) and starts exploring (the start scan, `SCANNING`, only runs with `start_scan:=true`). The run ends with `AT_EXIT`, `NO_EXIT`, `STOPPED` or (no grid, or outside it) `EXITED`, and the map is saved to
 `~/challenge_ws/maps/maze_<date>_<time>.{pgm,yaml}` (`latest.yaml` points to the newest).

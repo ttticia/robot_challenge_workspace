@@ -7,13 +7,10 @@
 #
 # Presets:
 #   full        teleop, everything incl. depth          (guide 2.1, groups A-G)
-#   nav         Nav2 driving, everything except depth   (guide 2.2, groups A, B, D-G)
-#   maze        full maze_nav run: nav + explorer topics (guide 2.2, groups A, B, D-H)
-#   perception  QR / poster replay, incl. depth         (guide 2.3, groups A, B, C, E, G)
-#   detections  perception results only, small bag      (guide 2.3 small variant)
-#   navdebug    why it moved/stopped/turned             (guide 2.4)
-#   lidar       raw sensors to re-run Fast-LIO / SLAM   (guide 2.5, groups A, D)
-#   video       compressed colour camera only           (guide 2.6)
+#   maze        full maze_nav run, no depth              (guide 2.2, groups A, B, D-H)
+#   navdebug    why it moved/stopped/turned             (guide 2.3)
+#   lidar       raw sensors to re-run Fast-LIO / SLAM   (guide 2.4, groups A, D)
+#   curtain     curtain YOLO training data: colour, depth, lidar, /tf_static (guide 2.5)
 #
 # Options:
 #   -n, --dry-run   print the command, don't record
@@ -46,17 +43,16 @@ H="/maze/status /maze/goal /wall_scan"
 preset_topics() {
   case "$1" in
     full)       echo "$A $B $C $D $E $F $G" ;;
-    nav)        echo "$A $B $D $E $F $G" ;;
     maze)       echo "$A $B $D $E $F $G $H" ;;
-    perception) echo "$A /map $B $C $G" ;;
-    detections) echo "$A /map /camera/color/camera_info $G" ;;
     navdebug)   echo "$A /livox/points_local /odom /scan /map /leg_odom2 $F" ;;
     lidar)      echo "$A /livox/lidar /livox/imu /livox/points_local /imu/data /leg_odom2" ;;
-    video)      echo "/camera/color/image_raw/compressed" ;;
+    # curtain_yolo_frames.py: colour + depth + both camera_infos + /tf_static (camera pose),
+    # lidar for its --lidar draft labels, /odom to see how the robot moved past the curtain.
+    curtain)    echo "$A $B $C /livox/points_local /odom" ;;
     *)          return 1 ;;
   esac
 }
-PRESETS="full nav maze perception detections navdebug lidar video"
+PRESETS="full maze navdebug lidar curtain"
 
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -197,7 +193,7 @@ fi
 if [[ " $TOPICS " == *" /camera/depth/image_raw "* ]] \
    && timeout 5 ros2 node list 2>/dev/null | grep -qE "controller_server|collision_monitor"; then
   echo "Nav2 is running and preset '$PRESET' records raw depth, which stalls the lidar." >&2
-  echo "Use 'nav' instead, or set ALLOW_DEPTH_WITH_NAV2=1 to record anyway." >&2
+  echo "Use 'maze' instead, or set ALLOW_DEPTH_WITH_NAV2=1 to record anyway." >&2
   [[ "${ALLOW_DEPTH_WITH_NAV2:-0}" == 1 ]] || exit 1
 fi
 
@@ -225,7 +221,7 @@ fi
 # ---- record ------------------------------------------------------------------------------
 # shellcheck disable=SC2206
 CMD=(ros2 bag record -o "$OUT")
-[[ "$PRESET" != video ]] && CMD+=(--qos-profile-overrides-path "$QOS_FILE")
+CMD+=(--qos-profile-overrides-path "$QOS_FILE")
 CMD+=($TOPICS "${EXTRA[@]}")
 
 echo "Preset: $PRESET  ->  $OUT"

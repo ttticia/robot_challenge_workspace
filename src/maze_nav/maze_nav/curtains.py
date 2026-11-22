@@ -70,6 +70,17 @@ class CurtainParams:
     # m; and at least this. A wall on the floor reads ~0.03-0.04 (face points start 3 cm
     # above the ground), so stray returns behind a wall must not make it a curtain.
     min_gap: float = 0.05
+    # m; a bin seen under with a gap of candidate_min_gap..min_gap is 'low' (logged, never a
+    # curtain or a candidate): practice-maze curtains hang 1-3 cm up (user 2026-11-22), but
+    # extru walls read the same (floor seen through their side windows, test_curtains), so
+    # 'low' bins can't be used until something else tells the two apart (to_do.md).
+    candidate_min_gap: float = 0.01
+    # m; runs of curtain-like bins whose facing ends are at most this far apart, on one
+    # line, are one curtain: the practice-maze curtain is two halves with a slit between
+    # (photos 2026-11-22), each ~0.45 m wide, under min_width alone. 0 = off (default):
+    # joining also stitched side-wall pieces into a curtain along a corridor
+    # (test_rolling_pin, 2026-11-22); needs a facing / doorway check first (to_do.md).
+    slit_max: float = 0.0
     min_width: float = 0.60        # m; curtain must be wider (spec 0.7; the measured
     #                                width runs 5-10 cm short: folds, frame posts; 2026-11-20)
     band: tuple = (0.30, 0.45)     # m above the floor: wall band (= wall_scan band_low /
@@ -256,8 +267,10 @@ def classify_bins(pts, lidar_xy, yaw, floor_z, p=None):
         gap = float(hb[face].min()) - ground
         behind = int((past & (np.abs(hb - ground) < p.floor_tol)).sum())
         cell['gap'], cell['behind'] = gap, behind
-        if gap < p.min_gap:
+        if gap < p.candidate_min_gap or gap < p.min_gap and behind < p.min_behind:
             cell['kind'] = 'wall'      # the face reaches the floor
+        elif gap < p.min_gap:
+            cell['kind'] = 'low'       # seen under, but too low to tell from a wall
         elif behind >= p.min_behind:
             cell['kind'] = 'curtain' if gap < p.max_gap else 'high'
         else:
@@ -307,6 +320,37 @@ def _segment(cells, p):
     return m + lo * u, m + hi * u, float(np.median(gaps))
 
 
+def join_runs(runs, p):
+    """Runs of bins (left to right) with the facing ends of neighbours at most slit_max
+    apart joined into one: the two halves of a split curtain, with the slit between them
+    (bins that looked through it are not in any run, or form a short run further away,
+    which is dropped). Whether the result is one straight line is _segment's check."""
+    if p.slit_max <= 0:
+        return [r for r in runs if r]
+    out = []
+    for run in runs:
+        if not run:
+            continue
+        if out:
+            a = out[-1]
+            gap = math.hypot(run[0]['xy'][0] - a[-1]['xy'][0], run[0]['xy'][1] - a[-1]['xy'][1])
+            if gap <= p.slit_max:
+                out[-1] = a + run
+                continue
+            # a short run seen through the slit (further than both halves): skip it
+            if len(out) >= 2 and len(a) <= 3:
+                b = out[-2]
+                far = min(c['r'] for c in a) > max(b[-1]['r'], run[0]['r']) + 0.3
+                gap2 = math.hypot(run[0]['xy'][0] - b[-1]['xy'][0],
+                                  run[0]['xy'][1] - b[-1]['xy'][1])
+                if far and gap2 <= p.slit_max:
+                    out.pop()
+                    out[-1] = b + run
+                    continue
+        out.append(list(run))
+    return out
+
+
 def detect_curtains(pts, lidar_xy, yaw, floor_z, p=None, cells_out=None):
     """[Curtain] in the frame of pts (odom) from one batch of points. n points away from
     the lidar. cells_out (a list): gets classify_bins()'s bins, for diagnose()."""
@@ -338,7 +382,7 @@ def detect_curtains(pts, lidar_xy, yaw, floor_z, p=None, cells_out=None):
             cur, holes = [], 0
     found = []
     lxy = np.asarray(lidar_xy, float)[:2]
-    for run in runs:
+    for run in join_runs(runs, p):
         seg = _segment(run, p)
         if seg is None:
             continue
@@ -417,7 +461,7 @@ def near_miss_segment(cells, p=None, max_gap=0.30, min_width=0.60):
                 runs.append(cur)
             cur, holes = [], 0
     best = None
-    for run in runs:
+    for run in join_runs(runs, p):
         under = [c for c in run if c['kind'] in ('curtain', 'high')]
         if len(under) < 2:
             continue

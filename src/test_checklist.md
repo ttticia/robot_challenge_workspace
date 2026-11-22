@@ -1,16 +1,21 @@
 # Test checklist: changes of 2026-11-21/22
 
-Everything below was changed by four parallel work streams and is on the `integration` branch
+Everything below was changed by several parallel work streams and is on the `integration` branch
 of the team repo. All of it passes the unit tests. Very little has run on the robot yet.
 Tick items off here (`[x]`, with the date and the run) as they pass, and move failures to
 `to_do.md`. The design is in `bt.md` (D1–D11); `agent.md` §3 describes the behaviour.
 
-Status when this list was written:
-- Unit tests: maze_nav 497 passed, scene_understanding 6 passed; team_perception 1 known failure
-  (`test_qr_unread`, older than these changes).
+Status at the 2026-11-22 wrap-up push:
+- Unit tests: **the full suites were not rerun on the final tree.** Each session's last result:
+  src-33 full maze_nav 478 passed, 0 failed; src-68 curtain + rolling-pin tests 99 passed, queue
+  tests 62 passed; src-8b exit / challenge-maze / timeout tests pass; scene_understanding 6
+  passed. team_perception has 1 known failure (`test_qr_unread`, older than these changes).
+  First item below: run the full suites.
 - Simulator: the example maze (`maze_cols:=0`, `depth_rate:=0`) reached `EXITED` in 128–309 s,
   slower than before because of the junction scans and queue checks. The curtain maze reached
-  `EXITED`. Minimum wall clearance 4.2 cm.
+  `EXITED`. Minimum wall clearance 4.2 cm. On `challenge_a`, two clean runs (src-8b; src-e2's
+  rolling-pin rerun) both stuck at the curtain: `AT_CURTAIN` at (1.70, 1.0), "not through
+  after 120 s". No `challenge_*` maze has reached `AT_EXIT` yet.
 - Robot: nothing from this list yet.
 
 ## 1. Before the robot (simulator and unit tests)
@@ -21,8 +26,13 @@ How to run: `skills.md` recipes 2 and 3. Use a free ROS domain; other sessions m
 - [ ] **Grid exit, every `challenge_*` maze** (`src/maze_nav/test/challenge_*.json`, made by
       `make_challenge_mazes.py`; being reworked on 2026-11-22, list in `agent.md` §9): each ends
       `AT_EXIT` in the maze's launch cell, and the sim never logs `OUT OF THE MAZE`. Not passed
-      yet: the batch before the start-side false-exit fix failed, and the runs on the final code
-      were still in progress.
+      yet. The 22:00–22:45 runs on 2026-11-22 were polluted (leftover simulators on the same
+      domain), so their failures prove nothing. The one clean `challenge_a` run got stuck at the
+      curtain on the route (`AT_CURTAIN` after 120 s, timed out). Run `challenge_a_no_curtain` and
+      `challenge_a_flat` (no curtain / stairs) first, to test the grid exit on its own.
+- [ ] Rolling pin (18 cm, across `challenge_a` cell (2, 0)): exploration walks over it with
+      H-Step and the sensors don't read it as a wall, stairs or curtain. The 22:30 run never left
+      the start cell (CPU load 27: SENSOR STALE), so it's unverified (`to_do.md` obstacles).
 - [ ] Facing the exit at `AT_EXIT` works in the simulator (only unit-tested so far).
 - [ ] Example maze and curtain maze still reach `EXITED` with `maze_cols:=0`.
 - [ ] Presentation mazes (`maze_stairs.json`, `maze_curtains.json`) run to the end.
@@ -75,6 +85,10 @@ by hand (`agent.md` §12: `record.sh` doesn't have them yet).
       the spot (`/stairs/candidate`, `/curtain/candidate`).
 - [ ] After the junction scan, or before `NO_EXIT`, candidates are checked nearest first: drive to
       1.2 m in front, face, release, `HANDOVER` within 15 s.
+- [ ] A curtain at a junction, or in a corner cell beside an open way, is held back until that
+      way is explored (`curtain_branch.Deferral.candidates`, detectors' `hold_while_exploring`).
+- [ ] Stairs are only worked in the final queue pass, and until then their cell stays walled on
+      `/maze/map` (no Nav2 goal drives onto them). Unit-tested only; not run in the simulator.
 - [ ] Possible false stairs from the ramp wedges (`to_do.md` item 11): check on the real ramp.
 
 ### Stairs and AI walk (D4)
@@ -102,6 +116,15 @@ by hand (`agent.md` §12: `record.sh` doesn't have them yet).
 - [ ] Start-cell calibration: logged standing height and depth camera tilt look right.
 - [ ] Curtain gap measured against the local floor at the curtain line (`curtains.py`
       `gap_at_line`): no false curtains at walls with a cavity (`to_do.md` curtains).
+- [ ] Practice curtain (1–3 cm slit between the two halves, 15–20 cm gap under the hem, possibly
+      blocked by a raised platform behind it): found by the lidar, and confirmed by the lie-down
+      check. Split-curtain joining (C1, `curtains.py`) is off by default (`slit_max 0`). Try it
+      on the real slit.
+- [ ] YOLO curtain detector: record training bags with `rec_curtain` (new preset; dry run only so
+      far), then follow the data steps in `to_do.md` (## curtains). Robot test with
+      `curtain_yolo:=true curtain_inspect_mode:=yolo` only once a model passes them.
+      The user's decision: curtain detection moves to YOLO then. Until then lidar + lie-down stay
+      the defaults.
 
 ### Troubleshooting tools
 - [ ] `troubleshoot:=true`: `telemetry_snapshot` writes map + state snapshots to `~/live_debug/current`

@@ -44,7 +44,9 @@ with curtains:=true (default).
      extru walls' side windows read as 12-46 cm gaps on the side walls 0.4-0.6 m away),
      Candidates are only taken during a junction look or dead-end stop (`look_states`,
      user 2026-11-21); ones seen while exploring are remembered for the next look
-     (confirmed curtains are still crossed anywhere). A candidate in a look is HELD, not
+     (confirmed curtains are still crossed anywhere) and, with `hold_while_exploring`
+     (user 2026-11-22), held and published on /curtain/candidate at once too, so
+     maze_explorer notes a curtain beside another way and checks it after that way. A candidate in a look is HELD, not
      inspected (user 2026-11-21: candidates are verified after the whole junction scan,
      nearest first): published on /curtain/candidate ({id, frame, centre, normal, width,
      gap, what}, odom) and kept until maze_explorer, standing in front of it, releases it
@@ -234,6 +236,11 @@ class CurtainDetector(Node):
         # dead-end look's candidates (user 2026-11-21: the 10:48 run dropped the lab curtain
         # seen while EXPLORING); the usual distance / bearing limits apply then
         p('inspect_remember', 60.0)
+        # User 2026-11-22: a possible curtain seen while exploring is also held and published
+        # on /curtain/candidate right away (not inspected), so maze_explorer notes it even
+        # where no look happens (a corner cell: solid wall, curtain, open way, way in) and
+        # checks it after that cell's other way. false = only remembered for the next look.
+        p('hold_while_exploring', True)
         p('inspect_forget_radius', 0.6)        # m around a rejected spot
         p('pose_yaw_topic', '/maze/pose_yaw')
         p('pose_pitch_topic', '/maze/pose_pitch')
@@ -302,6 +309,7 @@ class CurtainDetector(Node):
         self.diag_period = float(g('diag_period'))
         self.diag_last = -1e9
         self.inspect_on = bool(g('inspect'))
+        self.hold_exploring = bool(g('hold_while_exploring'))
         self.inspect_cfg = {n: float(g(n)) for n in (
             'inspect_max_gap', 'inspect_min_width', 'inspect_trigger_distance', 'inspect_forget',
             'inspect_remember',
@@ -823,6 +831,9 @@ class CurtainDetector(Node):
         if self.status_topic and not in_look and cands and \
                 self.explorer in self.trigger_states:
             self.remember(cands, xy, now)
+            if self.hold_candidates and self.hold_exploring:
+                for c in cands:                  # noted now: maze_explorer decides when
+                    self.hold_candidate(c, xy)
             cands = []
         if in_look and self.remembered:
             cands = cands + [(*r[:3], r[3] + f', seen {now - r[4]:.0f} s ago while exploring')

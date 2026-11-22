@@ -84,9 +84,9 @@ Arguments:
                    every cell, then parks standing in the cell inside the exit, facing out
                    (AT_EXIT, /maze/launch_cell: where the drone launches). 0 = size unknown:
                    it leaves the maze and ends EXITED on open floor as before
-  maze_side:=auto  left / right: the maze lies to that side of the start heading (the two
-                   arenas are mirrored); auto = decided by the first cell off the start row
-                   the robot enters
+  maze_side:=left  left / right: the maze lies to that side of the start heading (the two
+                   arenas are mirrored: set it for the arena you run in). auto = decided by the
+                   first cell off the start row entered: EXPERIMENTAL, wrong in the sim
   cell_size:=1.02  m, cell pitch of that grid (maze_explorer and scene_trigger; 1.0 for the
                    older sim mazes)
   max_speed:=0.15  band_low:=0.30  band_high:=0.45  floor_z:=nan (measure)
@@ -528,10 +528,10 @@ def generate_launch_description():
                                           '0 = size unknown: leaves the maze (EXITED)'),
         DeclareLaunchArgument('maze_rows', default_value='3',
                               description='maze cells to the left of the start heading'),
-        DeclareLaunchArgument('maze_side', default_value='auto',
+        DeclareLaunchArgument('maze_side', default_value='left',
                               description='left / right of the start heading (the two arenas '
-                                          'are mirrored) / auto: from the first cell off the '
-                                          'start row the robot enters'),
+                                          'are mirrored: set it for your arena) / auto '
+                                          '(experimental, picked the wrong side in the sim)'),
         DeclareLaunchArgument('cell_size', default_value='1.02',
                               description='m, maze cell pitch (maze_explorer and scene_trigger)'),
         DeclareLaunchArgument('start_scan', default_value='false',

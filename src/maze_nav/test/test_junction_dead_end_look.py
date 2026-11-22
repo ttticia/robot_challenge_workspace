@@ -24,7 +24,7 @@ class Fake:
                'pose_tick', 'junction_pending', 'start_queue', 'mark_explored',
                'hold_dead_end', 'blacklist_dead_end', 'launch_cell', 'scene_candidate',
                'no_go_cell', 'curtains_at_junction', 'deferred_candidates',
-               'branch_frontiers'):
+               'branch_frontiers', 'defer_side_curtains', 'workable', 'held_stair_cells'):
         locals()[_n] = getattr(Explorer, _n)
 
     def __init__(self, pose_status='READY'):
@@ -55,7 +55,7 @@ class Fake:
         self.cells = CellGrid()
         self.visited, self.explored_cells, self.blocked_cells = set(), set(), {}
         self.rooms_done, self.room_looks = set(), {}
-        self.cand_queue, self.queue_active = [], False
+        self.cand_queue, self.queue_active, self.queue_final = [], False, False
         self.defers, self.branch_cache = [], None
         self.scene_pending, self.scanned_cells, self.scene_results = {}, set(), True
         self.exit_side = None
@@ -83,6 +83,9 @@ class Fake:
 
     def send_spin(self, angle, why=''):
         self.spins.append((angle, why))
+
+    def publish_curtain_map(self):
+        pass
 
 
 def plan_after(e, monkeypatch):
@@ -130,8 +133,17 @@ def test_after_a_junction_scan_leave_by_the_nearest_unexplored_way(monkeypatch):
 
 def test_after_a_junction_scan_queued_candidates_come_first(monkeypatch):
     e = Fake()
-    e.cand_queue = [{'kind': 'stairs', 'id': 1, 'target': (1.0, 3.0), 'heading': 0.0}]
+    e.cand_queue = [{'kind': 'curtain', 'id': 1, 'target': (1.0, 3.0), 'heading': 0.0,
+                     'side_done': True}]
     assert plan_after(e, monkeypatch) == [] and e.queue_active
+
+
+def test_after_a_junction_scan_queued_stairs_wait_for_the_end(monkeypatch):
+    """User 2026-11-22: stairs only once every other way is exhausted."""
+    e = Fake()
+    e.cand_queue = [{'kind': 'stairs', 'id': 1, 'target': (1.0, 3.0), 'heading': 0.0}]
+    todo = plan_after(e, monkeypatch)
+    assert not e.queue_active and todo and todo[0]['group'] == 'leave'
 
 
 def test_curtain_way_waits_for_the_other_way_at_a_junction(monkeypatch):
@@ -148,7 +160,7 @@ def test_curtain_way_waits_for_the_other_way_at_a_junction(monkeypatch):
     rec = {'cells': CellGrid(), 'cell': (1, 1), 'from_cell': (1, 0), 'half_width': 0.35,
            'paths': [('+j', math.pi / 2), ('+i', 0.0)]}
     e.plan_after_junction(rec)
-    assert e.cand_queue == [stairs] and e.queue_active      # other candidates still first
+    assert e.cand_queue == [stairs] and not e.queue_active  # stairs wait for the end
     assert len(e.defers) == 1 and e.defers[0].ways == [(1, 0)]
     assert e.defers[0].candidates == [cur]
     # the curtain detector re-announcing it doesn't queue it again
@@ -158,6 +170,7 @@ def test_curtain_way_waits_for_the_other_way_at_a_junction(monkeypatch):
     # no queue left: leaves east, not into the curtain's way
     e.cand_queue, e.queue_active = [], False
     e.defers = []
+    cur = dict(cur, side_done=False)
     e.cand_queue = [cur]
     todo = e.plan_after_junction(rec)
     assert not e.queue_active and todo[0]['xy'] == (2.0, 1.0)
@@ -181,6 +194,56 @@ def test_curtain_is_checked_first_when_it_is_the_only_way(monkeypatch):
     rec = {'cells': CellGrid(), 'cell': (1, 1), 'from_cell': (1, 0), 'half_width': 0.35,
            'paths': [('+j', math.pi / 2), ('+i', 0.0)]}
     assert e.plan_after_junction(rec) == [] and e.queue_active and e.defers == []
+
+
+def corner_grid(east_open=True):
+    """Cell (1, 1): solid wall west, the curtain north (a wall on the map), east open or
+    a wall, way in from the south."""
+    data = np.zeros((120, 120), np.int16)
+    res, ox, oy = 0.05, -2.0, -1.0
+
+    def wall(x0, y0, x1, y1):
+        for t in np.linspace(0, 1, 60):
+            x, y = x0 + t * (x1 - x0), y0 + t * (y1 - y0)
+            data[int((y - oy) / res), int((x - ox) / res)] = 100
+    wall(0.5, 0.5, 0.5, 1.5)                           # west
+    wall(0.5, 1.5, 1.5, 1.5)                           # north: the curtain
+    if not east_open:
+        wall(1.5, 0.5, 1.5, 1.5)
+    return Grid(data, res, (ox, oy))
+
+
+def test_curtain_beside_an_open_way_is_noted_and_checked_after_it(monkeypatch):
+    """User 2026-11-22: one solid wall, the curtain, one open way, the way in -> no
+    junction look, but the open way is explored first, then the curtain is checked."""
+    e = Fake()
+    g = corner_grid()
+    e.grid_now = lambda: g
+    e.xy, e.yaw = (1.0, 0.0), math.pi / 2              # in the cell before, facing north
+    e.visited = {(1, 0)}
+    cur = {'kind': 'curtain', 'id': 2, 'target': (1.0, 1.5), 'heading': math.pi / 2}
+    e.cand_queue = [cur]
+    assert not e.start_queue('junction elsewhere scanned')   # held back, nothing to check
+    assert e.cand_queue == [] and len(e.defers) == 1
+    assert e.defers[0].junction_cell == (1, 1) and e.defers[0].ways == [(1, 0)]
+    # east explored: back into the queue and checked; never held back again
+    e.cfg['done_confirm'] = 2
+    assert e.branch_frontiers(g, (2.0, 1.0), []) is None
+    assert e.branch_frontiers(g, (2.0, 1.0), []) is None
+    assert e.defers == [] and e.cand_queue == [cur] and e.queue_active
+    e.queue_active = False
+    assert e.start_queue('again') and e.defers == []
+
+
+def test_curtain_at_a_plain_dead_end_is_checked_at_once(monkeypatch):
+    e = Fake()
+    g = corner_grid(east_open=False)
+    e.grid_now = lambda: g
+    e.xy, e.yaw = (1.0, 0.0), math.pi / 2
+    e.visited = {(1, 0)}
+    e.cand_queue = [{'kind': 'curtain', 'id': 2, 'target': (1.0, 1.5),
+                     'heading': math.pi / 2}]
+    assert e.start_queue('x') and e.defers == [] and e.queue_active
 
 
 def test_side_wall_look_actions(monkeypatch):

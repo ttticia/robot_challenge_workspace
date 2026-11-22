@@ -98,7 +98,9 @@ challenge rules). Neither is in the team repo (section 11).
 
 **Maze grid:** the explorer assumes a `maze_cols` x `maze_rows` grid (default 5 x 3) of
 `cell_size` m cells (1.02), with the start cell (0, 0) in a corner, centred on the robot's
-start pose, and +i along its start heading. Every 5 s the grid is refitted to the mapped walls
+start pose, and +i along its start heading. The two competition arenas are mirrored: set
+`maze_side:=left` (default) or `right` for the arena you run in (`auto` is experimental and
+picked the wrong side in the sim). Every 5 s the grid is refitted to the mapped walls
 (at most 8° / 0.35 m off the start-pose grid; `scene_cells.fit_grid`) and published on
 `/maze/grid`, which `scene_trigger` follows. **The robot never leaves the grid:** frontier
 goals outside it are dropped. Once every cell inside is explored, the exit is an outer side
@@ -402,7 +404,7 @@ cd ~/challenge_ws && source install/setup.bash
 (cd src/team_perception && python3 -m pytest -q test)   # QR utils, depth alignment, poster tests, tf_pin
 (cd src/maze_nav && python3 -m pytest -q test)          # wall scan, frontiers, exit, stairs, curtains, scene cells, looks
 (cd src/scene_understanding && python3 -m pytest -q test)  # room_scene (stored views, retry)
-src/maze_nav/test/run_sim.sh [timeout_s=600] [log_dir=/tmp/maze_sim] [maze=example_maze.json] [domain=89]
+src/maze_nav/test/run_sim.sh [timeout_s=600] [log_dir=/tmp/maze_sim] [maze=challenge_a.json] [domain=89]
 ```
 
 `team_perception` has no ament lint tests (flake8/pep257/copyright).
@@ -414,15 +416,28 @@ only if the robot parked there (`AT_EXIT`) and the sim never logged `OUT OF THE 
 mazes pass on `AT_EXIT` or `EXITED`. The maze file's `grid` key sets `maze_cols` /
 `maze_rows` / `cell_size`; without one, `maze_cols:=0` (the old walk-out exit).
 
-Simulator mazes (`src/maze_nav/test/`; regenerate from their scripts, never edit the JSON):
+Simulator mazes (`src/maze_nav/test/`; regenerate from their scripts, never edit the JSON).
+**Test with the `challenge_*` arenas** (user 2026-11-22). They are shaped like the competition
+arena from the booklet (sections C, E, F): 5 x 3 cells of 1.02 m, start cell (0, 0) in a corner
+facing +x, 4 uneven-terrain cells (<= 12 cm), a staircase in a straight cell on the route, one
+curtain (13 cm gap, mounted 1 m up), survivor / object / hazard rooms with props, and the
+final cell's outer wall left out as the exit. The two real arenas are mirrored, hence
+`challenge_a_mirror`. Interiors and heights are made up (the layout changes on competition
+morning); `make_challenge_mazes.py` draws each arena in its docstring.
 
 | Maze | Grid | What it tests |
 |---|---|---|
-| `challenge_exit_{far,left,right,near}.json` | 5 x 3, 1.02 m | The challenge shape (start in a corner facing the 5-cell side), exit through each outer side; `near` is next to the start. `make_challenge_mazes.py` |
-| `challenge_offset.json` | 5 x 3, 1.02 m | `exit_far` with a hand-placed start (5 cm, 5°) |
-| `example_maze.json`, `object_maze.json` | none (old exit) | The lab example maze (stairs, ramps, mats); with a blocking object. Its exit is the stairs, not a challenge exit |
-| `maze_curtains.json`, `maze_stairs.json` | 2 x 3, 1.0 m | The presentation mazes. `make_presentation_mazes.py` |
-| `curtain_maze.json`, `extru_maze.json` | none | A corridor with a curtain; built from extru walls |
+| `challenge_a.json` | 5 x 3, 1.02 m, left | Curtain and stairs on the route; exit +x of the final cell (4, 2) |
+| `challenge_a_mirror.json` | 5 x 3, 1.02 m, right | The same arena mirrored (the other competition arena); run with `maze_side:=right` (run_sim.sh passes the file's side) |
+| `challenge_a_no_curtain.json` | 5 x 3, 1.02 m, left | `challenge_a` without the curtain (its passage open) |
+| `challenge_a_flat.json` | 5 x 3, 1.02 m, left | `challenge_a` without the curtain or the stairs: the exit and launch-cell parking without the two features the sim can't cross yet (the curtain stalled the 2026-11-22 run; AI-mode stair crossing isn't simulated) |
+| `challenge_b.json` | 5 x 3, 1.02 m, left | Stairs on the route, curtain in front of a survivor room, exit on the long side (+y of (2, 2)) |
+| `challenge_b_offset.json` | 5 x 3, 1.02 m, left | `challenge_b` with a hand-placed start (5 cm, 5°): the grid fit must correct it |
+
+Out of date (older lab mazes, kept for the tests that use them; not the competition shape):
+`example_maze.json` / `object_maze.json` (exit = stairs, `maze_cols:=0`), `maze_curtains.json` /
+`maze_stairs.json` (2 x 3 presentation mazes), `curtain_maze.json` / `extru_maze.json`
+(corridors).
 
 The simulator publishes lidar, odometry and a depth camera (`/camera/depth/image_raw`, 640 x 480
 at 5 Hz, the robot's camera mount and intrinsics; `depth_rate:=0` turns it off), so stairs and
@@ -440,9 +455,9 @@ runs a preset in `ROS_bags/record.sh`. Full guide: `ROS_bags/ROSBAG_GUIDE.md`.
 
 ```bash
 rec_full <run_name>      # teleop, everything incl. depth (Ctrl+C to stop)
-rec_nav                  # autonomous run, no depth; name defaults to nav_<date>_<time>
 rec_maze                 # full maze_nav run (nav + perception + explorer topics), no depth
-rec_list                 # all presets: perception, detections, navdebug, lidar, video
+rec_curtain <run_name>   # teleop: curtain YOLO training bag (colour, depth, lidar), ROSBAG_GUIDE 2.5
+rec_list                 # all presets (also navdebug, lidar)
 rec_last                 # ros2 bag info for the newest bag
 python3 ~/bag_to_video.py ~/challenge_ws/ROS_bags/<run_name>   # bag -> mp4, see ROSBAG_GUIDE §4
 ```
@@ -451,8 +466,8 @@ python3 ~/bag_to_video.py ~/challenge_ws/ROS_bags/<run_name>   # bag -> mp4, see
 is only recorded when Fast-LIO is running. Bags are git-ignored. Copy them off the robot.
 
 **Not while Nav2 drives:** recording `/camera/depth/image_raw` delayed `/livox/points` by
-~1.2 s and collision_monitor held the robot at zero (2026-11-13). Use `rec_nav` for autonomous
-runs; `rec_full` and `rec_perception` refuse to start while Nav2 is running.
+~1.2 s and collision_monitor held the robot at zero (2026-11-13). Use `rec_maze` for autonomous
+runs; `rec_full` and `rec_curtain` refuse to start while Nav2 is running.
 
 ## 11. Git workflow
 
@@ -498,8 +513,9 @@ Navigation (`maze_nav`, section 3; test with `run_sim.sh`, section 9):
 
 Stairs (`stair_detector`, section 3):
 - **The full stair pause has not been run in the simulator yet.** `fake_maze_lite3.py` got a
-  depth camera on 2026-11-22, so `run_sim.sh ... maze_stairs.json` can now detect and line up
-  on stairs. The AI-mode crossing can't be simulated (no `/simple_cmd`).
+  depth camera on 2026-11-22, and the `challenge_*` arenas put stairs on the route
+  (`test_challenge_mazes.py` checks stair_detector's detection finds them 0.6-1.2 m before the
+  first riser). The AI-mode crossing can't be simulated (no `/simple_cmd`).
 - **Tune the line-up wall checks after robot trials.** They only know walls on the SLAM map.
   The cell before the stairs leaves the turning circle about 1 cm, so an off-centre or
   turned-away arrival holds as `AT_STAIRS: NOT LINED UP` for a hand line-up. Settings:
