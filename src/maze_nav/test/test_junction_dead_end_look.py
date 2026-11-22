@@ -23,7 +23,8 @@ class Fake:
                'send_pose', 'release_pose', 'set_state', 'capture_view', 'tilt_pitch',
                'pose_tick', 'junction_pending', 'start_queue', 'mark_explored',
                'hold_dead_end', 'blacklist_dead_end', 'launch_cell', 'scene_candidate',
-               'no_go_cell'):
+               'no_go_cell', 'curtains_at_junction', 'deferred_candidates',
+               'branch_frontiers'):
         locals()[_n] = getattr(Explorer, _n)
 
     def __init__(self, pose_status='READY'):
@@ -55,6 +56,7 @@ class Fake:
         self.visited, self.explored_cells, self.blocked_cells = set(), set(), {}
         self.rooms_done, self.room_looks = set(), {}
         self.cand_queue, self.queue_active = [], False
+        self.defers, self.branch_cache = [], None
         self.scene_pending, self.scanned_cells, self.scene_results = {}, set(), True
         self.exit_side = None
 
@@ -130,6 +132,55 @@ def test_after_a_junction_scan_queued_candidates_come_first(monkeypatch):
     e = Fake()
     e.cand_queue = [{'kind': 'stairs', 'id': 1, 'target': (1.0, 3.0), 'heading': 0.0}]
     assert plan_after(e, monkeypatch) == [] and e.queue_active
+
+
+def test_curtain_way_waits_for_the_other_way_at_a_junction(monkeypatch):
+    """User 2026-11-22: corridor east, possible curtain north -> east first (likely a
+    room); the curtain is held back, then checked once that way is explored."""
+    def trace(openings, cell, d, max_cells=10):
+        return {'kind': 'unknown', 'cell': (cell[0] + d[0], cell[1] + d[1]), 'length': 1}
+    monkeypatch.setattr(explorer_mod, 'trace_way', trace)
+    e = Fake()
+    e.xy, e.yaw = (1.0, 1.0), math.pi / 2              # came in from (1, 0), facing north
+    cur = {'kind': 'curtain', 'id': 4, 'target': (1.0, 1.5), 'heading': math.pi / 2}
+    stairs = {'kind': 'stairs', 'id': 1, 'target': (5.0, 5.0), 'heading': 0.0}
+    e.cand_queue = [cur, stairs]
+    rec = {'cells': CellGrid(), 'cell': (1, 1), 'from_cell': (1, 0), 'half_width': 0.35,
+           'paths': [('+j', math.pi / 2), ('+i', 0.0)]}
+    e.plan_after_junction(rec)
+    assert e.cand_queue == [stairs] and e.queue_active      # other candidates still first
+    assert len(e.defers) == 1 and e.defers[0].ways == [(1, 0)]
+    assert e.defers[0].candidates == [cur]
+    # the curtain detector re-announcing it doesn't queue it again
+    e.queue_candidate = Explorer.queue_candidate.__get__(e)
+    e.queue_candidate('curtain', 4, (1.0, 1.5), math.pi / 2, 'curtain')
+    assert e.cand_queue == [stairs]
+    # no queue left: leaves east, not into the curtain's way
+    e.cand_queue, e.queue_active = [], False
+    e.defers = []
+    e.cand_queue = [cur]
+    todo = e.plan_after_junction(rec)
+    assert not e.queue_active and todo[0]['xy'] == (2.0, 1.0)
+    # east explored (no frontier in its branch for done_confirm replans): curtain queued
+    e.cfg['done_confirm'] = 2
+    g = Grid(np.zeros((80, 80), np.int16), 0.05, (-2.0, -1.0))
+    assert e.branch_frontiers(g, (2.0, 1.0), []) is None
+    assert e.branch_frontiers(g, (2.0, 1.0), []) is None
+    assert e.defers == [] and e.cand_queue == [cur] and e.queue_active
+
+
+def test_curtain_is_checked_first_when_it_is_the_only_way(monkeypatch):
+    def trace(openings, cell, d, max_cells=10):
+        return {'kind': 'unknown', 'cell': (cell[0] + d[0], cell[1] + d[1]), 'length': 1}
+    monkeypatch.setattr(explorer_mod, 'trace_way', trace)
+    e = Fake()
+    e.xy, e.yaw = (1.0, 1.0), math.pi / 2
+    e.visited.add(e.cells.cell((2.0, 1.0)))            # east visited already
+    cur = {'kind': 'curtain', 'id': 4, 'target': (1.0, 1.5), 'heading': math.pi / 2}
+    e.cand_queue = [cur]
+    rec = {'cells': CellGrid(), 'cell': (1, 1), 'from_cell': (1, 0), 'half_width': 0.35,
+           'paths': [('+j', math.pi / 2), ('+i', 0.0)]}
+    assert e.plan_after_junction(rec) == [] and e.queue_active and e.defers == []
 
 
 def test_side_wall_look_actions(monkeypatch):

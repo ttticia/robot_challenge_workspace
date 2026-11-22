@@ -1,3 +1,5 @@
+What to test after the 2026-11-21/22 changes (simulator and robot): `test_checklist.md`.
+
 ## stairs
 reduce stair detection CPU usage. 
 
@@ -5,6 +7,15 @@ stairs were missed in 2nd last run. need to make stair check more robust.
 
 ## curtains
 some walls have a cavity that could be read as curtain gap. when checking for curtain look for curtain gap that extends >10cm behind the supposed curtain.
+
+### YOLO curtain detector (built 2026-11-22, OFF: no data, no model)
+`maze_nav/curtain_yolo.py` (launch `curtain_yolo:=false`): YOLO curtain boxes in the colour camera, placed with the depth relay, on `/curtain/yolo`. It runs only in junction / dead-end looks and CURTAIN, never while EXPLORING. `curtain_detector` `inspect_mode` `yolo` (launch `curtain_inspect_mode:=yolo`): stand 1 m in front of a released candidate for 3 s; confirmed if ≥ 3 frames have a box (conf ≥ 0.5) on it. Once trained, this should replace the lie-down gap check as the curtain verification. Until then: `lie`. Missing data, in order:
+1. Record bags with the colour camera + depth + /tf_static: `rec_full` (or `rec_perception`), with the spec curtain (gap < 15 cm) and the lab curtain, approaching from 2.5 m to 0.5 m, square on and 30–45° off, under the lab lights, lit and in shadow, still and swaying. At least 10 bags, several sessions and days. Also negatives: plain walls, extrusion walls with cavities/windows, doorways, slats, open floor, people. Both curtain sides.
+2. Frames + draft labels: `nice -n 19 python3 src/maze_nav/tools/curtain_yolo_frames.py <bag> ~/challenge_ws/datasets/curtain --every 3 [--max-gap 0.25 for the lab curtain]` for every bag (frames named by bag, so all go into one dataset).
+3. Review EVERY label in CVAT / Label Studio / labelImg (YOLO format, class 0 = curtain): fix the drafts, box the curtains the depth draft missed, and delete boxes on walls. Target ≥ 1000 curtain boxes and as many negative frames.
+4. Train: `python3 src/maze_nav/tools/train_curtain_yolo.py ~/challenge_ws/datasets/curtain --install` (yolo11n, imgsz 416, split by bag; installs `~/.cache/team_perception/curtain_yolo.pt` + an OpenVINO export). Copy it to the robot's `~/.cache/team_perception/`.
+5. Accept only if, on bags NOT used in training: recall ≥ 0.9 for curtains 0.5–2 m away, and no box on the negatives at conf 0.5. Check CPU on the robot (~180 ms a frame at 416 on torch here; use the OpenVINO model). Check that one more colour subscriber doesn't saturate the bridge.
+6. Robot test with `curtain_yolo:=true curtain_inspect_mode:=yolo` on the spec curtain and on a cavity wall. If it holds up, make `yolo` the default verification and keep `lie` as the fallback.
 
 ## posture
 Check whether the robot's posture can be published to ROS. The motion host already sends `robot_basic_state` (1 sitting, 5 sit->stand, 6 standing, 7 stand->sit, 8 lose-control protection, ...) in its 50 Hz `RobotStateUpload` packet (code 0x0901, offset 0; robot_info.md §6.4.3), but `lite3_domain_bridge_4` only turns that packet into /leg_odom*, so ROS never sees it (robot_info.md §3.3). Same packet: `robot_gait_state` (offset 4) and `robot_motion_state` (offset 172: 0 still, 1 stepping).

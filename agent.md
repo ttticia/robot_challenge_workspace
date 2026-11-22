@@ -13,6 +13,8 @@ teammates and coding agents working from a fresh clone.
 - Queue simulator runs across sessions instead of running several at once: they share the
   CPU, cost tokens to watch, and each needs its own ROS domain (section 8).
 - The current task list is `src/to_do.md`; section 12 below records known issues with context.
+- What still has to be tested after the 2026-11-22 changes, in the simulator and on the
+  robot, is in `src/test_checklist.md`. Tick items off there as they pass.
 
 ROS 2 **Humble**, Ubuntu 22.04, Python packages (`ament_python`). Robot: DEEP Robotics
 **Lite3** quadruped with a Livox **Mid-360** lidar and an Orbbec RGB-D camera.
@@ -75,7 +77,12 @@ challenge_ws/
 ├── robot_info.md             Lite3 interface reference (topics, QoS, /simple_cmd codes, UDP)
 ├── src/
 │   ├── maze_nav/             maze traversal: wall scan + SLAM + Nav2 + frontier explorer,
-│   │                         plus stairs, curtains, scene triggers (README.md, nav_launch.md)
+│   │                         plus stairs, curtains, scene triggers (README.md, nav_launch.md);
+│   │                         touble_shooting/: live params, telemetry snapshots, manual
+│   │                         dead-end / scene triggers (`troubleshoot:=true` starts
+│   │                         telemetry_snapshot → ~/live_debug/current; others run by hand)
+│   ├── scene_understanding/  room_scene (dead-end views → VLM queue, verdict on /scene/result)
+│   │                         + task_reporter; started by maze_nav with scene_understanding:=true
 │   ├── team_perception/      perception: QR scanner, depth relay (YOLO person + poster
 │   │                         detectors are built but not launched)
 │   └── to_do.md              current task list
@@ -147,7 +154,7 @@ The docstring at the top of `launch/maze_nav.launch.py` lists every argument wit
 default; read it before adding one. Operator guide: `src/maze_nav/nav_launch.md`.
 
 A switched-off part starts no nodes (`depth_relay` runs only with stairs or perception on) and
-is disconnected from the explorer (`stairs_topic` / `look_topic` / `qr_unread_topic` are blanked), so a stray
+is disconnected from the explorer (`stairs_topic` / `qr_unread_topic` / `curtain_topic` / `curtains_topic` are blanked), so a stray
 publisher can't stop the robot. Checked on 2026-11-18 by launching each combination. If one of
 these parts dies mid-run, navigation carries on (the launch's death banner says so). **A new
 optional feature must follow the same rule:** a launch switch, an explorer topic parameter that
@@ -158,18 +165,37 @@ The robot holds still (`/maze/status` = `PAUSED`) until
 Then it drives `creep_distance` (default 0.10 m) straight ahead (`CREEPING`), optionally scans
 (`SCANNING`, only with `start_scan:=true`), and sends the first Nav2 goal (`EXPLORING`).
 
-Explores with `slam_toolbox` + Nav2 until there is open floor next to the robot, then stops.
-On the way:
-- **Junctions** (`JUNCTION`): it looks down each way and explores the left-most first.
-  Possible stairs or a curtain seen at a junction are deferred until the junction's other
-  ways are fully explored (`curtain_branch.py`).
+Explores with `slam_toolbox` + Nav2 until every cell of the grid is explored, then parks in
+the launch cell (`TO_EXIT` → `AT_EXIT`; "Maze grid" above). The behaviour and the 2026-11-21
+design decisions (D1–D11) are drawn in `src/bt.md`. On the way:
+- **Junctions** (`JUNCTION`, D2/D5/D6): for each adjacent cell not visited yet, left-most
+  first, it turns to face it, moves sideways (`linear.y`, at most `max_lateral` 0.10 m/s in
+  the bridge) onto the junction cell's centre line, and holds `junction_hold` (1 s) with
+  perception (QR) on and one `/scene/capture` (kind `junction`). The sideways move is skipped
+  when the turn ended more than 10° off the way, and stops when it stops closing in (an
+  unmapped wall). It leaves the cell only once every way is scanned, by the nearest
+  unexplored way. Dead-end ways aren't visited. An object room seen in the scan is marked
+  explored (D7: no goal, no room look-in).
+- **Candidate queue** (D3/D10): possible stairs and curtains seen in junction or dead-end
+  looks are held by the detectors (`/stairs/candidate` + `/maze/stairs_release`,
+  `/curtain/candidate` + `/maze/curtain_release`) and queued in the explorer. After a
+  junction scan, or when nothing else is left (before `NO_EXIT`), it checks them nearest
+  first: drives to 1.2 m in front, faces it, releases it, and waits `candidate_wait` (15 s)
+  for the detector's `HANDOVER`.
 - **Dead ends** (`DEAD_END`): it holds facing in, then looks at each side wall in Pose mode
   (tilt compensation over 30°). Perception runs only during these looks (`/maze/perceive`).
-  A checked dead end is never entered. Object cells (e.g. a toy kitchen) are looked into from
-  an open neighbour and kept out of Nav2 by a KeepoutFilter.
-- **Stairs** (`STAIRS` → `AT_STAIRS`): anything stair-like is a candidate, checked by facing it
-  and counting risers (`stair_check.py`). Once lined up, `cmd_vel_bridge` switches to AI mode
-  and walks `ai_walk_distance` (1.2 m) forward, then stops.
+  A dead end is never entered. With `scene_understanding:=true` the explorer waits for the
+  AI verdict on `/scene/result`: a room (`scene_type` kitchen / market / workshop / clinic /
+  cleaning_room, or any object) is blacklisted, stairs or a curtain go to the candidate
+  queue, anything else is left open. No answer `scene_result_timeout` (15 s) after the last
+  view: the map is re-checked, else `/scene/retry` (at most 2 tries), then blacklisted. With
+  `scene_understanding:=false` it is blacklisted at once. Object cells (e.g. a toy kitchen)
+  are looked into from an open neighbour and kept out of Nav2 by a KeepoutFilter.
+- **Stairs** (`STAIRS` → `AT_STAIRS`, D4): anything stair-like is a candidate, checked by
+  facing it and counting risers (`stair_check.py`). Once lined up, `cmd_vel_bridge` switches
+  to AI mode, walks `ai_walk_distance` (1.3 m) forward, leaves AI mode by itself (AI exit →
+  manual → Move → gait → auto mode), and publishes `DONE` on `/maze/ai_status`; the explorer
+  resumes. `NOT LINED UP`, or a walk that ended early, holds until `/maze/start`.
 - **Curtains** (`CURTAIN` → `AT_CURTAIN`): a wall with a gap at the bottom under
   `curtain_max_gap` (0.15 m). An unconfirmed one is inspected by lying down in front of it
   (`curtain_inspect.py`); a 12–20 cm gap confirms it, and the robot walks through.
@@ -197,7 +223,7 @@ ros2 launch team_perception robot.launch.py --show-args     # every topic name i
 
 Only `depth_relay` and `qr_scanner` are launched. In a `maze_nav` run they run niced on all
 but the first 4 cores, and image work runs only while `/maze/perceive` is True (dead-end
-looks, `FACING_QR`, `LOOKING`; `run_gate.py`). Everything runs on the robot computer (there
+and junction looks, `FACING_QR`; `run_gate.py`). Everything runs on the robot computer (there
 is no external-computer mode any more; see section 12 for the CPU budget). Inputs, requirements and what works with less data:
 `src/team_perception/data_required.md`. Snapshots and CSV logs go to `~/qr_logs/` and
 `~/poster_logs/`. Recording guide: `ROS_bags/ROSBAG_GUIDE.md`.
@@ -250,7 +276,8 @@ is no external-computer mode any more; see section 12 for the CPU budget). Input
 `/qr/detections`, `/posters/detections` (JSON in `std_msgs/String`), `/found` (plain
 `QR found` / `Human found`), `/humans/detections` (person boxes from `human_detector`).
 To `maze_explorer`: `/qr/unread` and `/qr/read` (turn to face an unreadable code,
-`FACING_QR`), `/perception/look_request` (look around a QR room, `LOOKING`). The perception
+`FACING_QR`). `poster_detector`'s `/perception/look_request` is no longer read: the explorer's
+`LOOKING` state was removed on 2026-11-22 (D11, `src/bt.md`). The perception
 nodes publish no debug images. Full list: `src/team_perception/launch_guide.md` §4.
 
 ### Navigation (`maze_nav`)
@@ -266,8 +293,17 @@ nodes publish no debug images. Full list: `src/team_perception/launch_guide.md` 
 | `/maze/perceive` | `maze_explorer` | Latched Bool: perception may run |
 | `/stairs/status`, `/stairs/detection`, `/stairs/pose` | `stair_detector` | |
 | `/scene/trigger`, `/junction_detected`, `/scene/junction` | `scene_trigger` | |
-| `/scene/capture` | `maze_explorer` | JSON per dead-end view (for `room_scene`) |
-| `/scene/result`, `/mission/task_completed` | `room_scene`, `task_reporter` | Only with `scene_understanding:=true` |
+| `/scene/capture` | `maze_explorer` | JSON per dead-end or junction view (for `room_scene`) |
+| `/scene/result`, `/mission/task_completed` | `room_scene`, `task_reporter` | Only with `scene_understanding:=true`. The explorer waits for `/scene/result` at dead ends |
+| `/scene/retry` | `maze_explorer` | Asks `room_scene` to resend a dead end's stored views (no verdict in time) |
+| `/maze/grid` | `maze_explorer` | The cell grid refitted to the mapped walls every 5 s; `scene_trigger` follows it |
+| `/maze/launch_cell` | `maze_explorer` | Latched JSON: `found` when the exit is chosen, `at` once parked (`AT_EXIT`) |
+| `/maze/ai_status` | `cmd_vel_bridge` | AI-mode stair walk progress; `DONE` lets the explorer resume |
+| `/stairs/candidate`, `/curtain/candidate` | `stair_detector`, `curtain_detector` | Candidates held for the explorer's queue |
+| `/maze/stairs_release`, `/maze/curtain_release` | `maze_explorer` | Releases a queued candidate to its detector for the check |
+| `/curtain/curtains` | `curtain_detector` | Latched JSON of confirmed curtains (odom); `wall_scan` and the explorer clear them |
+| `/maze/floor_est` | `stair_detector` | Bob-filtered floor height under the robot (`FloorTracker`, `stairs_lidar.py`) |
+| `/maze/lie_status` | `cmd_vel_bridge` | Lying / standing, from the body height over the floor |
 
 ### TF tree
 
@@ -330,10 +366,10 @@ ros2 topic pub --once --qos-reliability reliable --qos-durability transient_loca
 | `0x21010C03` | **Auto mode**: the robot follows `/cmd_vel` | Alias `lite3_auto`. A human operator sends it. Our code should not |
 | `0x21010C02` | **Manual mode**: the handheld controller drives, `/cmd_vel` is ignored | Alias `lite3_manual`. Safe fallback; send it on shutdown if you entered auto |
 | `0x21010D06` | Move mode (needed before gait requests) | `maze_nav`'s `cmd_vel_bridge` sends it once at launch, before the gait |
-| `0x21010401` | RUG gait, General gear (gait state 2) | **Default gait for `maze_nav`** (again since 2026-11-21): `cmd_vel_bridge` sends it once at launch (`gait:=rug`; `gait:=none` = don't) |
-| `0x21010407` | H-Step (high-stepping RUG gait, gait state 13) | Optional: `gait:=hstep`. Was the default 2026-11-20 only. For rough ground; made the robot unsteady once (2026-11-12). See [DEEP Robotics docs](https://developer.deeprobotics.cn/docs/lite3/interfaces/control/state/) |
+| `0x21010401` | RUG gait, General gear (gait state 2) | Optional: `gait:=rug`. Was the default 2026-11-21 |
+| `0x21010407` | H-Step (high-stepping RUG gait, gait state 13) | **Default gait for `maze_nav`** again since 2026-11-22 (the user, "for now"): `cmd_vel_bridge` sends it once at launch (`gait:=hstep`; `gait:=none` = don't). For rough ground; made the robot unsteady once (2026-11-12). See [DEEP Robotics docs](https://developer.deeprobotics.cn/docs/lite3/interfaces/control/state/) |
 | `0x21020C0E` | Possibly a software STOP | Check it against the manufacturer docs before relying on it |
-| `0x21010528` + `0x2101052A` / `0x2101052B` | Enter AI state + AI basic gait / exit AI state | Aliases `lite3_ai` / `lite3_ai_off` (the latter also sends manual mode). **In AI state the robot may ignore `/cmd_vel`** (manufacturer list; untested). Exception, the user's call 2026-11-19: once lined up at the stairs, `cmd_vel_bridge` switches to AI mode and drives `ai_walk_distance` (1.2 m) forward at 0.1 m/s on `/odom`, then stops; it gives up after 8 s without progress. `robot_info.md` §6.3 |
+| `0x21010528` + `0x2101052A` / `0x2101052B` | Enter AI state + AI basic gait / exit AI state | Aliases `lite3_ai` / `lite3_ai_off` (the latter also sends manual mode). **In AI state the robot may ignore `/cmd_vel`** (manufacturer list; untested). Exception, the user's call 2026-11-19: once lined up at the stairs, `cmd_vel_bridge` switches to AI mode and drives `ai_walk_distance` (1.3 m) forward at 0.1 m/s on `/odom`; it gives up after 8 s without progress. Since 2026-11-22 (D4) it then leaves AI mode by itself and sends **auto mode** too (AI exit → manual → Move → gait → auto), the one place the code sends auto mode instead of the operator. Untested on the robot. `robot_info.md` §6.3 |
 
 Usual sequence: robot standing (handheld controller) → gait (maze_nav: sent at launch, log
 `gait sent`) → `lite3_auto` → drive with
@@ -365,6 +401,7 @@ bridge, so watch the robot or the handheld controller to confirm a mode change.
 cd ~/challenge_ws && source install/setup.bash
 (cd src/team_perception && python3 -m pytest -q test)   # QR utils, depth alignment, poster tests, tf_pin
 (cd src/maze_nav && python3 -m pytest -q test)          # wall scan, frontiers, exit, stairs, curtains, scene cells, looks
+(cd src/scene_understanding && python3 -m pytest -q test)  # room_scene (stored views, retry)
 src/maze_nav/test/run_sim.sh [timeout_s=600] [log_dir=/tmp/maze_sim] [maze=example_maze.json] [domain=89]
 ```
 
@@ -481,9 +518,11 @@ Scene understanding (`scene_trigger` in `maze_nav`, consumer in `~/test_scene_un
   wall band); the start cell's sides read as open. Ideas: cap the laser range at ~3 m in
   `slam_toolbox.yaml` and `wall_scan`, or keep a wall layer that never clears.
 - **The cell grid is set by where the robot was when Fast-LIO started** (section 5,
-  Localization). Place it square on the start cell and launch it standing (`auto_stand`
-  moves it). Ideas: take the grid from the pose at `/maze/start`, fit it to the mapped
-  walls, and ignore SLAM jumps of more than a cell.
+  Localization). Place it square on the start cell and launch it standing (`wait_for_stand`
+  holds startup until it stands; nothing is sent to stand it up). Since 2026-11-22 the grid
+  is refitted to the mapped walls every 5 s, but only up to 8° / 0.35 m from the start-pose
+  grid, so a badly placed start is still a problem. The refit hasn't been tested on the robot.
+  Open idea: ignore SLAM jumps of more than a cell.
 
 Testing and workflow (sections 8, 9):
 - **Several Claude sessions work in this workspace at once.** Each needs its own ROS
@@ -492,7 +531,9 @@ Testing and workflow (sections 8, 9):
   `run_sim.sh` aborts the whole run when any node dies. Check a domain is empty
   (`ros2 node list`) before using it.
 - **The `rec_*` presets miss the newer topics** (section 10): `/stairs/*`, `/scene/trigger`,
-  `/junction_detected`, `/qr/read`, `/qr/unread` and `/perception/look_request` aren't in any
+  `/junction_detected`, `/qr/read`, `/qr/unread`, and the 2026-11-22 topics (`/scene/result`,
+  `/scene/retry`, `/maze/grid`, `/maze/launch_cell`, `/maze/ai_status`, `/*/candidate`,
+  `/maze/*_release`, `/maze/floor_est`; section 5) aren't in any
   group in `ROS_bags/record.sh`, and group G still lists the dead
   `/camera/color/image_offboard/compressed`. Add them after `--` until `record.sh` is updated
   (`ROS_bags/ROSBAG_GUIDE.md` §1).

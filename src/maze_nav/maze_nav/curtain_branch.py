@@ -82,6 +82,10 @@ class Deferral:
     released: bool = False                 # branch done: driving to the curtain / crossing
     at_spot: float = None                  # monotonic time it got to the spot in front
     stairs: dict = None
+    # User 2026-11-22: possible curtains (candidate-queue entries, curtain_id None) seen at
+    # a junction with another way on: that way first (likely a room), then they go back
+    # into the candidate queue for the lie-down check.
+    candidates: list = None
 
 
 @dataclass

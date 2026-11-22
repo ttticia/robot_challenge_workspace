@@ -145,6 +145,7 @@ from maze_nav.curtains import (BlockageMonitor, Curtain, CurtainParams, CurtainT
 from maze_nav.curtain_branch import CurtainHold
 from touble_shooting.live_params import attach as attach_live_params, value as live_value
 from maze_nav.curtain_inspect import InspectParams, InspectPlan
+from maze_nav.curtain_yolo import matching_hits
 from maze_nav.stairs import WallCheck, camera_from_link
 
 LATCHED = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -208,7 +209,17 @@ class CurtainDetector(Node):
         p('inspect_trigger_distance', 2.5)     # m to the candidate's line
         p('inspect_min_distance', 0.6)         # m: closer candidates are side-wall windows etc.
         p('inspect_max_bearing', math.radians(35))  # candidate centre off the heading
-        p('inspect_mode', 'lie')               # 'lie' (user 2026-11-20) or 'pose'
+        p('inspect_mode', 'lie')               # 'lie' (user 2026-11-20), 'pose' or 'yolo'
+        # inspect_mode 'yolo' (curtain_yolo.py; needs a trained model, to_do.md ## curtains):
+        # standing yolo_distance m in front, a candidate is confirmed when >= yolo_need of the
+        # /curtain/yolo frames in inspect_yolo_hold s have a box (conf >= yolo_conf) whose odom
+        # centre is within yolo_match m of it. Meant to replace the lie-down check once trained.
+        p('yolo_topic', '/curtain/yolo')
+        p('yolo_conf', 0.5)
+        p('yolo_need', 3)
+        p('yolo_match', 0.6)
+        p('inspect_yolo_hold', 3.0)
+        p('inspect_yolo_distance', 1.0)
         p('inspect_distance', 0.5)             # m before the line: middle of the cell in front
         p('gap_min', 0.12)                     # m: lying-down gap that confirms a curtain ...
         p('gap_max', 0.20)                     # ... up to this
@@ -300,7 +311,13 @@ class CurtainDetector(Node):
             distance=float(g('inspect_distance')), pitch=float(g('inspect_pitch')),
             look_yaw=float(g('inspect_look_yaw')), hold=float(g('inspect_hold')),
             speed=min(0.08, float(g('max_speed'))), look_mode=str(g('inspect_mode')),
-            lie_hold=float(g('inspect_lie_hold')))
+            lie_hold=float(g('inspect_lie_hold')), yolo_hold=float(g('inspect_yolo_hold')),
+            yolo_distance=float(g('inspect_yolo_distance')))
+        self.yolo_cfg = {'conf': float(g('yolo_conf')), 'need': int(g('yolo_need')),
+                         'match': float(g('yolo_match'))}
+        self.yolo_frames, self.yolo_hits = 0, 0
+        if g('yolo_topic') and self.inspect_params.look_mode == 'yolo':
+            self.create_subscription(String, g('yolo_topic'), self.on_yolo, 10)
         self.inspect_target = None      # dict (centre, n, p1, p2, what) in odom: pending
         self.gaps = []                  # (gap, coverage) measured lying down
         self.lie_status = None
@@ -920,6 +937,7 @@ class CurtainDetector(Node):
             return None
         width = float(np.linalg.norm(d))
         return {'centre': centre, 'n': n, 'p1': p1, 'p2': p2, 'width': width, 'dist': dist,
+                'gap': float(gap),
                 'what': f'{what}: {width:.2f} m wide, gap {gap * 100:.0f} cm, '
                         f'{dist:.2f} m ahead'}
 
@@ -986,12 +1004,18 @@ class CurtainDetector(Node):
                                       self.inspect_params)
         self.inspect_done_at = None
         self.gaps = []
+        self.yolo_frames, self.yolo_hits = 0, 0
+        ip = self.inspect_params
+        if ip.look_mode == 'yolo':
+            return self.set_state('INSPECTING', f'{tg["what"]}: to {ip.yolo_distance:.1f} m in '
+                                  f'front, square up, hold {ip.yolo_hold:.0f} s counting YOLO '
+                                  f'curtain boxes on it (need {self.yolo_cfg["need"]})')
         look = (f'lie down and measure the gap ({self.inspect_cfg["gap_min"] * 100:.0f}-'
                 f'{self.inspect_cfg["gap_max"] * 100:.0f} cm = curtain)'
-                if self.inspect_params.look_mode == 'lie' else
-                f'Pose-mode look (pitch {math.degrees(self.inspect_params.pitch):.0f} deg down)')
+                if ip.look_mode == 'lie' else
+                f'Pose-mode look (pitch {math.degrees(ip.pitch):.0f} deg down)')
         self.set_state('INSPECTING', f'{tg["what"]}: to the middle of the cell in front '
-                       f'({self.inspect_params.distance:.1f} m from it), square up, {look}')
+                       f'({ip.distance:.1f} m from it), square up, {look}')
 
     def measure_gap(self, floor):
         """LYING: the gap under the candidate from the newest points (gap_at_line)."""
@@ -1047,6 +1071,8 @@ class CurtainDetector(Node):
                                   'ros2 topic pub --once /maze/start std_msgs/msg/Empty')
         if lay:
             return self.decide_lying(tg, xy, why)
+        if why.startswith('YOLO look'):
+            return self.decide_yolo(tg, xy, why)
         hit = [c for c in self.curtains_odom()
                if np.linalg.norm(c.centre - centre) < 0.6 and c.side_of(xy) not in c.passed]
         if hit:
@@ -1061,6 +1087,43 @@ class CurtainDetector(Node):
         self.cooldown_until = time.monotonic() + 3.0
         self.set_state('IDLE', f'{why}; left alone for '
                        f'{self.inspect_cfg["inspect_forget"]:.0f} s')
+
+    def on_yolo(self, msg):
+        """/curtain/yolo frame while standing in front of a candidate (phase YOLO): count it,
+        and count a hit when a curtain box is on the candidate."""
+        if self.inspection is None or self.inspection.phase != 'YOLO' or \
+                self.inspect_target is None:
+            return
+        try:
+            dets = json.loads(msg.data).get('detections') or []
+        except (ValueError, AttributeError):
+            return
+        self.yolo_frames += 1
+        c = self.yolo_cfg
+        if matching_hits(dets, self.inspect_target['centre'], c['match'], c['conf']):
+            self.yolo_hits += 1
+
+    def decide_yolo(self, tg, xy, why):
+        """YOLO look done: >= yolo_need frames with a curtain box on the candidate -> curtain."""
+        n, hits, need = self.yolo_frames, self.yolo_hits, self.yolo_cfg['need']
+        if n == 0:
+            return self.reject(tg['centre'], f'{why}: no /curtain/yolo frames (curtain_yolo not '
+                               'running or no model: curtain_yolo:=true): not confirmed')
+        if hits < need:
+            return self.reject(tg['centre'], f'{why}: curtain box on it in {hits} of {n} frames '
+                               f'(need {need}): not a curtain')
+        t = self.frame_tf()
+        if t is None:
+            return self.reject(tg['centre'], 'no SLAM TF to store the curtain')
+        c = Curtain(np.asarray(tg['p1'], float), np.asarray(tg['p2'], float),
+                    np.asarray(tg['n'], float), float(tg.get('gap', 0.1)))
+        stored = self.tracker.confirm(c.transformed(*t), time.monotonic())
+        self.publish_curtains()
+        odom = [k for k in self.curtains_odom() if k.id == stored.id]
+        cur = odom[0] if odom else c
+        self.lock, self.lock_id, self.side = cur, stored.id, cur.side_of(xy)
+        return self.after_confirm(cur, f'{why}: curtain box on it in {hits} of {n} frames: '
+                                  f'curtain {stored.id} confirmed ({cur.width:.2f} m wide)')
 
     def decide_lying(self, tg, xy, why):
         """Gap measured lying down: gap_min..gap_max over >= half the width -> curtain."""

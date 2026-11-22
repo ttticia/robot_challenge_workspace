@@ -79,11 +79,12 @@ class CellGrid:
         return wrap(self.yaw + math.atan2(d[1], d[0]))
 
 
-def exit_cell(cells, xy, cols, rows, margin=0.15):
+def exit_cell(cells, xy, cols, rows, margin=0.15, j0=0):
     """The cell xy is in if it lies outside the maze, else None.
 
-    The maze is `cols` cells along +i by `rows` along +j with the start cell (0, 0) in its
-    corner (cells (0..cols-1, 0..rows-1)). xy has to be at least `margin` m past the maze's
+    The maze is `cols` cells along +i by `rows` along j, cells (0..cols-1, j0..j0+rows-1):
+    the start cell (0, 0) in a corner, the maze to its left (j0 = 0) or, in the mirrored
+    arena, to its right (j0 = 1 - rows). xy has to be at least `margin` m past the maze's
     outer edge, so a point in the exit opening itself doesn't count. cols or rows <= 0 = no
     known maze size: never an exit cell.
     """
@@ -91,7 +92,7 @@ def exit_cell(cells, xy, cols, rows, margin=0.15):
         return None
     u, v = cells.local(xy)
     m = margin / cells.size
-    if -0.5 - m <= u <= cols - 0.5 + m and -0.5 - m <= v <= rows - 0.5 + m:
+    if -0.5 - m <= u <= cols - 0.5 + m and j0 - 0.5 - m <= v <= j0 + rows - 0.5 + m:
         return None
     return cells.cell(xy)
 
@@ -105,7 +106,8 @@ def fit_grid(points, cells, max_yaw=math.radians(8.0), step=math.radians(0.25)):
     `cells.yaw`, score = |mean exp(2 pi i u / size)| + same for v (0 = spread evenly, 2 =
     every point on a grid line); the best yaw's mean phases give the shift that puts the
     lines on cell edges (at most half a cell). Same size, cell (0, 0) stays the cell nearest
-    the old origin.
+    the old origin. On a 5 cm map the score is nearly flat within ~0.5 deg of the best yaw
+    (0.5 deg is 4 cm over a 5-cell maze, under one map cell): that is the precision.
     """
     pts = np.asarray(points, float).reshape(-1, 2)
     if len(pts) == 0:
@@ -129,12 +131,12 @@ def fit_grid(points, cells, max_yaw=math.radians(8.0), step=math.radians(0.25)):
     return CellGrid(cells.size, origin, wrap(yaw)), float(score)
 
 
-def boundary_sides(cols, rows):
-    """[(cell, d)] every outer side of the cols x rows maze: cell inside, d = (di, dj) out."""
+def boundary_sides(cols, rows, j0=0):
+    """[(cell, d)] every outer side of the maze (exit_cell): cell inside, d = (di, dj) out."""
     out = []
     for i in range(cols):
-        out += [((i, 0), (0, -1)), ((i, rows - 1), (0, 1))]
-    for j in range(rows):
+        out += [((i, j0), (0, -1)), ((i, j0 + rows - 1), (0, 1))]
+    for j in range(j0, j0 + rows):
         out += [((0, j), (-1, 0)), ((cols - 1, j), (1, 0))]
     return out
 
@@ -181,7 +183,7 @@ def opening(grid, cells, cell, d, half_width=0.35, depth=0.1, min_blocked=0.3,
 
 
 # maze_explorer states (/maze/status, "STATE" or "STATE: why") in which the run is under way.
-ACTIVE_STATES = ('CREEPING', 'SCANNING', 'EXPLORING', 'TURNING', 'LOOKING', 'FACING_QR',
+ACTIVE_STATES = ('CREEPING', 'SCANNING', 'EXPLORING', 'TURNING', 'FACING_QR',
                  'JUNCTION', 'DEAD_END')
 
 

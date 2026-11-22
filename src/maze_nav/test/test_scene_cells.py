@@ -142,7 +142,7 @@ def test_rotated_grid_directions():
 
 def test_run_active_follows_explorer_status():
     for status in ('CREEPING: 10 cm straight ahead, no steering', 'SCANNING: turning',
-                   'EXPLORING: go', 'EXPLORING', 'TURNING: x', 'LOOKING: QR room',
+                   'EXPLORING: go', 'EXPLORING', 'TURNING: x',
                    'FACING_QR: unreadable code', 'JUNCTION: cell [1, 0]',
                    'DEAD_END: dead end at cell [2, 0]'):
         assert run_active(status), status

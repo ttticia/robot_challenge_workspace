@@ -1,65 +1,77 @@
-"""Write test/challenge_*.json: the challenge maze shape for fake_maze_lite3.py.
+"""Write test/challenge_*.json: sim arenas shaped like the competition arena.
 
     python3 test/make_challenge_mazes.py           # rewrites every challenge_*.json
 
-The challenge maze (user 2026-11-22): 5 x 3 cells of 1.02 m, start cell (0, 0) in a corner,
-the robot facing +x along the 5-cell side. Cell (i, j) is centred on (1.02 i, 1.02 j); the
-start cell's centre is the maze frame origin, so the maze frame matches the explorer's cell
-grid (cell (0, 0) on the map origin, +i along the start heading). Walls 0.45 m tall on a flat
-floor; the interior layout below is made up (nothing was measured).
+From the challenge booklet (v5, sections C, E, F; user 2026-11-22): 5 x 3 cells, adjacent cell
+centres 1.02 m apart; origin at the start cell's centre, +x the start heading, +y to its
+left; the two arenas are mirrors of each other (the maze to the left or to the right of the
+start); 4 uneven-terrain cells, one staircase negotiated as part of the route, one hanging
+curtain (passable, mounted ~1 m up), rooms with survivors (QR codes on their side walls), an
+object of interest and a hazard; the final cell is the exit / drone launch cell, with its
+outer wall towards the target left out (a plain opening, never stairs or a curtain). The
+layout changes on competition morning, so the interiors below are made up, and so are all
+heights (terrain <= 12 cm, steps 11 cm, walls 0.45 m on a flat floor).
 
-Interior (passages; every other cell side is a wall):
+challenge_a.json (maze to the left), exit +x of the final cell (4, 2):
 
-    j=2   (0,2)-(1,2)   (2,2)-(3,2)---(4,2)
-            |             |     |       |
-    j=1   (0,1)-(1,1)---(2,1) (3,1)   (4,1)
-                  |
-    j=0   START-(1,0)---(2,0)---(3,0)---(4,0)
-          i=0    i=1     i=2     i=3     i=4
+    j=2   (0,2)-(1,2)   (2,2)={3,2}=(4,2)> exit      { } stairs (3, 2), along x
+            |             |                          : curtain between (1, 1) and (2, 1)
+    j=1   (0,1)-(1,1) : (2,1)   (3,1) (4,1)
+                  |             |     |
+    j=0   START-(1,0)---(2,0)---(3,0)-(4,0)
+    terrain: (2,0) slats, (4,0) block field, (2,1) ribbed mat, (2,2) low block field
+    rooms: (0,2), (1,2) survivors; (3,1) object (free-standing box); (4,1) hazard (cabinet)
 
-Junctions at (1,0), (1,1) and (3,2); dead ends at (1,2), (3,1), (4,1) and (4,0). Each file
-opens one outer side into `grid.exit_cell` (outside the grid). The robot must explore every
-cell, then park in `grid.launch_cell` (the cell inside the exit, facing out) and never go out.
-    challenge_exit_far.json    +x side of (4,1)  -> launch cell (4, 1), exit cell (5, 1)
-    challenge_exit_left.json   +y side of (1,2)  -> launch cell (1, 2), exit cell (1, 3)
-    challenge_exit_right.json  -y side of (4,0)  -> launch cell (4, 0), exit cell (4, -1)
-    challenge_exit_near.json   -y side of (1,0)  -> launch cell (1, 0), exit cell (1, -1):
-                               next to the start, passed early and left for last
-    challenge_offset.json      exit_far with the robot started 5 cm forward, 4 cm right and
-                               turned 5 deg left (a hand placement): the explorer's grid is
-                               then off the real cells by that much
+challenge_b.json (maze to the left), exit +y of the final cell (2, 2):
+
+    j=2   (0,2)-(1,2)   (2,2)-(3,2)-(4,2)            { } stairs (2, 0), along x
+            :     |       ^ exit      |              : curtain between (0, 2) and (0, 1)
+    j=1   (0,1) (1,1)-(2,1) (3,1)   (4,1)
+                  |         |       |
+    j=0   START-(1,0)={2,0}=(3,0)---(4,0)
+    terrain: (4,0) block field, (4,1) ramp, (3,2) slats, (1,1) ribbed mat
+    rooms: (0,1) survivor behind the curtain, (2,1) survivor, (3,1) object
+
+challenge_a_mirror.json   challenge_a mirrored (maze to the right of the start)
+challenge_b_offset.json   challenge_b with the robot placed 5 cm forward, 4 cm right and
+                          5 deg left of the start cell's centre and heading (by hand)
+
+`grid` in each file: cols, rows, cell_size, side, launch_cell (the final cell, where the
+robot must park facing the exit) and exit_cell; `features`: where the terrain, stairs,
+curtain and rooms are (cell indices, for tests and run logs).
 """
+import copy
 import json
 import math
 import os
 
+import numpy as np
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 CELL = 1.02
 COLS, ROWS = 5, 3
-TOP = 0.45                                # wall height
-T = 0.05                                  # wall thickness
-PASSAGES = {((0, 0), (1, 0)), ((1, 0), (2, 0)), ((2, 0), (3, 0)), ((3, 0), (4, 0)),
-            ((1, 0), (1, 1)), ((0, 1), (1, 1)), ((0, 1), (0, 2)), ((0, 2), (1, 2)),
-            ((1, 1), (2, 1)), ((2, 1), (2, 2)), ((2, 2), (3, 2)), ((3, 2), (4, 2)),
-            ((4, 2), (4, 1)), ((3, 2), (3, 1))}
-EXITS = {'far': ((4, 1), (1, 0)), 'left': ((1, 2), (0, 1)), 'right': ((4, 0), (0, -1)),
-         'near': ((1, 0), (0, -1))}
+TOP = 0.45                                 # wall height
+T = 0.05                                   # wall thickness
+H = CELL / 2
+
+
+def c(i, j):
+    return i * CELL, j * CELL
 
 
 def side_wall(cell, d):
     """Wall box on side d = (di, dj) of cell, overlapping its neighbours at the corners."""
-    cx, cy = cell[0] * CELL, cell[1] * CELL
-    h = CELL / 2
+    cx, cy = c(*cell)
     if d[0]:
-        x = cx + d[0] * h
-        return {'kind': 'wall', 'min': [x - T / 2, cy - h - T / 2, 0.0],
-                'max': [x + T / 2, cy + h + T / 2, TOP]}
-    y = cy + d[1] * h
-    return {'kind': 'wall', 'min': [cx - h - T / 2, y - T / 2, 0.0],
-            'max': [cx + h + T / 2, y + T / 2, TOP]}
+        x = cx + d[0] * H
+        return {'kind': 'wall', 'min': [x - T / 2, cy - H - T / 2, 0.0],
+                'max': [x + T / 2, cy + H + T / 2, TOP]}
+    y = cy + d[1] * H
+    return {'kind': 'wall', 'min': [cx - H - T / 2, y - T / 2, 0.0],
+            'max': [cx + H + T / 2, y + T / 2, TOP]}
 
 
-def walls(exit_side):
+def walls(passages, exit_side):
     out = []
     for i in range(COLS):
         for j in range(ROWS):
@@ -68,7 +80,7 @@ def walls(exit_side):
                 inside = 0 <= n[0] < COLS and 0 <= n[1] < ROWS
                 if inside and (d[0] < 0 or d[1] < 0):
                     continue                      # each interior side once
-                if inside and (((i, j), n) in PASSAGES or (n, (i, j)) in PASSAGES):
+                if inside and (((i, j), n) in passages or (n, (i, j)) in passages):
                     continue
                 if not inside and ((i, j), d) == exit_side:
                     continue
@@ -76,39 +88,215 @@ def walls(exit_side):
     return out
 
 
+def box(kind, x0, y0, x1, y1, z0, z1, **extra):
+    return dict({'kind': kind, 'min': [round(x0, 4), round(y0, 4), z0],
+                 'max': [round(x1, 4), round(y1, 4), z1]}, **extra)
+
+
+# ------------------------------------------------------------------ cell contents
+
+def slats(cell, along, pitch=0.2, width=0.04, height=0.06):
+    """Slats across the cell, running along x or y (the robot crosses them at right angles)."""
+    cx, cy = c(*cell)
+    out = []
+    for k in np.arange(-0.4, 0.41, pitch):
+        if along == 'y':
+            out.append(box('block', cx + k - width / 2, cy - 0.45, cx + k + width / 2,
+                           cy + 0.45, 0.0, height))
+        else:
+            out.append(box('block', cx - 0.45, cy + k - width / 2, cx + 0.45,
+                           cy + k + width / 2, 0.0, height))
+    return out
+
+
+def block_field(cell, rng, size=0.2, heights=(0.03, 0.05, 0.07, 0.09, 0.12)):
+    """Rubble: 0.2 m blocks of mixed heights over the cell (5 cm clear of the walls)."""
+    cx, cy = c(*cell)
+    out = []
+    for x0 in np.arange(cx - 0.45, cx + 0.45 - 1e-9, size):
+        for y0 in np.arange(cy - 0.45, cy + 0.45 - 1e-9, size):
+            h = float(rng.choice(heights))
+            out.append(box('block', x0, y0, min(x0 + size, cx + 0.45),
+                           min(y0 + size, cy + 0.45), 0.0, h))
+    return out
+
+
+def mat(cell, height=0.03):
+    cx, cy = c(*cell)
+    return [box('mat', cx - 0.45, cy - 0.45, cx + 0.45, cy + 0.45, 0.0, height)]
+
+
+def ramp(cell, axis, height=0.10):
+    """Up to `height` at the cell centre and down again, along x or y."""
+    cx, cy = c(*cell)
+    if axis == 'x':
+        return [box('wedge', cx - 0.45, cy - 0.45, cx, cy + 0.45, 0.0, height,
+                    high_xy=[round(cx, 4), round(cy, 4)]),
+                box('wedge', cx, cy - 0.45, cx + 0.45, cy + 0.45, 0.0, height,
+                    high_xy=[round(cx, 4), round(cy, 4)])]
+    return [box('wedge', cx - 0.45, cy - 0.45, cx + 0.45, cy, 0.0, height,
+                high_xy=[round(cx, 4), round(cy, 4)]),
+            box('wedge', cx - 0.45, cy, cx + 0.45, cy + 0.45, 0.0, height,
+                high_xy=[round(cx, 4), round(cy, 4)])]
+
+
+def stairs(cell, rise=0.11, treads=2, landing=0.15):
+    """Up `treads` steps along +x to a landing at the centre, and down again (a straight
+    cell on the route: the robot crosses it along x)."""
+    cx, cy = c(*cell)
+    top = rise * treads
+    return [box('steps', cx - 0.45, cy - 0.45, cx - landing / 2, cy + 0.45, 0.0, top,
+                down='-x', treads=treads),
+            box('tile', cx - landing / 2, cy - 0.45, cx + landing / 2, cy + 0.45, 0.0, top),
+            box('steps', cx + landing / 2, cy - 0.45, cx + 0.45, cy + 0.45, 0.0, top,
+                down='+x', treads=treads)]
+
+
+def curtain(a, b, gap=0.13, top=1.0):
+    """Hanging curtain on the side between cells a and b (gap at the bottom, mounted ~1 m
+    up); the robot walks through it from a to b."""
+    (ax, ay), (bx, by) = c(*a), c(*b)
+    mx, my = (ax + bx) / 2, (ay + by) / 2
+    if a[1] == b[1]:
+        return box('curtain', mx - 0.01, my - 0.49, mx + 0.01, my + 0.49, gap, top,
+                   travel=[float(np.sign(bx - ax)), 0.0])
+    return box('curtain', mx - 0.49, my - 0.01, mx + 0.49, my + 0.01, gap, top,
+               travel=[0.0, float(np.sign(by - ay))])
+
+
+def object_box(cell, back, size=0.3, height=0.5):
+    """A free-standing prop (toy kitchen, shop counter) 0.15 m off the room's back wall."""
+    cx, cy = c(*cell)
+    ox, oy = cx + back[0] * (H - 0.15 - size / 2), cy + back[1] * (H - 0.15 - size / 2)
+    return box('wall', ox - size / 2, oy - size / 2, ox + size / 2, oy + size / 2, 0.0, height)
+
+
+def cabinet(cell, back, depth=0.25, width=0.4, height=0.6):
+    """A cabinet against the room's back wall (hazard sticker on it)."""
+    cx, cy = c(*cell)
+    if back[0]:
+        x = cx + back[0] * (H - T / 2)
+        return box('wall', min(x, x - back[0] * depth), cy - width / 2,
+                   max(x, x - back[0] * depth), cy + width / 2, 0.0, height)
+    y = cy + back[1] * (H - T / 2)
+    return box('wall', cx - width / 2, min(y, y - back[1] * depth), cx + width / 2,
+               max(y, y - back[1] * depth), 0.0, height)
+
+
+# ------------------------------------------------------------------ arenas
+
 def out_line(exit_side):
-    """fake_maze_lite3's "out" test: 0.4 m past the opened outer side."""
+    """fake_maze_lite3's "out of the maze" test: 0.4 m past the opened outer side."""
     (i, j), d = exit_side
     if d[0]:
-        v = (i * CELL + d[0] * (CELL / 2 + 0.4))
-        return {'axis': 'x', 'above' if d[0] > 0 else 'below': round(v, 3)}
-    v = (j * CELL + d[1] * (CELL / 2 + 0.4))
-    return {'axis': 'y', 'above' if d[1] > 0 else 'below': round(v, 3)}
+        return {'axis': 'x', 'above' if d[0] > 0 else 'below': round(i * CELL + d[0] * (H + 0.4), 3)}
+    return {'axis': 'y', 'above' if d[1] > 0 else 'below': round(j * CELL + d[1] * (H + 0.4), 3)}
 
 
-def maze(name, start=(0.0, 0.0, 0.0)):
-    exit_side = EXITS[name]
+def arena(name, passages, exit_side, solids, features, seed_note):
     (i, j), d = exit_side
-    m = 2.5                                       # lab floor around the maze
-    return {'source': f'make_challenge_mazes.py: 5 x 3 challenge maze, exit {name}',
+    m = 2.5                                        # lab floor around the arena
+    return {'source': f'make_challenge_mazes.py: {name} (booklet-shaped 5 x 3 arena; '
+                      f'layout and heights made up{seed_note})',
             'units': 'm',
-            'room': [round(-CELL / 2 - m, 3), round((COLS - 0.5) * CELL + m, 3),
-                     round(-CELL / 2 - m, 3), round((ROWS - 0.5) * CELL + m, 3)],
-            'start': [round(v, 6) for v in start],
+            'room': [round(-H - m, 3), round((COLS - 0.5) * CELL + m, 3),
+                     round(-H - m, 3), round((ROWS - 0.5) * CELL + m, 3)],
+            'start': [0.0, 0.0, 0.0],
             'exit': out_line(exit_side),
-            'grid': {'cols': COLS, 'rows': ROWS, 'cell_size': CELL,
+            'grid': {'cols': COLS, 'rows': ROWS, 'cell_size': CELL, 'side': 'left',
                      'launch_cell': [i, j], 'exit_cell': [i + d[0], j + d[1]]},
-            'solids': walls(exit_side)}
+            'features': features,
+            'solids': walls(passages, exit_side) + solids}
+
+
+def challenge_a():
+    rng = np.random.default_rng(11)
+    passages = {((0, 0), (1, 0)), ((1, 0), (2, 0)), ((2, 0), (3, 0)), ((3, 0), (4, 0)),
+                ((4, 0), (4, 1)), ((3, 0), (3, 1)), ((1, 0), (1, 1)), ((1, 1), (0, 1)),
+                ((0, 1), (0, 2)), ((0, 2), (1, 2)), ((1, 1), (2, 1)), ((2, 1), (2, 2)),
+                ((2, 2), (3, 2)), ((3, 2), (4, 2))}
+    solids = (slats((2, 0), 'y') + block_field((4, 0), rng) + mat((2, 1))
+              + block_field((2, 2), rng, heights=(0.03, 0.05)) + stairs((3, 2))
+              + [curtain((1, 1), (2, 1)), object_box((3, 1), (0, 1)),
+                 cabinet((4, 1), (0, 1))])
+    features = {'terrain': [[2, 0], [4, 0], [2, 1], [2, 2]], 'stairs': [3, 2],
+                'curtain': [[1, 1], [2, 1]],
+                'rooms': {'survivor': [[0, 2], [1, 2]], 'object': [3, 1], 'hazard': [4, 1]}}
+    return arena('challenge_a', passages, ((4, 2), (1, 0)), solids, features, '')
+
+
+def challenge_b():
+    rng = np.random.default_rng(23)
+    passages = {((0, 0), (1, 0)), ((1, 0), (2, 0)), ((2, 0), (3, 0)), ((3, 0), (4, 0)),
+                ((4, 0), (4, 1)), ((4, 1), (4, 2)), ((4, 2), (3, 2)), ((3, 2), (2, 2)),
+                ((3, 0), (3, 1)), ((1, 0), (1, 1)), ((1, 1), (2, 1)), ((1, 1), (1, 2)),
+                ((1, 2), (0, 2)), ((0, 2), (0, 1))}
+    solids = (block_field((4, 0), rng) + ramp((4, 1), 'y') + slats((3, 2), 'y') + mat((1, 1))
+              + stairs((2, 0))
+              + [curtain((0, 2), (0, 1)), object_box((3, 1), (0, 1))])
+    features = {'terrain': [[4, 0], [4, 1], [3, 2], [1, 1]], 'stairs': [2, 0],
+                'curtain': [[0, 2], [0, 1]],
+                'rooms': {'survivor': [[0, 1], [2, 1]], 'object': [3, 1]}}
+    return arena('challenge_b', passages, ((2, 2), (0, 1)), solids, features, '')
+
+
+def mirrored(a):
+    """The other arena: everything reflected in the start heading (y -> -y)."""
+    m = copy.deepcopy(a)
+    m['source'] = a['source'].replace('challenge_a', 'challenge_a_mirror')
+    for s in m['solids']:
+        lo, hi = s['min'], s['max']
+        lo[1], hi[1] = -hi[1], -lo[1]
+        if 'high_xy' in s:
+            s['high_xy'][1] = -s['high_xy'][1]
+        if 'travel' in s:
+            s['travel'][1] = -s['travel'][1]
+    r = m['room']
+    m['room'] = [r[0], r[1], -r[3], -r[2]]
+    e = m['exit']
+    if e['axis'] == 'y':
+        k, v = next((k, v) for k, v in e.items() if k != 'axis')
+        m['exit'] = {'axis': 'y', 'below' if k == 'above' else 'above': -v}
+    g = m['grid']
+    g['side'] = 'right'
+    g['launch_cell'][1] = -g['launch_cell'][1]
+    g['exit_cell'][1] = -g['exit_cell'][1]
+
+    def flip(v):
+        if isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) for x in v):
+            return [v[0], -v[1]]
+        if isinstance(v, list):
+            return [flip(x) for x in v]
+        if isinstance(v, dict):
+            return {k: flip(x) for k, x in v.items()}
+        return v
+    m['features'] = flip(m['features'])
+    return m
+
+
+def offset(a, start):
+    m = copy.deepcopy(a)
+    m['source'] = a['source'].replace('challenge_b', 'challenge_b_offset') + \
+        '; robot placed off the start cell centre / heading'
+    m['start'] = [round(v, 6) for v in start]
+    return m
+
+
+def mazes():
+    a, b = challenge_a(), challenge_b()
+    return {'challenge_a.json': a, 'challenge_a_mirror.json': mirrored(a),
+            'challenge_b.json': b,
+            'challenge_b_offset.json': offset(b, (0.05, -0.04, math.radians(5.0)))}
 
 
 def main():
-    files = {f'challenge_exit_{n}.json': maze(n) for n in EXITS}
-    files['challenge_offset.json'] = maze('far', (0.05, -0.04, math.radians(5.0)))
-    for name, m in files.items():
+    for name, m in mazes().items():
         with open(os.path.join(HERE, name), 'w') as f:
             json.dump(m, f, indent=1)
             f.write('\n')
-        print(f'wrote {name}: {len(m["solids"])} walls, exit cell {m["grid"]["exit_cell"]}')
+        g = m['grid']
+        print(f'wrote {name}: {len(m["solids"])} solids, maze to the {g["side"]}, launch cell '
+              f'{g["launch_cell"]}, exit cell {g["exit_cell"]}')
 
 
 if __name__ == '__main__':

@@ -54,7 +54,14 @@ Arguments:
                    to the middle of the cell in front, square up, LIE DOWN and measure the
                    gap, stand up; 12-20 cm (curtain_gap_min/max) -> walk through
                    (curtain_inspect.py); false = off. curtain_inspect_mode:=pose = Pose-mode
-                   look instead of lying down
+                   look instead of lying down; :=yolo = stand 1 m in front and confirm with
+                   the YOLO curtain model (needs curtain_yolo:=true and a trained model)
+  curtain_yolo:=false  true = also run curtain_yolo (YOLO curtains in the colour camera, placed
+                   with depth; maze_nav/curtain_yolo.py), only during junction / dead-end looks
+                   and CURTAIN, never while EXPLORING. OFF until a model is trained
+                   (to_do.md ## curtains); then curtain_inspect_mode:=yolo can replace the
+                   lie-down check. One more colour-camera copy over the robot bridge.
+  curtain_yolo_model:=curtain_yolo.pt  bare name -> ~/.cache/team_perception/, or a path
   curtain_max_gap:=0.15  m: a gap at the bottom at least this big is a hurdle, not a curtain
                    (spec < 15 cm; the lab test curtain hangs ~20 cm up -> 0.25 to test with it)
   curtain_lab:=false  true = the lab test curtain (gap 17-25 cm, run 2026-11-21 10:48 missed it
@@ -77,6 +84,9 @@ Arguments:
                    every cell, then parks standing in the cell inside the exit, facing out
                    (AT_EXIT, /maze/launch_cell: where the drone launches). 0 = size unknown:
                    it leaves the maze and ends EXITED on open floor as before
+  maze_side:=auto  left / right: the maze lies to that side of the start heading (the two
+                   arenas are mirrored); auto = decided by the first cell off the start row
+                   the robot enters
   cell_size:=1.02  m, cell pitch of that grid (maze_explorer and scene_trigger; 1.0 for the
                    older sim mazes)
   max_speed:=0.15  band_low:=0.30  band_high:=0.45  floor_z:=nan (measure)
@@ -198,6 +208,7 @@ def depth_users(context):
     log = launch.logging.get_logger('maze_nav')
     flag = lambda n: LaunchConfiguration(n).perform(context).lower() in ('true', '1')  # noqa: E731
     perception, stairs, curtains = flag('perception'), flag('stairs'), flag('curtains')
+    curtain_yolo = curtains and flag('curtain_yolo')
     try:
         share = get_package_share_directory('team_perception')
     except Exception:                               # not built: navigate anyway
@@ -208,7 +219,7 @@ def depth_users(context):
         perception = False
     out = []
     depth, info = RAW_DEPTH, RAW_INFO
-    if share is not None and (perception or stairs or curtains):
+    if share is not None and (perception or stairs or curtains or curtain_yolo):
         out.append(Node(package='team_perception', executable='depth_relay', name='depth_relay',
                         output='both',
                         parameters=[{'in_depth_topic': RAW_DEPTH, 'in_info_topic': RAW_INFO,
@@ -257,6 +268,13 @@ def depth_users(context):
                                                      value_type=float),
                          'depth_topic': depth if depth == RELAY_DEPTH else '',
                          'depth_camera_info_topic': info if depth == RELAY_DEPTH else ''}]))
+    if curtain_yolo:
+        out.append(Node(
+            package='maze_nav', executable='curtain_yolo', name='curtain_yolo', output='both',
+            parameters=[{'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time'),
+                                                        value_type=bool),
+                         'model': LaunchConfiguration('curtain_yolo_model'),
+                         'depth_topic': depth, 'depth_info_topic': info}]))
     return out
 
 
@@ -282,6 +300,8 @@ DEATH_HINTS = {
     'curtain_detector': 'no curtain pass-through: new curtains stay walls (ones already found '
                         'stay cleared). If it died while driving, cmd_vel_bridge stops the '
                         'robot (idle).',
+    'curtain_yolo': 'YOLO curtain boxes only: curtain_inspect_mode:=yolo inspections reject '
+                    'every candidate from now on. Navigation carries on.',
     'scene_trigger': 'scene understanding only: no more /scene/trigger. Navigation carries on.',
     'room_scene': 'scene understanding only: no more room captures for VLM. Navigation carries on.',
     'task_reporter': 'task reporting only: no more /mission/task_completed. Navigation carries on.',
@@ -442,7 +462,13 @@ def generate_launch_description():
                               'measure the gap) before deciding'),
         DeclareLaunchArgument('curtain_inspect_mode', default_value='lie',
                               description='lie = lie down to measure the gap; pose = Pose-mode '
-                              'look (pitch forward, yaw both ways)'),
+                              'look (pitch forward, yaw both ways); yolo = YOLO curtain boxes '
+                              'standing 1 m in front (needs curtain_yolo:=true + a model)'),
+        DeclareLaunchArgument('curtain_yolo', default_value='false',
+                              description='true = run curtain_yolo (looks / CURTAIN only); off '
+                              'until a curtain model is trained (to_do.md)'),
+        DeclareLaunchArgument('curtain_yolo_model', default_value='curtain_yolo.pt',
+                              description='bare name -> ~/.cache/team_perception/, or a path'),
         DeclareLaunchArgument('curtain_gap_min', default_value='0.12',
                               description='m: smallest gap measured lying down that confirms a '
                               'curtain'),
@@ -502,6 +528,10 @@ def generate_launch_description():
                                           '0 = size unknown: leaves the maze (EXITED)'),
         DeclareLaunchArgument('maze_rows', default_value='3',
                               description='maze cells to the left of the start heading'),
+        DeclareLaunchArgument('maze_side', default_value='auto',
+                              description='left / right of the start heading (the two arenas '
+                                          'are mirrored) / auto: from the first cell off the '
+                                          'start row the robot enters'),
         DeclareLaunchArgument('cell_size', default_value='1.02',
                               description='m, maze cell pitch (maze_explorer and scene_trigger)'),
         DeclareLaunchArgument('start_scan', default_value='false',
@@ -636,6 +666,7 @@ def generate_launch_description():
                  'start_scan': ParameterValue(arg('start_scan'), value_type=bool),
                  'maze_cols': ParameterValue(arg('maze_cols'), value_type=int),
                  'maze_rows': ParameterValue(arg('maze_rows'), value_type=int),
+                 'maze_side': arg('maze_side'),
                  'cell_size': ParameterValue(arg('cell_size'), value_type=float),
                  'pre_turn_max_creep': ParameterValue(arg('pre_turn_max_creep'),
                                                       value_type=float),

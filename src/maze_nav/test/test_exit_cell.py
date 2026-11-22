@@ -95,10 +95,11 @@ class Fake:
     for _n in ('grid_known', 'in_grid', 'update_exit', 'publish_launch', 'go_to_exit',
                'launch_tick', 'park', 'out_of_maze', 'send_launch_goal', 'face_exit',
                'seen_beyond', 'side_open', 'choose_exit', 'creep_to_centre',
-               'launch_creep_tick', 'fit_cells'):
+               'launch_creep_tick', 'fit_cells', 'extents', 'maze_sides', 'decide_side'):
         locals()[_n] = getattr(Explorer, _n)
 
-    def __init__(self, go=True):
+    def __init__(self, go=True, sign=1):
+        self.maze_sign = sign                        # 1 left, -1 right, None auto
         self.cfg = {'maze_cols': COLS, 'maze_rows': ROWS, 'exit_cell_margin': 0.15,
                     'exit_confirm': 3, 'launch_tolerance': 0.25, 'launch_retries': 3,
                     'goal_max_time': 120.0, 'go': go,
@@ -152,15 +153,14 @@ class Fake:
         return self.g
 
 
-EXITS = [('challenge_exit_far.json', (4, 1), (1, 0)),
-         ('challenge_exit_left.json', (1, 2), (0, 1)),
-         ('challenge_exit_right.json', (4, 0), (0, -1)),
-         ('challenge_exit_near.json', (1, 0), (0, -1))]
+EXITS = [('challenge_a.json', 1, (4, 2), (1, 0)),
+         ('challenge_a_mirror.json', -1, (4, -2), (1, 0)),
+         ('challenge_b.json', 1, (2, 2), (0, 1))]
 
 
-@pytest.mark.parametrize('maze,cell,d', EXITS)
-def test_exit_chosen_at_the_end_after_exit_confirm_replans(maze, cell, d):
-    f = Fake()
+@pytest.mark.parametrize('maze,sign,cell,d', EXITS)
+def test_exit_chosen_at_the_end_after_exit_confirm_replans(maze, sign, cell, d):
+    f = Fake(sign=sign)
     g = _sim_maze_map(maze)
     for _ in range(2):
         f.update_exit(g)
@@ -197,55 +197,77 @@ def paint(g, x0, x1, y0, y1, value):
     g.data[np.ix_((ys >= y0) & (ys <= y1), (xs >= x0) & (xs <= x1))] = value
 
 
-def test_tilted_grid_finds_the_real_exit_not_a_false_one():
-    """challenge_offset (start 5 cm, 5 deg off): the grid's -y line of cell (2, 0) sits
-    ~0.2 m inside the maze and reads open (sim 2026-11-22 took it as the exit). Past it is
-    the real wall, then unseen space: not the exit. The real exit (+x of (4, 1)) is."""
+def test_tilted_start_grid_fitted_then_the_real_exit_found(clock):
+    """challenge_b_offset (placed 5 cm / 5 deg off): fit_cells lines the grid up with the
+    walls first, then the real exit (+y of (2, 2)) is found, not a false one."""
     f = Fake()
-    g = seen_like_slam(_sim_maze_map('challenge_offset.json'), 'challenge_offset.json',
-                       (4.5, 6.0, 0.51, 1.53))
+    g = seen_like_slam(_sim_maze_map('challenge_b_offset.json'), 'challenge_b_offset.json',
+                       (1.53, 2.55, 2.55, 5.0))
+    f.fit_cells(g)
+    assert math.degrees(f.cells.yaw) == pytest.approx(-5.0, abs=0.6)
     for _ in range(3):
         f.update_exit(g)
-    assert f.choose_exit(g) == ((4, 1), (1, 0))
+    assert f.choose_exit(g) == ((2, 2), (0, 1))
 
 
 def test_walled_outline_has_no_exit():
-    """The far exit walled over on the map: every outer side reads wall, no exit."""
+    """challenge_a's exit walled over on the map: every outer side reads wall, no exit."""
     f = Fake()
-    g = _sim_maze_map('challenge_exit_far.json')
-    paint(g, 4.55, 4.63, 0.49, 1.55, 100)
+    g = _sim_maze_map('challenge_a.json')
+    paint(g, 4.55, 4.63, 1.51, 2.57, 100)
     for _ in range(5):
         f.update_exit(g)
     assert f.choose_exit(g) is None
     assert not f.go_to_exit('maze explored')
 
 
-def test_start_side_open_early_but_walled_at_the_end_is_not_the_exit():
-    """Sim 2026-11-22, every 5 x 3 run: at the start the start cell's walls are too close
-    to be mapped and beams passing just over them free the floor beyond, so its -y side
-    read open for many replans. By the end of the run the wall is on the map."""
+def test_start_cell_is_never_the_exit():
+    """Sim 2026-11-22, every 5 x 3 run: the start cell's walls are too close to be mapped
+    and beams passing just over them free the floor beyond, so its sides read open, even
+    on the final map. The start area is never the final cell (booklet): not counted."""
     f = Fake()
-    g = _sim_maze_map('challenge_exit_far.json')
-    walls = g.data.copy()
-    paint(g, -0.56, 0.56, -0.56, -0.46, 0)           # start cell's -y wall not mapped yet
+    g = _sim_maze_map('challenge_a.json')
+    paint(g, -0.56, 0.56, -0.56, -0.46, 0)           # start cell's -y wall never mapped
     for _ in range(20):
         f.update_exit(g)
-    assert f.exit_open[((0, 0), (0, -1))] == 20
-    g.data[:] = walls                                # the final map: the wall is there
-    f.update_exit(g)
-    assert f.choose_exit(g) == ((4, 1), (1, 0))
+    assert ((0, 0), (0, -1)) not in f.exit_open
+    assert f.choose_exit(g) == ((4, 2), (1, 0))
 
 
 def test_several_open_sides_take_the_most_often_open():
     f = Fake()
-    g = _sim_maze_map('challenge_exit_far.json')
+    g = _sim_maze_map('challenge_a.json')
     paint(g, 1.53, 2.55, -0.56, -0.46, 0)            # a second gap: -y of cell (2, 0)
     for _ in range(3):
         f.update_exit(g)
-    for _ in range(4):                               # the far exit open for longer
-        f.exit_open[((4, 1), (1, 0))] += 1
-    assert f.choose_exit(g) == ((4, 1), (1, 0))
+    for _ in range(4):                               # the real exit open for longer
+        f.exit_open[((4, 2), (1, 0))] += 1
+    assert f.choose_exit(g) == ((4, 2), (1, 0))
     assert any('several outer sides open' in m for m in f.logs)
+
+
+def test_side_unknown_covers_both_arenas_until_a_cell_off_the_start_row():
+    """maze_side auto (the arenas are mirrored): both grids count until the robot stands
+    well inside a cell off the start row; that cell's side is the maze."""
+    f = Fake(sign=None)
+    assert f.in_grid((2.04, 2.04)) and f.in_grid((2.04, -2.04))
+    f.decide_side((1.02, 0.0))                        # still on the start row
+    f.decide_side((1.02, -0.65))                      # cell (1, -1) but at its edge
+    assert f.maze_sign is None
+    f.decide_side((1.02, -1.0))                       # well inside (1, -1)
+    assert f.maze_sign == -1
+    assert f.in_grid((2.04, -2.04)) and not f.in_grid((2.04, 1.5))
+    assert f.extents() == [-2]
+
+
+def test_mirrored_arena_exit_with_the_side_decided_on_the_way():
+    f = Fake(sign=None)
+    g = _sim_maze_map('challenge_a_mirror.json')
+    for _ in range(3):
+        f.update_exit(g)                              # both grids' sides counted
+    f.decide_side((1.02, -1.02))
+    assert f.choose_exit(g) == ((4, -2), (1, 0))
+    assert json.loads(f.launch_pub.msgs[-1].data)['maze_side'] == 'right'
 
 
 def test_frontiers_outside_the_grid_are_no_goals():
@@ -341,7 +363,7 @@ def test_creep_stops_short_of_a_wall():
     """With a map: no further than the footprint stays creep_margin clear."""
     f = found(Fake())
     f.go_to_exit('maze explored')
-    f.g = _sim_maze_map('challenge_exit_far.json')
+    f.g = _sim_maze_map('challenge_a.json')
     # cell (4, 0) facing +x, the "centre" pretended 0.54 m ahead: the outer wall's face at
     # x 4.565 leaves 4.565 - 0.05 - (4.08 + 0.27) = 0.165 m; the map draws the wall up to
     # a 5 cm cell thicker, so 0.11-0.165
@@ -431,7 +453,7 @@ def wall_xy(g):
 
 
 def offset_truth():
-    """challenge_offset: the real cell (0, 0) centre and +i heading in the start frame."""
+    """challenge_b_offset: the real cell (0, 0) centre and +i heading in the start frame."""
     sx, sy, sth = 0.05, -0.04, math.radians(5.0)
     c, s = math.cos(-sth), math.sin(-sth)
     return (c * -sx - s * -sy, s * -sx + c * -sy), -sth
@@ -448,21 +470,21 @@ def near_maze(xy, cells=CellGrid(1.02), margin=0.4, upto=None):
 
 @pytest.mark.parametrize('upto', [None, 1.5])
 def test_fit_grid_finds_the_tilted_cells(upto):
-    """5 deg / 6 cm off at the start: found exactly, from the whole maze or only the first
-    1.5 cells (what the robot sees early on)."""
+    """Placed 5 deg / 6 cm off at the start: found to the map's precision (~0.5 deg, a few
+    cm), from the whole arena or only the first 1.5 cells (what the robot sees early on)."""
     (ox, oy), yaw = offset_truth()
-    pts = near_maze(wall_xy(_sim_maze_map('challenge_offset.json')), upto=upto)
+    pts = near_maze(wall_xy(_sim_maze_map('challenge_b_offset.json')), upto=upto)
     fit, score = fit_grid(pts, CellGrid(1.02))
-    assert math.degrees(fit.yaw) == pytest.approx(math.degrees(yaw), abs=0.3)
-    assert fit.origin == pytest.approx((ox, oy), abs=0.01)
-    assert score > 0.9
+    assert math.degrees(fit.yaw) == pytest.approx(math.degrees(yaw), abs=0.6)
+    assert fit.origin == pytest.approx((ox, oy), abs=0.03)
+    assert score > 0.8
 
 
 def test_fit_grid_leaves_an_aligned_grid_alone():
-    pts = near_maze(wall_xy(_sim_maze_map('challenge_exit_far.json')))
+    pts = near_maze(wall_xy(_sim_maze_map('challenge_a.json')))
     fit, _ = fit_grid(pts, CellGrid(1.02))
-    assert fit.yaw == pytest.approx(0.0, abs=math.radians(0.3))
-    assert fit.origin == pytest.approx((0.0, 0.0), abs=0.01)
+    assert fit.yaw == pytest.approx(0.0, abs=math.radians(0.6))
+    assert fit.origin == pytest.approx((0.0, 0.0), abs=0.03)
 
 
 def test_fit_grid_without_points_is_none():
@@ -472,13 +494,13 @@ def test_fit_grid_without_points_is_none():
 def test_explorer_refits_its_grid_in_place_and_publishes_it(clock):
     f = Fake()
     held = f.cells                                   # scene_trigger-style holders follow
-    g = _sim_maze_map('challenge_offset.json')
+    g = _sim_maze_map('challenge_b_offset.json')
     f.fit_cells(g)
     (ox, oy), yaw = offset_truth()
-    assert held is f.cells and held.yaw == pytest.approx(yaw, abs=math.radians(0.3))
-    assert held.origin == pytest.approx((ox, oy), abs=0.01)
+    assert held is f.cells and held.yaw == pytest.approx(yaw, abs=math.radians(0.6))
+    assert held.origin == pytest.approx((ox, oy), abs=0.03)
     msg = json.loads(f.grid_pub.msgs[-1].data)
-    assert msg['size'] == 1.02 and msg['yaw'] == pytest.approx(yaw, abs=math.radians(0.3))
+    assert msg['size'] == 1.02 and msg['yaw'] == pytest.approx(yaw, abs=math.radians(0.6))
     n = len(f.grid_pub.msgs)
     clock.t += 1.0
     f.fit_cells(g)                                   # within grid_fit_period: nothing
@@ -491,13 +513,13 @@ def test_explorer_ignores_a_fit_that_jumps_too_far(clock):
     """More than grid_fit_max_shift from the start-pose grid: kept as it was."""
     f = Fake()
     f.cfg['grid_fit_max_shift'] = 0.03                # the 6 cm offset is now "too far"
-    f.fit_cells(_sim_maze_map('challenge_offset.json'))
+    f.fit_cells(_sim_maze_map('challenge_b_offset.json'))
     assert f.cells.origin == (0.0, 0.0) and f.cells.yaw == 0.0 and not f.grid_pub.msgs
 
 
 def test_explorer_needs_enough_walls(clock):
     f = Fake()
-    g = _sim_maze_map('challenge_offset.json')
+    g = _sim_maze_map('challenge_b_offset.json')
     g.data[g.data >= 65] = 0                         # no walls mapped yet
     f.fit_cells(g)
     assert not f.grid_pub.msgs

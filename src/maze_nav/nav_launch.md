@@ -86,9 +86,10 @@ send it again once the status reads `PAUSED`. After a start the explorer also wa
 wall it can't see (the lidar sees no wall within ~0.5 m beside the robot). The lidar sees
 nothing behind the robot, so the SLAM map ends at about the start pose and the robot can start
 a few cm off it (log: `Robot is out of bounds of the costmap`). The creep also moves it off the
-start cell's back wall. Then it scans (`SCANNING`, Nav2's `spin` behavior, always a real turn,
+start cell's back wall. Then it starts exploring. There is no start scan by default (D9,
+`src/bt.md`). With `start_scan:=true` it first scans (`SCANNING`, Nav2's `spin` behavior, always a real turn,
 never Pose mode): 30° left, 60° right, 30° left, which brings it back to the heading it had before the scan. A failed turn is
-logged and the run carries on. Then it starts exploring.
+logged and the run carries on.
 
 The robot may start with its body as little as **0.15 m from a wall**. Before moving, the
 explorer checks the footprint against the walls SLAM has already mapped: the creep is cut
@@ -109,7 +110,7 @@ relaunch without it.
 | `wait_for_stand` | `true` | Robot not standing at launch: ERROR every 5 s and wait (no gait, no map) until it is stood up by hand; never sends stand. `false` = don't wait |
 | `wait_for_start` | `true` | Hold still once everything is up until `/maze/start` is published. `false` = start right away (simulator) |
 | `creep_distance` | `0.10` | m driven straight ahead (no steering) after `/maze/start`, before the scan: onto the SLAM map and off the start cell's back wall so the scan turns clear it. `0` = off |
-| `stairs` | `true` | `stair_detector`: stairs seen within 1.5 m, with the robot in front of them (≤ 0.35 m off their centre line) → explorer stops Nav2 (`STAIRS`), the robot faces them square and stops 0.45 m (`base_link`) from the first riser (`AT_STAIRS`). Lined up, `cmd_vel_bridge` then switches to AI mode (manual → AI state → AI basic gait) and walks 1.2 m straight ahead at 0.1 m/s, measured on `/odom` (`cmd_vel_bridge` parameters `ai_walk_distance` / `ai_walk_speed`, `0` = no walk; it stops after 8 s without progress). Then it holds until `/maze/start`, which leaves AI mode. Every move is checked against walls on `/map`; blocked or over 45 s, it holds anyway as `AT_STAIRS: NOT LINED UP: <reason>` for a hand line-up. Follows `go` (`go:=false` = detect and log only). `false` = off, Nav2 drives over the stairs as floor |
+| `stairs` | `true` | `stair_detector`: stairs seen within 1.5 m, with the robot in front of them (≤ 0.35 m off their centre line) → explorer stops Nav2 (`STAIRS`), the robot faces them square and stops 0.45 m (`base_link`) from the first riser (`AT_STAIRS`). Lined up, `cmd_vel_bridge` then switches to AI mode (manual → AI state → AI basic gait) and walks 1.3 m straight ahead at 0.1 m/s, measured on `/odom` (`cmd_vel_bridge` parameters `ai_walk_distance` / `ai_walk_speed`, `0` = no walk; it stops after 8 s without progress). Then it leaves AI mode by itself (AI exit → manual → Move → gait → auto mode), publishes `DONE` on `/maze/ai_status`, and the explorer resumes. A walk that ended early holds until `/maze/start`. Stairs seen in a junction or dead-end look are queued first and checked after the scan. Every move is checked against walls on `/map`; blocked or over 45 s, it holds anyway as `AT_STAIRS: NOT LINED UP: <reason>` for a hand line-up. Follows `go` (`go:=false` = detect and log only). `false` = off, Nav2 drives over the stairs as floor |
 | `curtains` | `true` | `curtain_detector`: a wall in front with a gap at the bottom of 5–15 cm, wider than 0.7 m, is a curtain (seen ~0.6–2.6 m from base_link with `curtain_sensors:=both`): cleared from the wall scan and the explorer's map. Within 2 m, robot in front of it → explorer stops Nav2 (`CURTAIN`), the robot walks through its middle at 70 % of `max_speed` to 0.2 m past it, turns 20° left / 40° right / 20° left, and while the lidar or depth camera stays covered creeps 5 cm and turns again, alternately; still covered after 12 steps → `AT_CURTAIN`, hold until `/maze/start`. Follows `go`. `false` = off, curtains stay walls |
 | `curtain_sensors` | `both` | What sees the curtain's gap: `both` (lidar + depth camera, ~0.6–2.6 m from base_link), `lidar` (~1.2–2.6 m: its lowest beam only gets under the curtain from ~1 m) or `depth` (~0.7–2.0 m, ±40° only). Closer than ~0.55 m no sensor sees under a 5–15 cm gap. Depth comes through `depth_relay` (needs `team_perception` built); without it, lidar only |
 | `curtain_max_gap` | `0.15` | m: a gap at the bottom at least this big makes it a hurdle, not a curtain (to-do spec < 15 cm). The lab test curtain hangs ~20 cm up: `curtain_max_gap:=0.25` to test with it |
@@ -190,7 +191,7 @@ files in `~/.ros/log` always keep the full prefix.
 On a laptop on the same network with `ROS_DOMAIN_ID=4`:
 
 ```bash
-ros2 topic echo /maze/status          # STARTING → PAUSED → CREEPING → SCANNING → EXPLORING (⇄ TURNING: turn, or creep ahead and turn, before a goal near a wall, ⇄ LOOKING: look-around in a QR room, ⇄ FACING_QR: turn to an unreadable QR code until it is read, ⇄ JUNCTION: face each way on at a junction, left first, then visit any way ending in a dead end (cell before it, square up, 3 s) and take the rightmost other way, ⇄ DEAD_END: hold 0.5 s facing a dead end, then look at its left and right walls (1 s each), ⇄ STAIRS → AT_STAIRS: stair line-up, hold until /maze/start, ⇄ CURTAIN (→ AT_CURTAIN): walk through a curtain, hold until /maze/start if the sensors stay covered) → EXITED | NO_EXIT | STOPPED
+ros2 topic echo /maze/status          # STARTING → PAUSED → CREEPING (→ SCANNING with start_scan:=true) → EXPLORING (⇄ TURNING: turn, or creep ahead and turn, before a goal near a wall, ⇄ FACING_QR: turn to an unreadable QR code until it is read, ⇄ JUNCTION: for each unvisited way, left first, face it, move sideways onto the cell's centre line, hold 1 s; then check queued stairs / curtain candidates nearest first; then leave by the nearest unexplored way, ⇄ DEAD_END: hold 0.5 s facing a dead end, then look at its left and right walls (1 s each); with scene_understanding:=true wait for the AI verdict, ⇄ STAIRS → AT_STAIRS: stair line-up, AI walk 1.3 m, resumes by itself (holds until /maze/start if not lined up), ⇄ CURTAIN (→ AT_CURTAIN): walk through a curtain, hold until /maze/start if the sensors stay covered) → TO_EXIT → AT_EXIT | NO_EXIT | STOPPED | EXITED (maze_cols:=0)
 
 # RViz with the maze_nav layout (config/maze_nav.rviz). If the laptop has this workspace built:
 rviz2 -d $(ros2 pkg prefix maze_nav)/share/maze_nav/config/maze_nav.rviz
@@ -373,11 +374,33 @@ Watch ~/live_debug/current/events.log with the Monitor tool and wake on STUCK, S
 JUNCTION and MARK lines. On each one, read the matching snap_*.png / .json (and .jpg if there
 is one), say what the robot is doing and whether it looks wrong, and suggest a parameter change.
 Only run `ros2 param set` after I say yes. Never publish to /cmd_vel, /simple_cmd or /maze/start.
+If you are unsure about anything (what the robot is doing, whether it is wrong, which parameter
+or value would fix it, or whether a change is safe), stop and ask me instead of guessing. Say
+what you saw, what you are unsure about, and what would settle it (a MARK, a look at the robot,
+another snapshot). Don't suggest a change until it is cleared up.
 ```
 
 To have Claude check at a fixed interval instead: `/loop 30s review ~/live_debug/current/latest.*
-and report anything wrong`. Waking on events is cheaper, because Claude only runs when
-something happens.
+and report anything wrong; ask me if you are unsure about anything`. Waking on events is
+cheaper, because Claude only runs when something happens.
+
+**Asking instead of guessing.** A snapshot is a moment, not the whole story. The camera may have
+no frame (periodic snapshots never do), the map crop can hide what's behind the robot, and the
+person at the robot can see things the files don't show. So the prompt tells Claude to ask when
+it isn't sure, for example:
+
+- the snapshot and the status disagree (status says EXPLORING, but the robot hasn't moved);
+- it can't tell a real problem from expected behaviour (a long hold at a dead end, a slow turn
+  next to a wall);
+- more than one parameter could explain what it sees, or it doesn't know how far to change one;
+- a change would touch safety margins (footprint, clearances, timeouts) or rejects a value it
+  expected to be live;
+- the data is stale or missing (an old `latest.*`, no camera frame, `age_s` of several seconds).
+
+The person at the robot answers in the same session. Expect questions: a wrong change made from
+a guess costs a run, and a question costs a few seconds. To help it decide, flag moments
+yourself with `ros2 topic pub --once /troubleshoot/mark std_msgs/msg/String "data: 'what you
+saw'"`, which adds a snapshot and an `events.log` line it reads.
 
 Drop "after I say yes" only on a test rig. Either way, use the permission allowlist
 (`/fewer-permission-prompts` or `.claude/settings.json`) so Claude can run only `ros2 param
@@ -473,8 +496,10 @@ python3 src/maze_nav/test/fake_maze_lite3.py &      # example maze in a 10 x 8 m
 ros2 launch maze_nav maze_nav.launch.py bringup:=false udp_only:=false map_dir:=/tmp/maze_maps
 ```
 
-The simulator logs `OUT OF THE MAZE` once the robot is past the stairs, and `/maze/status` should end at `EXITED`.
-It publishes no depth image, so the stair line-up never runs there. `89` is for these
+The simulator logs `OUT OF THE MAZE` once the robot is past the stairs, and `/maze/status` should end at `EXITED`
+(the example maze has no `grid`, so `run_sim.sh` runs it with `maze_cols:=0`; the 5 x 3 `challenge_*` mazes end at `AT_EXIT`).
+It renders a depth camera since 2026-11-22, but at the default 640 px / 5 Hz odometry lags about 1.5 s and no map forms,
+so use `depth_rate:=0` for now (no stair detection). `89` is for these
 simulator runs; other test setups (and other Claude sessions) need their own domain: check it
 is empty first (`ros2 node list`), and stop only your own processes (no `pkill -f <name>`).
 Unit tests: `cd src/maze_nav && python3 -m pytest -q test`.

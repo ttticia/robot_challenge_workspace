@@ -460,6 +460,10 @@ class Explorer(Node):
         # exit_cell_margin m outside the grid. 0 = size unknown: old exit behaviour.
         p('maze_cols', 5)
         p('maze_rows', 3)
+        # The two arenas are mirrored (booklet D, F): the maze lies to the left of the start
+        # heading (+j) or to its right. auto = both until the robot stands in a cell off the
+        # start row, which shows the side.
+        p('maze_side', 'auto')
         p('exit_cell_margin', 0.15)
         p('exit_confirm', 3)
         p('launch_tolerance', 0.25)
@@ -630,7 +634,7 @@ class Explorer(Node):
                                       'start_back_depth', 'start_back_width',
                                       'stairs_approach',
                                       'block_objects', 'cell_size', 'object_border',
-                                      'maze_cols', 'maze_rows', 'exit_cell_margin',
+                                      'maze_cols', 'maze_rows', 'maze_side', 'exit_cell_margin',
                                       'exit_confirm', 'launch_tolerance', 'launch_retries',
                                       'launch_yaw_tolerance', 'grid_fit', 'grid_fit_period',
                                       'grid_fit_max_yaw', 'grid_fit_max_shift',
@@ -782,6 +786,7 @@ class Explorer(Node):
         self.start_pose = None       # ((x, y), yaw) in map at /maze/start: back_to_start()
         self.cells = CellGrid(float(self.cfg['cell_size']))
         self.cells0 = CellGrid(self.cells.size)   # from the start pose: fit_cells' limits
+        self.maze_sign = {'left': 1, 'right': -1}.get(str(self.cfg['maze_side']).lower())
         self.grid_fit_at = -1e9
         self.object_seen = {}        # cell -> maps in a row with an object in it
         self.blocked_cells = {}      # cell -> (extent, (x, y)): objects, never entered
@@ -1016,7 +1021,8 @@ class Explorer(Node):
         hold = CurtainHold(
             hold_new=self.state in CURTAIN_STATES and self.inspecting and
             (self.paused_junction is not None or self.junction_pending()),
-            ids=[d.curtain_id for d in self.defers if not d.released])
+            ids=[d.curtain_id for d in self.defers
+                 if not d.released and d.curtain_id is not None])
         if self.hold is None or hold.to_json() != self.hold.to_json():
             self.hold = hold
             self.hold_pub.publish(String(data=hold.to_json()))
@@ -1084,9 +1090,13 @@ class Explorer(Node):
         return ((t.x + math.cos(th) * xy[0] - math.sin(th) * xy[1],
                  t.y + math.sin(th) * xy[0] + math.cos(th) * xy[1]), float(heading) + th)
 
+    def deferred_candidates(self):
+        """Candidates held back until their junction's other ways are explored."""
+        return [c for d in self.defers for c in (d.candidates or [])]
+
     def queue_candidate(self, kind, cid, target, heading, what):
         if cid is not None and any(c['kind'] == kind and c['id'] == cid
-                                   for c in self.cand_queue):
+                                   for c in self.cand_queue + self.deferred_candidates()):
             return
         self.cand_queue.append({'kind': kind, 'id': cid, 'target': target,
                                 'heading': heading})
@@ -1214,6 +1224,8 @@ class Explorer(Node):
         (done_confirm replans) -> release it and go to the spot in front of it. Returns the
         frontiers to choose from, or None to wait this replan."""
         def gone(d):
+            if d.candidates is not None:             # possible curtains: until released
+                return False
             c = self.curtain_by_id(d.curtain_id)
             return c is None or bool(c.passed)
         before = len(self.defers)
@@ -1224,8 +1236,10 @@ class Explorer(Node):
         if not self.defers:
             return frontiers
         d = self.defers[-1]
-        cur = self.curtain_by_id(d.curtain_id)
-        name = f'curtain {d.curtain_id}'
+        cand = d.candidates is not None
+        cur = None if cand else self.curtain_by_id(d.curtain_id)
+        name = (f'possible curtain(s) {[c["id"] for c in d.candidates]}' if cand
+                else f'curtain {d.curtain_id}')
         if not d.released:
             key = (id(self.map), name)
             if self.branch_cache is None or self.branch_cache[0] != key:
@@ -1244,6 +1258,14 @@ class Explorer(Node):
                                        f'{self.cfg["done_confirm"]}); checking again')
                 return None
             d.released = True
+            if cand:                                 # back into the queue: lie-down check
+                self.defers.remove(d)
+                self.branch_cache = None
+                self.cand_queue.extend(d.candidates)
+                self.get_logger().info(f'{name}: junction {list(d.junction_cell)}\'s other '
+                                       'ways explored; going back to check it')
+                self.start_queue(f'{name} at junction {list(d.junction_cell)}')
+                return None
             self.get_logger().info(f'{name}: junction {list(d.junction_cell)}\'s other ways '
                                    'explored; going back to '
                                    + 'cross it')
@@ -1832,6 +1854,7 @@ class Explorer(Node):
         self.keep_out_of_dead_ends()
         grid = self.grid_now()
         self.fit_cells(grid)
+        self.decide_side(xy)
         self.update_exit(grid)
         if time.monotonic() - self.started > self.cfg['max_runtime']:
             return self.finish('STOPPED', f'max_runtime {self.cfg["max_runtime"]:.0f} s')
@@ -2267,7 +2290,8 @@ class Explorer(Node):
 
     def scene_candidate(self, cell):
         """A queued stairs / curtain candidate from scene understanding is in cell."""
-        return any(c.get('cell') == cell for c in self.cand_queue)
+        return any(c.get('cell') == cell
+                   for c in self.cand_queue + self.deferred_candidates())
 
     def no_go_cell(self, cell):
         """No goal into cell: a blacklisted dead end, one waiting for scene understanding,
@@ -2891,21 +2915,25 @@ class Explorer(Node):
         from there. None -> drive one cell into the nearest way that leads to an unexplored
         cell and isn't a dead end, and explore on. Each way is traced on the map
         (scene_cells.trace_way): one that ends in a dead end is blacklisted, not visited.
+        Possible curtains queued on one of the junction's ways (user 2026-11-22): while
+        another way is open, they're held back (a Deferral with candidates) and that way is
+        explored fully first (it most likely leads to a room); then they're checked.
         Returns the list of actions for after_junction_tick."""
         cells, cell = rec.get('cells'), rec['cell']
         for st in (self.junction or {}).get('steps') or []:
             if st.get('scan') and st['cell'] in self.blocked_cells:
                 self.mark_explored(st['cell'], 'object seen in the junction scan')
-        if self.start_queue(f'junction {list(cell)} scanned'):
-            return []
-        if cells is None:
-            self.get_logger().warn('/scene/junction has no grid (old scene_trigger?): '
-                                   'exploring on')
-            return []
-        grid = self.grid_now()
+        grid = self.grid_now() if cells is not None else None
         if grid is None:
+            if self.start_queue(f'junction {list(cell)} scanned'):
+                return []
+            if cells is None:
+                self.get_logger().warn('/scene/junction has no grid (old scene_trigger?): '
+                                       'exploring on')
             return []
         hw = rec['half_width']
+        curtains = self.curtains_at_junction(cells, cell)
+        cdirs = {d for _, d in curtains}
 
         def openings(c, d):
             return opening(grid, cells, c, d, half_width=hw)
@@ -2925,6 +2953,8 @@ class Explorer(Node):
                 why = 'back to the start cell'
             elif d in (rec.get('skip_dirs') or []):
                 why = 'a held curtain'
+            elif d in cdirs:
+                why = 'a possible curtain (checked after the other ways)'
             elif self.cells.cell(centre) in self.visited:
                 why = 'visited already'
             elif self.cells.cell(centre) in self.explored_cells | set(self.blocked_cells):
@@ -2943,16 +2973,46 @@ class Explorer(Node):
                 self.get_logger().info(f'junction {list(cell)} way {name}: {why}; not taken')
                 continue
             dist = math.hypot(centre[0] - xy[0], centre[1] - xy[1])
-            ways.append((dist, abs(wrap(heading - yaw)), name, nxt, centre, heading))
+            ways.append((dist, abs(wrap(heading - yaw)), name, nxt, centre, heading, d))
+        if curtains and ways:
+            held = [c for c, _ in curtains]
+            for c in held:
+                self.cand_queue.remove(c)
+            others = [w[6] for w in ways]
+            self.defers.append(Deferral(None, tuple(cell), cells, others, candidates=held))
+            self.branch_cache = None
+            self.get_logger().info(
+                f'junction {list(cell)}: possible curtain(s) {[c["id"] for c in held]} on '
+                f'way(s) {sorted(cdirs)}; exploring the other way(s) {others} fully first '
+                '(likely a room), then checking them')
+        if self.start_queue(f'junction {list(cell)} scanned'):
+            return []
         if not ways:
             self.get_logger().info(f'junction {list(cell)}: no unexplored way to take; '
                                    'exploring on')
             return []
-        _, _, name, nxt, centre, heading = min(ways)
+        _, _, name, nxt, centre, heading, _ = min(ways)
         self.get_logger().info(f'junction {list(cell)}: leaving by the nearest unexplored way '
                                f'{name} (cell {list(nxt)})')
         return [{'do': 'goto', 'xy': centre, 'yaw': heading, 'group': 'leave',
                  'name': f'nearest unexplored way {name}: to cell {list(nxt)}'}]
+
+    def curtains_at_junction(self, cells, cell, reach=1.6, max_off=math.radians(35)):
+        """Queued possible curtains on one of junction `cell`'s ways: within `reach` cells
+        of its centre and within `max_off` of a way's heading. [(candidate, (di, dj))]."""
+        cx, cy = cells.centre(cell)
+        out = []
+        for c in self.cand_queue:
+            if c['kind'] != 'curtain':
+                continue
+            tx, ty = c['target']
+            if math.hypot(tx - cx, ty - cy) > reach * cells.size:
+                continue
+            b = math.atan2(ty - cy, tx - cx)
+            d = min(DIRECTIONS.values(), key=lambda d: abs(wrap(cells.heading(d) - b)))
+            if abs(wrap(cells.heading(d) - b)) <= max_off:
+                out.append((c, d))
+        return out
 
     def after_junction_tick(self, j, now):
         """Run the junction follow-up's first action: goto (Nav2), align (spin), hold, look
@@ -3389,10 +3449,41 @@ class Explorer(Node):
     def grid_known(self):
         return self.cfg['maze_cols'] > 0 and self.cfg['maze_rows'] > 0
 
+    def extents(self):
+        """j0 of the maze grid: [0] to the left, [1 - rows] to the right, both while the
+        side isn't known yet (maze_side auto)."""
+        right = 1 - self.cfg['maze_rows']
+        return [0] if self.maze_sign == 1 else [right] if self.maze_sign == -1 else [0, right]
+
     def in_grid(self, xy, margin=0.0):
         """xy inside the maze_cols x maze_rows grid (+ margin m); True with the size unknown."""
-        return exit_cell(self.cells, xy, self.cfg['maze_cols'], self.cfg['maze_rows'],
-                         margin) is None
+        return any(exit_cell(self.cells, xy, self.cfg['maze_cols'], self.cfg['maze_rows'],
+                             margin, j0) is None for j0 in self.extents())
+
+    def maze_sides(self):
+        """Every outer side of the grid that could be the exit (both candidate grids while
+        the side is unknown). Not the start cell's: the start area is never the final cell
+        (booklet), and its walls are the ones the robot never maps (too close at the start;
+        beams passing just over them free the floor beyond: sim 2026-11-22, every run)."""
+        out = []
+        for j0 in self.extents():
+            out += [s_ for s_ in boundary_sides(self.cfg['maze_cols'], self.cfg['maze_rows'],
+                                                j0) if s_ not in out and s_[0] != (0, 0)]
+        return out
+
+    def decide_side(self, xy):
+        """maze_side auto: the first cell off the start row the robot stands well inside
+        (>= 0.2 m from its edges) shows which side of the start the maze lies on."""
+        if self.maze_sign is not None or not self.grid_known():
+            return
+        cell = self.cells.cell(xy)
+        if cell[1] == 0 or abs(cell[1]) >= self.cfg['maze_rows'] or \
+                not 0 <= cell[0] < self.cfg['maze_cols'] or \
+                self.cells.depth_inside(xy, cell) < 0.2:
+            return
+        self.maze_sign = 1 if cell[1] > 0 else -1
+        self.get_logger().info(f'maze lies to the {"left" if cell[1] > 0 else "right"} of '
+                               f'the start (robot in cell {list(cell)})')
 
     def fit_cells(self, grid):
         """Refit the cell grid to the walls on the map (every grid_fit_period s); changes
@@ -3414,8 +3505,9 @@ class Explorer(Node):
         u = (c0 * d[:, 0] + s0 * d[:, 1]) / self.cells.size
         v = (-s0 * d[:, 0] + c0 * d[:, 1]) / self.cells.size
         m = 0.4 / self.cells.size                   # walls on the outline + a little
+        j_lo, j_hi = min(self.extents()), max(self.extents()) + cfg['maze_rows'] - 1
         near = (u >= -0.5 - m) & (u <= cfg['maze_cols'] - 0.5 + m) & \
-            (v >= -0.5 - m) & (v <= cfg['maze_rows'] - 0.5 + m)
+            (v >= j_lo - 0.5 - m) & (v <= j_hi + 0.5 + m)
         if near.sum() < cfg['grid_fit_min_points']:
             return
         res = fit_grid(xy[near], self.cells0, max_yaw=cfg['grid_fit_max_yaw'])
@@ -3453,7 +3545,7 @@ class Explorer(Node):
         [0, 0]'s side as the exit after 3 replans)."""
         if self.exit_side is not None or not self.grid_known() or grid is None:
             return
-        for side in boundary_sides(self.cfg['maze_cols'], self.cfg['maze_rows']):
+        for side in self.maze_sides():
             if self.side_open(grid, side):
                 self.exit_open[side] = self.exit_open.get(side, 0) + 1
 
@@ -3464,7 +3556,7 @@ class Explorer(Node):
             return self.exit_side
         if not self.grid_known() or grid is None:
             return None
-        cands = [side for side in boundary_sides(self.cfg['maze_cols'], self.cfg['maze_rows'])
+        cands = [side for side in self.maze_sides()
                  if self.exit_open.get(side, 0) >= self.cfg['exit_confirm']
                  and self.side_open(grid, side)]
         if not cands:
@@ -3482,11 +3574,11 @@ class Explorer(Node):
                                f'({self.exit_open[side]} replans); launch cell {list(cell)}')
         return side
 
-    def side_open(self, grid, side, shifts=(0.0, 0.15, -0.15, 0.3, -0.3)):
-        """The outer side reads open, with free floor seen past it, at its middle or slid up
-        to 0.3 m along it. The grid comes from the start pose: 5 deg off at the start puts
-        the far end of a 5-cell maze ~0.4 m off the real cells (sim 2026-11-22), so the real
-        opening is no longer under the side's middle."""
+    def side_open(self, grid, side, shifts=(0.0, 0.12, -0.12)):
+        """The outer side reads open, with free floor seen past it, at its middle or slid
+        0.12 m along it (what fit_cells leaves of a misplaced start). Not further: the
+        0.35 m strip would reach past the cell's corner, where an unmapped wall stretch
+        reads open (sim 2026-11-22: 0.3 m slides found the start cell's)."""
         cell, d = side
         c, s = math.cos(self.cells.yaw), math.sin(self.cells.yaw)
         along = (c * -d[1] - s * d[0], s * -d[1] + c * d[0])   # map direction along the side
@@ -3518,7 +3610,8 @@ class Explorer(Node):
         msg = {'state': state, 'launch_cell': list(cell),
                'exit_cell': [cell[0] + d[0], cell[1] + d[1]], 'exit_direction': list(d),
                'centre': [round(cx, 3), round(cy, 3)],
-               'heading': round(self.cells.heading(d), 3), 'frame': 'map'}
+               'heading': round(self.cells.heading(d), 3), 'frame': 'map',
+               'maze_side': {1: 'left', -1: 'right'}.get(self.maze_sign, 'unknown')}
         if xy is not None:
             msg['robot'] = [round(xy[0], 3), round(xy[1], 3)]
         self.launch_pub.publish(String(data=json.dumps(msg)))

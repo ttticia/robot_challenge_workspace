@@ -25,9 +25,16 @@ source install/setup.bash
 ## 2. Unit tests
 
 ```bash
-(cd src/maze_nav && python3 -m pytest -q test)
-(cd src/team_perception && python3 -m pytest -q test)
+source /opt/ros/humble/setup.bash           # tests import rclpy: without it they fail to collect
+(cd src/maze_nav && PYTHONPATH=$PWD:$PYTHONPATH python3 -m pytest -q test)
+(cd src/scene_understanding && PYTHONPATH=$PWD:$PYTHONPATH python3 -m pytest -q test)
+(cd src/team_perception && PYTHONPATH=$PWD:$PYTHONPATH python3 -m pytest -q test)
 ```
+
+`PYTHONPATH=$PWD` makes the tests use the source tree, not an older installed `maze_nav`
+(otherwise new modules fail with `No module named maze_nav.<module>`). The full maze_nav suite
+takes about 5 minutes. Known failure (2026-11-22): `team_perception`
+`test_qr_unread.py::test_unreadable_code_is_reported_as_unread`, predates the 2026-11-22 work.
 
 Pure logic lives in ROS-free modules (`core.py`, `stairs.py`, `curtains.py`, `stair_check.py`,
 `curtain_branch.py`, `scene_cells.py`, `*_utils.py`). Put new logic there and test it there;

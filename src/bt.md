@@ -64,7 +64,7 @@ flowchart TD
     room --> explore
 
     %% ---------- curtains ----------
-    qType -- curtain --> cInspect["CURTAIN inspection: drive 0.5 m before line, square up,<br/>LIE DOWN, measure gap 3 s, stand up"]
+    qType -- curtain --> cInspect["CURTAIN inspection: drive 0.5 m before line, square up,<br/>LIE DOWN, measure gap 3 s, stand up<br/>(once the YOLO model is trained: curtain_inspect_mode:=yolo,<br/>stand 1 m in front, 3 s of YOLO boxes instead)"]
     cInspect --> cGap{"gap 12–20 cm over ≥ half width?"}
     cGap -- "no: drop candidate" --> qNext
     cGap -- "yes: confirmed" --> cThrough["CURTAIN: face middle, walk through at 70 % speed to 0.2 m past"]
@@ -96,6 +96,7 @@ Also active while `EXPLORING`, not drawn as branches:
 - **FACING_QR**: a QR code located but not read → turn to face it and hold while `qr_scanner` decodes (perception on).
 - ~~LOOKING~~: removed (D11).
 - **Nav2 recovery** (`config/maze_bt.xml`): replan 1 Hz → follow path; recoveries clear costmaps, spin 90°, wait 3 s (no BackUp; the bridge never reverses).
+- **curtain_yolo** (off: `curtain_yolo:=false`, no trained model yet): YOLO curtain boxes in junction / dead-end looks and CURTAIN only, never while EXPLORING; meant to replace the lie-down verification once trained (to_do.md ## curtains).
 - **cmd_vel_bridge watchdog**: clamps 0.25 m/s / 0.5 rad/s, never backwards; stops on stale lidar/odom or an odom jump.
 
 ## Decisions (2026-11-21) and the code changes made for them

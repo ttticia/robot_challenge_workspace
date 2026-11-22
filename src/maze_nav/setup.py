@@ -28,6 +28,7 @@ setup(
             'cpu_monitor = maze_nav.cpu_monitor:main',
             'stair_detector = maze_nav.stair_detector:main',
             'curtain_detector = maze_nav.curtain_detector:main',
+            'curtain_yolo = maze_nav.curtain_yolo:main',
             'lidar_relay = maze_nav.lidar_relay:main',
             'telemetry_snapshot = touble_shooting.telemetry_snapshot:main',
             'trigger_scene = touble_shooting.trigger_scene:main',

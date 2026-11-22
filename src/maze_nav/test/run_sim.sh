@@ -24,11 +24,12 @@ while [ "$WS" != / ] && [ ! -f "$WS/install/setup.bash" ]; do WS=$(dirname "$WS"
 [ -f "$MAZE" ] || MAZE="$PKG/test/$MAZE"
 [ -f "$MAZE" ] || { echo "no maze file: $MAZE"; exit 2; }
 MAZE=$(realpath "$MAZE")
-read -r COLS ROWS CELL LAUNCH_CELL < <(python3 -c '
+read -r COLS ROWS CELL SIDE LAUNCH_CELL < <(python3 -c '
 import json, sys
 g = json.load(open(sys.argv[1])).get("grid", {"cols": 0, "rows": 0, "cell_size": 1.0})
 c = g.get("launch_cell")
-print(g["cols"], g["rows"], g["cell_size"], f"[{c[0]},{c[1]}]" if c else "-")' "$MAZE")
+print(g["cols"], g["rows"], g["cell_size"], g.get("side", "auto"),
+      f"[{c[0]},{c[1]}]" if c else "-")' "$MAZE")
 LAUNCH_CELL=${LAUNCH_CELL//,/, }
 echo "maze $(basename "$MAZE"): grid ${COLS} x ${ROWS} of ${CELL} m, expected launch cell ${LAUNCH_CELL}, domain ${DOMAIN}"
 
@@ -54,7 +55,7 @@ sleep 3
 # and set off curtain inspections (2026-11-21).
 setsid ros2 launch maze_nav maze_nav.launch.py bringup:=false udp_only:=true floor_z:=-0.35 \
     map_dir:="$LOG/maps" wait_for_start:=false perception:=false \
-    maze_cols:="$COLS" maze_rows:="$ROWS" cell_size:="$CELL" > "$LOG/launch.log" 2>&1 &
+    maze_cols:="$COLS" maze_rows:="$ROWS" cell_size:="$CELL" maze_side:=auto > "$LOG/launch.log" 2>&1 &
 LAUNCH=$!
 
 end=$((SECONDS + TIMEOUT))
