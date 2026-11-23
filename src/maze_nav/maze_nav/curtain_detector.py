@@ -71,7 +71,10 @@ with curtains:=true (default).
      steering at the curtain's middle, until base_link is `through_distance` (0.20 m) past
      the curtain line (THROUGH once the front reaches the curtain).
      WIGGLING: turn `wiggle_angle` (20 deg) left, twice that right, then back left again,
-     each side cut to what the walls on /map allow (curtain cells count as free).
+     each side cut to what the walls on /map allow (curtain cells count as free). Not with a
+     rolling pin (/maze/terrain 'pin', remembered in odom) from under the body to `pin_near`
+     (10 cm) past its front (user 2026-11-23: turning with feet against or over the bar
+     fails): CREEPING straight instead, every unblock step; no room to creep -> CHECKING.
      CHECKING: hold still `settle_time` s, then look at fresh sensor data. The lidar is
      blocked if > 30 % of its returns are within 0.5 m (body left out) or its far returns
      drop below 40 % of normal. The depth camera (depth_topic, '' = off) is blocked if
@@ -200,7 +203,7 @@ class CurtainDetector(Node):
         # still crossed wherever they are. [] = any time (the old behaviour).
         p('look_states', ['JUNCTION', 'DEAD_END'])
         p('band_low', 0.30)                    # m above the floor: wall band (= wall_scan)
-        p('band_high', 0.45)
+        p('band_high', 0.50)
         p('diag_period', 3.0)                  # s between near-miss log lines (0 = off)
         # Inspection (user 2026-11-20, curtain_inspect.py): a wall ahead with a suitable gap
         # that isn't a confirmed curtain -> stop, square up at inspect_distance, look in Pose
@@ -291,6 +294,14 @@ class CurtainDetector(Node):
         p('body_front', 0.32)
         p('body_half_width', 0.28)
         p('standing_height', 0.35)             # floor fallback: base_link z - this at start
+        # Rolling pin by the feet (user 2026-11-23): the ~18 cm bar across the middle of the
+        # cell after a curtain is ~0.48 m past the curtain line, so THROUGH (0.20 m past)
+        # ends with the front feet a few cm short of it, and turning on the spot with feet
+        # against or over the bar is what fails on the robot. Pins from stair_detector's
+        # /maze/terrain ('pin', stairs_lidar.find_pin), kept in odom. '' = off.
+        p('terrain_topic', '/maze/terrain')
+        p('pin_near', 0.10)                    # m past the body front: no wiggle, creep straight
+        p('pin_memory', 600.0)                 # s a pin is kept after it was last seen
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self.cfg = {n: g(n) for n in (
             'drive', 'trigger_distance', 'trigger_max_offset', 'trigger_max_bearing',
@@ -380,6 +391,10 @@ class CurtainDetector(Node):
         # along by base_link's height while standing) when none is measured right now.
         self.floor_est, self.floor_est_at = None, -1e9
         self.create_subscription(String, '/maze/floor_est', self.on_floor_est, 10)
+        self.pins = []                  # [x, y, normal yaw, monotonic s last seen] in odom
+        self.pin_near_m, self.pin_memory = float(g('pin_near')), float(g('pin_memory'))
+        if g('terrain_topic'):
+            self.create_subscription(String, g('terrain_topic'), self.on_terrain, 10)
         if self.status_topic:
             self.create_subscription(String, self.status_topic, self.on_explorer, LATCHED)
             self.create_subscription(PoseStamped, '/maze/goal', self.on_goal, LATCHED)
@@ -492,6 +507,45 @@ class CurtainDetector(Node):
         except (ValueError, KeyError, TypeError):
             self.get_logger().warn(f'bad /maze/floor_est {msg.data[:80]!r}',
                                    throttle_duration_sec=30.0)
+
+    def on_terrain(self, msg):
+        """Remember /maze/terrain's rolling pin (odom). The same bar (within 0.25 m) is
+        updated, not added again."""
+        try:
+            pin = json.loads(msg.data).get('pin')
+        except (ValueError, AttributeError):
+            return
+        if not isinstance(pin, dict) or 'x' not in pin or 'y' not in pin:
+            return
+        now = time.monotonic()
+        x, y, n = float(pin['x']), float(pin['y']), float(pin.get('yaw', 0.0))
+        self.pins = [q for q in self.pins if now - q[3] <= self.pin_memory and
+                     math.hypot(q[0] - x, q[1] - y) >= 0.25]
+        self.pins.append([x, y, n, now])
+
+    def pin_by_body(self, xy, yaw):
+        """m from the body front to a remembered rolling pin along the heading (negative =
+        under the body), if one lies from the rear end to pin_near past the front; else
+        None. The bar is a line through its point (normal from find_pin, +-10 deg), crossed
+        within half a cell of that point."""
+        now = time.monotonic()
+        back, front = self.box[0], self.box[1]
+        hx, hy = math.cos(yaw), math.sin(yaw)
+        best = None
+        for x, y, n, seen in self.pins:
+            if now - seen > self.pin_memory:
+                continue
+            nx, ny = math.cos(n), math.sin(n)
+            dot = hx * nx + hy * ny
+            if abs(dot) < 0.3:
+                continue                # walking along the bar, not across it
+            t = ((x - xy[0]) * nx + (y - xy[1]) * ny) / dot
+            cx, cy = xy[0] + t * hx, xy[1] + t * hy
+            if math.hypot(cx - x, cy - y) > 0.6:
+                continue
+            if -back <= t <= front + self.pin_near_m and (best is None or t < best):
+                best = t
+        return None if best is None else best - front
 
     def floor_here(self, max_age):
         """Floor height for the curtain: the floor under the feet if younger than max_age s,
@@ -722,7 +776,8 @@ class CurtainDetector(Node):
                     self.note_line_floor(pts)       # closer up: a better view of the line
                 cells = []
                 found_odom = [] if pts is None else detect_curtains(
-                    pts, origin[:2], yaw, floor, self.params, cells_out=cells)
+                    pts, origin[:2], yaw, floor, self.params, cells_out=cells,
+                    tall_check=bool(self.history))    # lidar in it: sees above the walls
                 found = [c.transformed(*t) for c in found_odom]     # odom -> self.cframe
                 c0, s0 = math.cos(t[2]), math.sin(t[2])
                 fxy = (t[0] + c0 * xy[0] - s0 * xy[1], t[1] + s0 * xy[0] + c0 * xy[1])
@@ -1270,6 +1325,11 @@ class CurtainDetector(Node):
         return targets, note
 
     def begin_wiggle(self, xy, yaw, why):
+        pin = self.pin_by_body(xy, yaw)
+        if pin is not None:
+            where = 'under the body' if pin < 0 else f'{pin * 100:.0f} cm ahead of the body'
+            return self.begin_creep(xy, yaw, why=f'{why}; no wiggle: rolling pin {where}',
+                                    pin=True)
         targets, note = self.wiggle_plan(xy, yaw)
         self.plan = {'kind': 'wiggle', 'targets': targets}
         self.last_step = 'wiggle'
@@ -1277,7 +1337,9 @@ class CurtainDetector(Node):
         self.set_state('WIGGLING', f'{why}: {a:.0f} deg left, {2 * a:.0f} right, {a:.0f} left'
                        + note)
 
-    def begin_creep(self, xy, yaw):
+    def begin_creep(self, xy, yaw, why='sensors still blocked', pin=False):
+        """Creep creep_step straight ahead. pin: instead of a wiggle (rolling pin by the
+        body); with no room to creep it then holds and checks again (never turns)."""
         d = self.cfg['creep_step']
         walls = self.walls()
         if walls is not None:
@@ -1285,10 +1347,13 @@ class CurtainDetector(Node):
             d = free_distance_ahead(walls.grid, mxy, myaw, self.box, d, self.cfg['min_margin'])
         self.last_step = 'creep'
         if d < 0.01:
+            if pin:
+                self.get_logger().warn(f'{why}, and no room to creep ahead: checking again')
+                return self.begin_check()
             return self.begin_wiggle(xy, yaw, 'still blocked, no room to creep ahead')
         self.plan = {'kind': 'creep', 'from': xy, 'd': d,
                      'until': time.monotonic() + d / self.cfg['creep_speed'] + 3.0}
-        self.set_state('CREEPING', f'sensors still blocked: {d * 100:.0f} cm ahead')
+        self.set_state('CREEPING', f'{why}: {d * 100:.0f} cm ahead')
 
     def begin_check(self):
         self.stop_robot()

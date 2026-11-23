@@ -31,6 +31,10 @@ presentation mazes (resource/Presentation, 2026-11-21; make_presentation_mazes.p
 A "pin" solid is a low bar the robot steps over with the H-Step gait (the ~18 cm rolling pin
 across a cell, user 2026-11-22): the lidar and depth camera see it (and it hides what is
 behind it), but the body neither rides up on it nor collides with it (H-Step clears it).
+Optionally (parameter pin_stall > 0; default 0 = off) getting over it takes steady forward
+drive (user 2026-11-23: 0.5-2 s on the robot): each pair of feet is held at the bar until /cmd_vel has driven forward without
+turning for pin_stall s; a stop or turn restarts the count ("pin: ..." in the log, also a
+warning when the robot stops or turns with the bar under its body).
 
 Always run it on a spare domain so it cannot meet the real robot:
 
@@ -344,7 +348,21 @@ class FakeMazeLite3(Node):
         self.declare_parameter('depth_rate', 5.0)
         # px (640 x 480 scaled; height = 3/4). Keep 640: stairs.py's grid strides are in px.
         self.declare_parameter('depth_width', 640)
+        # Pin stall (user 2026-11-23): H-Step gets over the rolling pin only with 0.5-2 s of
+        # steady forward drive. A foot line (front / rear feet, pin_feet m ahead of / behind
+        # base_link) at a "pin" solid is held there until /cmd_vel has asked for >= 0.03 m/s
+        # forward, turning <= 0.1 rad/s, for pin_stall s in a row; a stop or a turn starts
+        # the count again. 0 = off (stepped straight over, as before): the default while
+        # cmd_vel_bridge has no pin push (removed for now, user 2026-11-23); 1.0 to try it.
+        self.declare_parameter('pin_stall', 0.0)
+        self.declare_parameter('pin_feet', 0.22)
         self.maze = Maze(self.get_parameter('maze').value)
+        self.pin_stall = float(self.get_parameter('pin_stall').value)
+        self.pin_feet = float(self.get_parameter('pin_feet').value)
+        self.pins = [(s['min'][0], s['min'][1], s['max'][0], s['max'][1])
+                     for s in self.maze.solids if s['kind'] == 'pin']
+        self.pin_over, self.pin_drive = set(), 0.0
+        self.pin_bad, self.pin_bad_logged = 0.0, False
         occ = str(self.get_parameter('occlusion').value).lower()
         extru = any(s.get('style') == 'extru' for s in self.maze.solids)
         self.occlusion = (bool(self.maze.curtains) or extru) if occ == 'auto' \
@@ -432,13 +450,75 @@ class FakeMazeLite3(Node):
         z = self.maze.height(self.x, self.y) + STAND - self.z0
         return c * dx - s * dy, s * dx + c * dy, z, self.th - st[2]
 
+    def pin_hold(self, nx, ny, th, v, w):
+        """Pin stall model: True = this step's move is held at a pin (see pin_stall)."""
+        if self.pin_stall <= 0 or not self.pins:
+            return False
+        c, s = math.cos(th), math.sin(th)
+        held = None
+        for f in (self.pin_feet, -self.pin_feet):
+            fx, fy = nx + f * c, ny + f * s
+            for i, (x0, y0, x1, y1) in enumerate(self.pins):
+                inside = x0 - 0.03 <= fx <= x1 + 0.03 and y0 - 0.03 <= fy <= y1 + 0.03
+                key = (i, f > 0)
+                if not inside:
+                    # Off the bar again (> 0.1 m away): touching it later stalls again.
+                    if key in self.pin_over and not (x0 - 0.1 <= fx <= x1 + 0.1 and
+                                                     y0 - 0.1 <= fy <= y1 + 0.1):
+                        self.pin_over.discard(key)
+                    continue
+                if key not in self.pin_over:
+                    held = key
+        if held is None:
+            self.pin_drive = 0.0
+            return False
+        steady = v >= 0.03 and abs(w) <= 0.10
+        if not steady:
+            if self.pin_drive > 0:
+                self.get_logger().warn(f'pin: {"front" if held[1] else "rear"} feet against '
+                                       f'the bar, drive interrupted after {self.pin_drive:.2f} s '
+                                       f'(v {v:.2f}, w {w:.2f})')
+            self.pin_drive = 0.0
+            return True
+        self.pin_drive += self.dt
+        if self.pin_drive + 1e-9 < self.pin_stall:
+            return True
+        self.pin_over.add(held)
+        self.get_logger().info(f'pin: {"front" if held[1] else "rear"} feet over the bar after '
+                               f'{self.pin_drive:.2f} s of steady drive')
+        self.pin_drive = 0.0
+        return False
+
+    def straddling(self):
+        """A pin between the front and rear feet (body over the bar)."""
+        c, s = math.cos(self.th), math.sin(self.th)
+        for x0, y0, x1, y1 in self.pins:
+            for k in np.linspace(-self.pin_feet, self.pin_feet, 9):
+                px, py = self.x + k * c, self.y + k * s
+                if x0 <= px <= x1 and y0 <= py <= y1:
+                    return True
+        return False
+
     def step(self):
         v, vy, w = self.cmd.linear.x, self.cmd.linear.y, self.cmd.angular.z
         if v != 0.0:
             w += self.drift
-        self.th += w * self.dt
-        self.x += (v * math.cos(self.th) - vy * math.sin(self.th)) * self.dt
-        self.y += (v * math.sin(self.th) + vy * math.cos(self.th)) * self.dt
+        th = self.th + w * self.dt
+        nx = self.x + (v * math.cos(th) - vy * math.sin(th)) * self.dt
+        ny = self.y + (v * math.sin(th) + vy * math.cos(th)) * self.dt
+        if self.pin_hold(nx, ny, th, v, w):
+            self.th = th                          # turning against the bar: allowed, logged
+        else:
+            self.th, self.x, self.y = th, nx, ny
+        on_pin = bool(self.pins) and self.straddling()
+        if on_pin and (v < 0.02 or abs(w) > 0.10):
+            self.pin_bad += self.dt
+            if self.pin_bad >= 0.5 and not self.pin_bad_logged:
+                self.get_logger().warn(f'pin: STRADDLING the bar and {"turning" if v >= 0.02 else "stopped"} '
+                                       f'(v {v:.2f}, w {w:.2f}) at maze ({self.x:.2f}, {self.y:.2f})')
+                self.pin_bad_logged = True
+        elif not on_pin:
+            self.pin_bad, self.pin_bad_logged = 0.0, False
         ox, oy, oz, oth = self.odom_pose()
         stamp = self.get_clock().now().to_msg()
         q = (0.0, 0.0, math.sin(oth / 2), math.cos(oth / 2))

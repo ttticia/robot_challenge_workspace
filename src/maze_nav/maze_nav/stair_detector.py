@@ -129,11 +129,14 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from maze_nav import stairs_lidar
 from maze_nav.stair_check import CheckParams, StairCheck
+from maze_nav.cell_features import stair_entry
+from maze_nav.scene_cells import CellGrid
 from touble_shooting.live_params import attach as attach_live_params
 from maze_nav.core import Grid, cloud_xyz
 from maze_nav.stairs import (Approach, StairParams, StairTracker, WallCheck, camera_from_link,
                              detect_stairs, in_front, level_transform, mount_disagreement,
                              quat_to_matrix, refine_lock, to_odom, wrap)
+from maze_nav.stairs import StairEstimate
 
 LATCHED = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -292,6 +295,12 @@ class StairDetector(Node):
         # 2026-11-21: a single step-like obstacle was a false positive)
         p('check_min_risers', 2)
         p('check_min_rise', 0.08)
+        # Anything under check_min_height m tall (steps x rise) is a low obstacle, not stairs
+        # and not a wall (user 2026-11-23: "if wall is < 21 cm tall, treat as open path"):
+        # no candidate, no held cell on the map, no stair check; the robot walks over it
+        # (terrain <= 12 cm, the 18 cm pin, hurdles). wall_scan's band starts at 0.30 m, so
+        # it never was a wall for Nav2.
+        p('check_min_height', 0.21)
         # Pose-mode pitch sweep during the check's hold (user 2026-11-21): level, nose up
         # check_pitch_deg, nose down check_pitch_deg (cmd_vel_bridge /maze/pose_*), so the
         # camera sees the upper steps and the bottom riser. Unavailable -> the plain hold.
@@ -317,6 +326,15 @@ class StairDetector(Node):
         # them out of Nav2 and releases them last. false = the old immediate handover.
         p('hold_while_exploring', True)
         p('stairs_release_topic', '/maze/stairs_release')
+        # cell_features (2026-11-23): a cell with points in the wall band inside it (the
+        # pyramid's 0.45 m top) and railings along two opposite edges ('stairs'), or without
+        # rails seen yet ('raised'), is a stair candidate like a camera / lidar riser chain,
+        # and counts as a 'cells' hit while checking it (StairCheck.cell_cap). '' = off.
+        # Off by default (user 2026-11-23, robot run 05:43: a 'raised' cell put a false
+        # candidate in the start corridor and a check passed on 10 cell hits with 0 camera
+        # and 0 lidar hits). Launch: stair_cells:=true.
+        p('cell_features_topic', '')
+        p('cell_kinds', ['stairs', 'raised'])
         g = lambda n: self.get_parameter(n).value  # noqa: E731
 
         self.params = StairParams(standing_height=float(g('standing_height')),
@@ -404,7 +422,7 @@ class StairDetector(Node):
         self.look_states = tuple(g('look_states'))
         self.check_cfg = {n: float(g(n)) for n in (
             'check_distance', 'check_max_age', 'check_hit_radius', 'check_forget',
-            'check_forget_radius', 'check_min_width', 'check_min_risers', 'check_min_rise')}
+            'check_forget_radius', 'check_min_width', 'check_min_risers', 'check_min_rise', 'check_min_height')}
         pitch = math.radians(float(g('check_pitch_deg')))
         self.check_params = CheckParams(hold=float(g('check_hold')), need=int(g('check_need')),
                                         turn_rate=float(g('max_turn_rate')),
@@ -426,9 +444,14 @@ class StairDetector(Node):
         self.junction_defer = bool(g('junction_defer'))
         self.hold_exploring = bool(g('hold_while_exploring'))
         self.released_ests = []          # stairs maze_explorer released: never held again
+        self.unfaced = []               # first-riser points (odom) of checks that couldn't face
         self.held = {}                  # id -> (StairEstimate, what): held until released
         self.next_held_id = 1
         self.cand_pub = self.create_publisher(String, '/stairs/candidate', 10)
+        self.cell_kinds = tuple(g('cell_kinds'))
+        if g('cell_features_topic'):
+            self.create_subscription(String, g('cell_features_topic'), self.on_cell_features,
+                                     LATCHED)
         if g('stairs_release_topic'):
             self.create_subscription(String, g('stairs_release_topic'), self.on_release, 10)
         if g('curtain_status_topic'):
@@ -669,6 +692,10 @@ class StairDetector(Node):
         return any(np.linalg.norm(pt - r[0]) < self.check_cfg['check_forget_radius']
                    for r in self.rejected)
 
+    def too_low(self, est):
+        """Under check_min_height m tall in all (steps x rise): a low obstacle, open path."""
+        return 0 < est.risers * est.rise < self.check_cfg['check_min_height']
+
     def note_candidate(self, est, xy, what):
         """Remember stair-like evidence to check (nearest within check_distance)."""
         if not self.check_on or est is None or self.is_handled(est) or \
@@ -702,6 +729,13 @@ class StairDetector(Node):
                                    f'{self.check_cfg["check_min_rise"] * 100:.0f} cm: no stair '
                                    'check', throttle_duration_sec=5.0)
             return
+        if self.too_low(est):
+            self.get_logger().info(f'low obstacle {d:.2f} m away ({what}): {est.risers} '
+                                   f'step(s) of {est.rise * 100:.0f} cm = '
+                                   f'{est.risers * est.rise * 100:.0f} cm tall < '
+                                   f'{self.check_cfg["check_min_height"] * 100:.0f} cm: open '
+                                   'path, no stair check', throttle_duration_sec=5.0)
+            return
         if self.hold_candidate(est, xy, d, what):
             return
         now = time.monotonic()
@@ -712,6 +746,50 @@ class StairDetector(Node):
                                        + ('after the explorer\'s look' if self.in_look()
                                           else 'now'), throttle_duration_sec=3.0)
             self.candidate = (est, now, what)
+
+    def on_cell_features(self, msg):
+        """cell_features' stair-like cells -> note_candidate (each message; it repeats at
+        2 Hz, so while CHECKING a cell near the candidate keeps adding 'cells' hits)."""
+        try:
+            d = json.loads(msg.data)
+            cells = CellGrid(float(d['size']), (float(d['origin'][0]), float(d['origin'][1])),
+                             float(d['yaw']))
+            found = [c for c in d['cells'] if c.get('kind') in self.cell_kinds]
+        except (ValueError, KeyError, TypeError, IndexError):
+            self.get_logger().warn(f'bad cell_features message: {msg.data[:80]}',
+                                   throttle_duration_sec=30.0)
+            return
+        if not found:
+            return
+        pose = self.pose()
+        if pose is None:
+            return
+        try:     # latest map -> odom; never waits
+            tf = self.tf.lookup_transform(self.odom_frame, d.get('frame', 'map'), Time())
+        except TransformException:
+            return
+        r, a = matrix_of(tf)
+        th = math.atan2(r[1, 0], r[0, 0])
+        c0, s0 = math.cos(th), math.sin(th)
+        xy = np.asarray(pose[0], float)
+        # robot in the map frame, to pick the stairs' side facing it
+        rx, ry = xy[0] - a[0], xy[1] - a[1]
+        robot_map = (c0 * rx + s0 * ry, -s0 * rx + c0 * ry)
+        for c in found:
+            (ex, ey), hd = stair_entry(cells, tuple(c['cell']), c.get('axis'), robot_map)
+            edge = np.array([a[0] + c0 * ex - s0 * ey, a[1] + s0 * ex + c0 * ey])
+            heading = wrap(hd + th)
+            dv = np.array([math.cos(heading), math.sin(heading)])
+            nv = np.array([-dv[1], dv[0]])
+            est = StairEstimate(heading, float(edge @ dv), centre=float(edge @ nv), risers=3,
+                                rise=0.15, source='lidar', width=0.9)
+            what = (f'cell_features: cell {c["cell"]} {c["kind"]}'
+                    + (f' (rails, axis {c["axis"]})' if c.get('axis') else ''))
+            if self.state in CHECK_STATES and self.check is not None:
+                if np.linalg.norm(edge - self.check.target) < 0.6:
+                    self.check.add_hit('cells')
+                continue
+            self.note_candidate(est, xy, what)
 
     def hold_candidate(self, est, xy, d, what):
         """Possible stairs in a junction / dead-end look: hold them for maze_explorer
@@ -802,6 +880,13 @@ class StairDetector(Node):
             return self.end_check(False, 'no TF')
         self.checking = False
         self.check = StairCheck(est, pose[0], time.monotonic(), self.check_params)
+        tries = sum(1 for q in self.unfaced
+                    if np.linalg.norm(q - self.check.target) < 0.6)
+        if tries >= 2:
+            # Couldn't face them twice: check from here rather than never (the old way).
+            self.check.must_face = False
+            self.get_logger().warn(f'possible stairs: not faced in {tries} tries; checking '
+                                   'them from this heading')
         self.tracker.clear()            # fresh votes, facing them
         self.lidar_tracker.clear()
         self.set_state('CHECKING', 'turning to face the possible stairs, then '
@@ -847,14 +932,22 @@ class StairDetector(Node):
         xy, yaw, _ = pose
         w, phase, look = self.check.tick(now, xy, yaw, self.pose_status)
         self.send_look(look)
+        if phase == 'UNFACED':
+            return self.end_unfaced(now)
         if phase == 'DONE':
             self.stop_robot()
             found, why = self.fused(now, xy)
             chk = self.check
-            hits = (f'{chk.cam_hits} camera / {chk.lidar_hits} lidar hits in '
+            hits = (f'{chk.cam_hits} camera / {chk.lidar_hits} lidar / {chk.cell_hits} cell '
+                    'hits in '
                     f'{chk.hold_time():.0f} s'
                     + (' (Pose mode, pitched up and down)' if chk.posing else
                        f' ({chk.pose_note})' if chk.pose_note else ''))
+            if found is not None and self.too_low(found):
+                return self.end_check(False, f'{found.risers} risers of '
+                                      f'{found.rise * 100:.0f} cm = '
+                                      f'{found.risers * found.rise * 100:.0f} cm tall: a low '
+                                      f'obstacle, open path; {hits}')
             if found is not None and not self.is_handled(found):
                 return self.end_check(True, f'confirmed: {found.risers} risers of '
                                       f'{found.rise * 100:.0f} cm, {why}; {hits}', found)
@@ -866,9 +959,25 @@ class StairDetector(Node):
             walls = self.walls()
             if walls is not None:
                 _, w, _ = walls.safe(xy, yaw, 0.0, w)
+            self.check.turn_blocked(now, w == 0.0)
         msg = Twist()
         msg.angular.z = float(w)
         self.cmd_pub.publish(msg)
+
+    def end_unfaced(self, now):
+        """The robot couldn't turn to face the possible stairs (walls both ways, or the turn
+        timed out): no verdict (user 2026-11-23: face them fully before verifying or ruling
+        out). Not rejected and no longer 'released', so the next sighting is held again and
+        maze_explorer brings the robot back in front of them."""
+        chk, self.check = self.check, None
+        self.stop_robot()
+        self.candidate = None
+        self.unfaced.append(np.asarray(chk.target, float))
+        self.released_ests = [e for e in self.released_ests if e is not chk.est]
+        self.cooldown_until = now + 5.0
+        self.set_state('IDLE', 'stair check: could not turn to face the possible stairs '
+                       f'({math.degrees(chk.err):+.0f} deg off, walls in the way); not '
+                       'verified and not ruled out: checked again from in front of them')
 
     def pose(self, stamp=None, with_z=False):
         """((x, y), yaw, R) of base_link in odom (+ z with_z); stamp None = latest. Never

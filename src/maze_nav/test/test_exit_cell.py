@@ -13,7 +13,8 @@ from geometry_msgs.msg import PoseStamped
 import maze_nav.explorer as explorer_mod
 from maze_nav.core import ExitDetector, Frontier
 from maze_nav.explorer import Explorer
-from maze_nav.scene_cells import CellGrid, boundary_sides, exit_cell, fit_grid
+from maze_nav.scene_cells import (CellGrid, boundary_sides, box_contains, exit_cell, fit_grid,
+                                  maze_boxes)
 from test_scene_cells import _sim_maze_map
 
 COLS, ROWS = 5, 3
@@ -52,15 +53,18 @@ class Handle:
 
 class Fake:
     """The explorer's exit / launch / grid-fit methods on a stand-in node."""
-    for _n in ('grid_known', 'in_grid', 'extents', 'maze_sides', 'decide_side',
+    for _n in ('grid_known', 'in_grid', 'extents', 'maze_sides', 'decide_side', 'box_open_count',
                'update_exit', 'side_open', 'seen_beyond', 'choose_exit', 'publish_launch',
                'go_to_exit', 'send_launch_goal', 'launch_tick', 'creep_to_centre',
                'launch_creep_tick', 'face_exit', 'park', 'out_of_maze', 'fit_cells'):
         locals()[_n] = getattr(Explorer, _n)
 
     def __init__(self, go=True, sign=1):
-        self.maze_sign = sign                        # 1 left, -1 right, None auto
-        self.cfg = {'maze_cols': COLS, 'maze_rows': ROWS, 'exit_cell_margin': 0.15,
+        # sign 1 / -1: the placement already narrowed down to the maze on the left / right
+        self.boxes = {1: [(0, 0, COLS, ROWS)], -1: [(0, 1 - ROWS, COLS, ROWS)],
+                      None: maze_boxes(COLS, ROWS)}[sign]
+        self.cfg = {'maze_cols': COLS, 'maze_rows': ROWS,
+                    'box_open_sides': 2, 'exit_cell_margin': 0.15,
                     'exit_confirm': 3, 'launch_tolerance': 0.25, 'launch_retries': 3,
                     'goal_max_time': 120.0, 'go': go,
                     'launch_yaw_tolerance': math.radians(10), 'turn_margin': 0.03,
@@ -147,19 +151,46 @@ def test_grid_geometry():
     assert all(not (0 <= i + di < COLS and 0 <= j + dj < ROWS) for (i, j), (di, dj) in sides)
 
 
-def test_maze_side_auto_covers_both_arenas_until_a_cell_off_the_start_row():
-    """The two arenas are mirrored: until the robot stands well inside a cell off the start
-    row, both grids count (goals, exit candidates)."""
+def test_maze_boxes_cover_every_first_row_start_and_heading():
+    """Booklet H: the start is in the first row (an outer row) and may face any way: every
+    5 x 3 / 3 x 5 placement with the start cell on its outline (12 + 12)."""
+    boxes = maze_boxes(COLS, ROWS)
+    assert len(boxes) == 24 == len(set(boxes))
+    assert all(box_contains(b, (0, 0)) for b in boxes)
+    assert (0, 0, 5, 3) in boxes and (0, -2, 5, 3) in boxes      # the old corner placements
+    assert (-2, 0, 5, 3) in boxes                                # start mid-row, facing along it
+    assert (-1, 0, 3, 5) in boxes                                # start mid-row, facing in
+    assert (-1, -1, 3, 5) not in boxes                           # start not on the outline
+    assert maze_boxes(0, ROWS) == []
+
+
+def test_auto_placement_narrows_down_from_cells_visited():
     f = Fake(sign=None)
-    assert f.in_grid((2.04, 2.04)) and f.in_grid((2.04, -2.04))
-    f.decide_side((1.02, 0.0))                           # still on the start row
+    assert f.in_grid((2.04, 2.04)) and f.in_grid((2.04, -2.04)) and f.in_grid((-2.04, 0.0))
     f.decide_side((1.02, -0.65))                         # in (1, -1) but at its edge
-    assert f.maze_sign is None
-    f.decide_side((1.02, -1.0))
-    assert f.maze_sign == -1 and f.extents() == [-2]
+    assert len(f.boxes) == 24
+    f.decide_side((1.02, -1.0))                          # well inside (1, -1)
+    assert all(box_contains(b, (1, -1)) for b in f.boxes) and 1 < len(f.boxes) < 24
+    f.decide_side((4.08, -2.04))                         # (4, -2): only 5 x 3 to the right
+    assert f.boxes == [(0, -2, 5, 3)]
     assert f.in_grid((2.04, -2.04)) and not f.in_grid((2.04, 1.5))
+    assert any('maze placement found' in m for m in f.logs)
+    f.decide_side((-2.04, 0.0))                          # contradicts it: the last one stays
+    assert f.boxes == [(0, -2, 5, 3)]
     f.cfg['maze_cols'] = 0
     assert f.in_grid((40.0, 0.0))                        # size unknown: no filter
+
+
+def test_auto_placement_drops_boxes_with_two_open_outer_sides():
+    """The real outline has one open side at most (the exit)."""
+    f = Fake(sign=None)
+    left = (0, 0, 5, 3)
+    f.exit_open[((4, 0), (0, -1))] = 3          # -j side of (4, 0): outer for `left` only
+    f.decide_side((0.0, 0.0))
+    assert left in f.boxes                      # one open side: could be the exit
+    f.exit_open[((2, 0), (0, -1))] = 3
+    f.decide_side((0.0, 0.0))
+    assert left not in f.boxes and (0, -2, 5, 3) in f.boxes
 
 
 # ------------------------------------------------------------------ choosing the exit
@@ -176,11 +207,13 @@ def test_exit_chosen_at_the_end_after_exit_confirm_replans(maze, sign, cell, d):
     f.update_exit(g)
     if sign is None:
         f.decide_side((1.02, -1.02))                     # mirrored: found on the way
+        f.decide_side((4.08, -2.04))
     assert f.choose_exit(g) == (cell, d) == f.exit_side
     msg = json.loads(f.launch_pub.msgs[-1].data)
     assert msg['state'] == 'found' and msg['launch_cell'] == list(cell)
     assert msg['exit_cell'] == [cell[0] + d[0], cell[1] + d[1]]
-    assert msg['maze_side'] == ('right' if sign is None else 'left')
+    assert msg['maze_placement'] == ('cells i 0..4 x j -2..0' if sign is None
+                                     else 'cells i 0..4 x j 0..2')
 
 
 def test_false_exits_are_rejected():
@@ -302,8 +335,9 @@ def test_failed_launch_goals(clock):
     assert f.finished[-1][0] == 'AT_EXIT' and 'off centre after 3 goals' in f.finished[-1][1]
     f = explored(Fake())
     f.launch['tries'], f.launch['result'] = 3, ABORTED
-    f.launch_tick(((1.0, 1.0), 0.0))                     # out of tries, elsewhere
-    assert f.finished[-1][0] == 'STOPPED'
+    f.clear_costmaps = []
+    f.launch_tick(((1.0, 1.0), 0.0))                     # out of tries, elsewhere: again
+    assert f.state == 'TO_EXIT' and f.launch['tries'] == 1 and not f.finished
 
 
 def test_open_floor_next_to_the_exit_does_not_end_the_run(clock):

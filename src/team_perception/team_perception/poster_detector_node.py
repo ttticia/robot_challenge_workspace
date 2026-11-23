@@ -139,7 +139,8 @@ class PosterDetector(Node):
         p('log_dir', os.path.expanduser('~/poster_logs'))
         # Maze cells (same names and defaults as maze_nav's scene_trigger): the survivor is
         # reported as the centre of the cell the poster is seen in.
-        p('cell_size', 1.0)            # m
+        p('cell_size', 1.02)           # m (maze_info.md / booklet: 1.02 m cell pitch)
+        p('grid_topic', '/maze/grid')  # maze_explorer's wall-fitted grid; '' = fixed grid
         p('origin_x', 0.0)             # map (x, y) of the start cell's centre
         p('origin_y', 0.0)
         p('grid_yaw_deg', 0.0)         # map heading of the grid's +i axis
@@ -221,6 +222,10 @@ class PosterDetector(Node):
         self.found_pub = self.create_publisher(String, '/found', 10)   # "Human found", once each
         self.look_pub = self.create_publisher(PointStamped, g('look_topic'), 10)
         self.create_subscription(String, g('qr_topic'), self.on_qr, 10)
+        if g('grid_topic'):
+            latched_grid = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                                      reliability=ReliabilityPolicy.RELIABLE)
+            self.create_subscription(String, g('grid_topic'), self.on_grid, latched_grid)
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -373,27 +378,44 @@ class PosterDetector(Node):
             return None if p is None else (p.point.x, p.point.y, p.point.z)
         return {'poster': xyz(poster), 'room': xyz(room), 'poster_map': xyz(pm)}
 
-    def place(self, track):
-        """(frame, cell, centre) of a track's survivor, from its room point (place_point)."""
-        return self.place_point(
-            track.room if track.room is not None else (track.x, track.y, track.z))
+    def on_grid(self, msg):
+        """maze_explorer refitted the grid to the walls: follow it (same cell size only).
+        check_cells re-reports survivors whose cell this changes."""
+        try:
+            d = json.loads(msg.data)
+            if abs(float(d['size']) - self.cells.size) > 1e-6:
+                return
+            self.cells.origin = (float(d['origin'][0]), float(d['origin'][1]))
+            self.cells.yaw = float(d['yaw'])
+        except (ValueError, KeyError, TypeError, IndexError):
+            self.get_logger().warn(f'bad /maze/grid message: {msg.data[:80]}',
+                                   throttle_duration_sec=30.0)
 
-    def place_point(self, room):
+    def place(self, track):
+        """(frame, cell, centre) of a track's survivor: the cell on the camera's side of
+        the wall the poster hangs on (MazeCells.room_cell; place_point)."""
+        poster = (track.x, track.y, track.z)
+        return self.place_point(track.room if track.room is not None else poster,
+                                poster=poster)
+
+    def place_point(self, room, poster=None):
         """
         (frame, cell, centre) of a room point in odom: taken into map with the LATEST
         map <- odom (so SLAM corrections move it), or left in odom before SLAM is up (the
         robot holds still until /maze/start, so odom and map start out together).
         """
         frame, xy = self.track_frame, room[:2]
+        pxy = None if poster is None else poster[:2]
         try:
             tr = self.tf_buffer.lookup_transform(self.map_frame, self.track_frame, Time())
             q, t = tr.transform.rotation, tr.transform.translation
-            p = _quat_matrix(q.x, q.y, q.z, q.w) @ np.asarray(room, float) \
-                + np.array([t.x, t.y, t.z])
-            frame, xy = self.map_frame, p[:2]
+            rot, off = _quat_matrix(q.x, q.y, q.z, q.w), np.array([t.x, t.y, t.z])
+            frame, xy = self.map_frame, (rot @ np.asarray(room, float) + off)[:2]
+            if poster is not None:
+                pxy = (rot @ np.asarray(poster, float) + off)[:2]
         except Exception:
             pass
-        cell = self.cells.cell(xy)
+        cell = self.cells.cell(xy) if pxy is None else self.cells.room_cell(pxy, xy)
         return frame, cell, [round(float(v), 3) for v in self.cells.centre(cell)]
 
     def on_qr(self, msg):

@@ -471,6 +471,7 @@ class QueueFake(Fake):
                          'candidate_wait': 15.0, 'robot_radius': 0.25, 'turn_margin': 0.03})
         self.cand_queue, self.queue_active, self.queue_final = [], False, False
         self.released, self.spins = [], []
+        self.visited = set()
         self.cells = CellGrid()
         pub = lambda kind: SimpleNamespace(  # noqa: E731
             publish=lambda m: self.released.append((kind, json.loads(m.data)['id'])))

@@ -23,10 +23,11 @@ Arguments:
   gait:=hstep      cmd_vel_bridge sends Move mode + H-Step (high-stepping RUG gait) once at
                    startup (default again since 2026-11-22); rug = RUG gait General gear;
                    none = leave the gait alone. Send lite3_auto AFTER "gait sent"
-  perception:=true also start team_perception (robot.launch.py: qr_scanner only; human /
-                   poster detection removed 2026-11-19, too many camera copies for the
-                   bridge). It runs niced on all but the first 4 cores, and only at dead
-                   ends (explorer /maze/perceive).
+  perception:=true also start team_perception (robot.launch.py: qr_scanner, READING QR codes
+                   only; no survivor posters, no QR detection / FACING_QR since 2026-11-23,
+                   user). ONE colour_relay takes the camera's JPEG stream once (qr_scanner and
+                   room_scene share it). Niced on all but the first 4 cores.
+                   qr_detect:=true = QR detection at dead ends again (/qr/unread -> FACING_QR)
                    Depth for them and stair_detector goes through ONE team_perception
                    depth_relay (raw depth once from the bridge, 10 Hz on /camera/depth_relay/*)
   wait_for_stand:=true  robot not standing at launch: cmd_vel_bridge logs an ERROR every 5 s
@@ -36,7 +37,7 @@ Arguments:
   stairs:=true     stair_detector: stairs in the depth image within 1.5 m -> the explorer stops
                    Nav2, the robot turns to face them, centres, stops with base_link 0.45 m
                    from the first riser, square to the steps (AT_STAIRS); cmd_vel_bridge
-                   switches to AI mode, walks 1.3 m, leaves AI mode (auto mode) and the
+                   switches to AI mode, walks 2.0 m over the pyramid (heading held), leaves AI mode (auto mode) and the
                    explorer carries on by itself (maze_nav/stair_detector.py). Possible
                    stairs seen in a junction / dead-end look are queued and checked after
                    the junction scan, nearest first
@@ -66,6 +67,12 @@ Arguments:
                    (spec < 15 cm; the lab test curtain hangs ~20 cm up -> 0.25 to test with it)
   curtain_lab:=false  true = the lab test curtain (gap 17-25 cm, run 2026-11-21 10:48 missed it
                    as a hurdle): curtain_max_gap and curtain_gap_max both 0.25
+  cell_features:=true  cell_features: lidar points above the 0.53 m walls inside a cell = a
+                   toy set (room look-in), wall-band points inside a cell between two
+                   railings = the pyramid stairs (stair candidate), fabric along an edge =
+                   curtain (maze_nav/cell_features.py) -> /maze/cell_features
+  stair_cells:=false  true = stair_detector also uses cell_features' stair / raised cells
+                   as stair candidates and as hits in the stair check (needs cell_features)
   scene_trigger:=true  /scene/trigger (+ /junction_detected) when the robot faces a dead end
                    from the cell before it; /scene/junction for the explorer's junction look
                    (maze_nav/scene_trigger.py). The dead-end looks
@@ -79,17 +86,18 @@ Arguments:
   creep_distance:=0.10  m straight ahead (no steering) after start, onto the SLAM map and off the
                    back wall (0 = off)
   start_scan:=false  true = turn 30 deg left, 60 right, 30 left after the creep, before exploring
-  maze_cols:=5  maze_rows:=3  maze size in 1.02 m cells: cols along the start heading, rows to
-                   its left, start cell in the corner. The robot stays inside: it explores
+  maze_cols:=5  maze_rows:=3  maze size in 1.02 m cells, either way round: every 5 x 3 /
+                   3 x 5 placement with the start cell on its outline counts (start anywhere
+                   in the first row, any start heading; booklet H), narrowed down as cells are
+                   reached and outer sides read open. No side setting (user 2026-11-23).
+                   The robot stays inside: it explores
                    every cell, then parks standing in the cell inside the exit, facing out
                    (AT_EXIT, /maze/launch_cell: where the drone launches). 0 = size unknown:
                    it leaves the maze and ends EXITED on open floor as before
-  maze_side:=left  left / right: the maze lies to that side of the start heading (the two
-                   arenas are mirrored: set it for the arena you run in). auto = decided by the
-                   first cell off the start row entered: EXPERIMENTAL, wrong in the sim
   cell_size:=1.02  m, cell pitch of that grid (maze_explorer and scene_trigger; 1.0 for the
                    older sim mazes)
-  max_speed:=0.15  band_low:=0.30  band_high:=0.45  floor_z:=nan (measure)
+  max_speed:=0.15  band_low:=0.30  band_high:=0.50  floor_z:=nan (measure); walls are 0.53 m
+                   (maze_info.md); the pyramid stairs' top (0.45 m) is inside the band
   map_dir:=~/challenge_ws/maps   udp_only:=true   use_sim_time:=false
   fastlio_config:=<maze_nav>/config/fastlio_mid360.yaml  Fast-LIO settings: blind 0.3 m (was
                    0.5: near walls Fast-LIO lost them and its pose slipped ~0.5 m, 2026-11-19),
@@ -230,6 +238,7 @@ def depth_users(context):
         out.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(share, 'launch', 'robot.launch.py')),
             launch_arguments={'depth_relay': 'false',          # ours above
+                              'qr_detect': LaunchConfiguration('qr_detect').perform(context),
                               'depth_topic': depth,
                               'depth_camera_info_topic': info}.items()))
     if stairs:
@@ -240,6 +249,9 @@ def depth_users(context):
                                                         value_type=bool),
                          'drive': ParameterValue(LaunchConfiguration('go'), value_type=bool),
                          'lidar_topic': crop_topic().perform(context),
+                         # cell_features as a stair cue only with stair_cells:=true
+                         'cell_features_topic': '/maze/cell_features'
+                         if flag('cell_features') and flag('stair_cells') else '',
                          'depth_topic': depth, 'depth_camera_info_topic': info}]))
     if curtains:
         out.append(Node(
@@ -274,6 +286,9 @@ def depth_users(context):
             parameters=[{'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time'),
                                                         value_type=bool),
                          'model': LaunchConfiguration('curtain_yolo_model'),
+                         # perception's colour_relay copy: no 2nd colour stream over the bridge
+                         'image_topic': '/camera/color_relay/image_raw' if perception
+                         else '/camera/color/image_raw',
                          'depth_topic': depth, 'depth_info_topic': info}]))
     return out
 
@@ -296,6 +311,8 @@ DEATH_HINTS = {
     'cmd_vel_bridge': 'nothing reaches /cmd_vel; the robot stops. Ctrl+C.',
     'maze_explorer': 'no more goals; Nav2 finishes the current one. Ctrl+C.',
     'qr_scanner': 'perception only: no more QR codes. Navigation carries on.',
+    'colour_relay': 'no colour frames for qr_scanner / room_scene. Navigation '
+                    'carries on.',
     'cpu_monitor': 'CPU logging only. Navigation carries on.',
     'curtain_detector': 'no curtain pass-through: new curtains stay walls (ones already found '
                         'stay cleared). If it died while driving, cmd_vel_bridge stops the '
@@ -303,6 +320,7 @@ DEATH_HINTS = {
     'curtain_yolo': 'YOLO curtain boxes only: curtain_inspect_mode:=yolo inspections reject '
                     'every candidate from now on. Navigation carries on.',
     'scene_trigger': 'scene understanding only: no more /scene/trigger. Navigation carries on.',
+    'cell_features': 'no toy-set rooms / stair cells from the lidar. Navigation carries on.',
     'room_scene': 'scene understanding only: no more room captures for VLM. Navigation carries on.',
     'task_reporter': 'task reporting only: no more /mission/task_completed. Navigation carries on.',
     'depth_relay': 'no depth: no QR positions, no stair line-up. Navigation '
@@ -486,7 +504,10 @@ def generate_launch_description():
                                           'gait General gear; none = leave it'),
         DeclareLaunchArgument('perception', default_value='true',
                               description='also start team_perception robot.launch.py '
-                                          '(QR codes)'),
+                                          '(reads QR codes)'),
+        DeclareLaunchArgument('qr_detect', default_value='false',
+                              description='with perception: QR detection at dead ends '
+                                          '(/qr/unread -> FACING_QR); false = only read codes'),
         DeclareLaunchArgument('wait_for_stand', default_value='true',
                               description='robot not standing at launch: ERROR + wait until '
                                           'it stands, before the gait (never sends stand)'),
@@ -508,6 +529,14 @@ def generate_launch_description():
         DeclareLaunchArgument('curtain_sensors', default_value='both',
                               description='curtain detection: both (~0.6-2.6 m from base_link), '
                                           'lidar (~1.2-2.6 m) or depth (~0.7-2 m, +-40 deg)'),
+        DeclareLaunchArgument('cell_features', default_value='true',
+                              description='cell_features: toy-set rooms, stair cells and tall '
+                                          'edges from lidar points above / in the wall band'),
+        DeclareLaunchArgument('stair_cells', default_value='false',
+                              description='stair_detector also takes cell_features stair / '
+                                          'raised cells as stair candidates and check hits '
+                                          '(off since the 2026-11-23 robot run: false '
+                                          'candidate in the start corridor)'),
         DeclareLaunchArgument('scene_trigger', default_value='true',
                               description='/scene/trigger (+ /junction_detected) at dead ends; '
                                           '/scene/junction for the junction look'),
@@ -522,16 +551,12 @@ def generate_launch_description():
                               description='m straight ahead the explorer may creep to find room '
                                           'for a turn blocked by walls both ways; 0 = off'),
         DeclareLaunchArgument('maze_cols', default_value='5',
-                              description='maze cells along the start heading (start cell in '
-                                          'the corner); the robot explores inside it, then '
+                              description='maze size in cells (either way round); the robot '
+                                          'explores inside it, then '
                                           'parks in the cell inside the exit (AT_EXIT). '
                                           '0 = size unknown: leaves the maze (EXITED)'),
         DeclareLaunchArgument('maze_rows', default_value='3',
-                              description='maze cells to the left of the start heading'),
-        DeclareLaunchArgument('maze_side', default_value='left',
-                              description='left / right of the start heading (the two arenas '
-                                          'are mirrored: set it for your arena) / auto '
-                                          '(experimental, picked the wrong side in the sim)'),
+                              description='maze size in cells, the other way'),
         DeclareLaunchArgument('cell_size', default_value='1.02',
                               description='m, maze cell pitch (maze_explorer and scene_trigger)'),
         DeclareLaunchArgument('start_scan', default_value='false',
@@ -540,8 +565,8 @@ def generate_launch_description():
                               description='m/s (clamped to 0.25 by cmd_vel_bridge)'),
         DeclareLaunchArgument('band_low', default_value='0.30',
                               description='m above the floor; below = terrain/stairs, ignored'),
-        DeclareLaunchArgument('band_high', default_value='0.45',
-                              description='m above the floor; at most the wall top (0.45); see nav_launch.md'),
+        DeclareLaunchArgument('band_high', default_value='0.50',
+                              description='m above the floor; below the wall top (0.53 m, maze_info.md); see nav_launch.md'),
         DeclareLaunchArgument('floor_z', default_value='nan',
                               description='odom z of the floor; nan = measure at startup'),
         DeclareLaunchArgument('map_dir', default_value=os.path.expanduser('~/challenge_ws/maps')),
@@ -625,6 +650,13 @@ def generate_launch_description():
                       "else ''"]), value_type=str),
              }]),
 
+        Node(package='maze_nav', executable='cell_features', name='cell_features',
+             output='both',
+             parameters=[sim_time, {'cloud_topic': cropped,
+                                    'cell_size': ParameterValue(arg('cell_size'),
+                                                                value_type=float)}],
+             condition=IfCondition(arg('cell_features'))),
+
         Node(package='slam_toolbox', executable='async_slam_toolbox_node', name='slam_toolbox',
              output='both', arguments=log_args,
              parameters=[os.path.join(config, 'slam_toolbox.yaml'), sim_time]),
@@ -666,7 +698,6 @@ def generate_launch_description():
                  'start_scan': ParameterValue(arg('start_scan'), value_type=bool),
                  'maze_cols': ParameterValue(arg('maze_cols'), value_type=int),
                  'maze_rows': ParameterValue(arg('maze_rows'), value_type=int),
-                 'maze_side': arg('maze_side'),
                  'cell_size': ParameterValue(arg('cell_size'), value_type=float),
                  'pre_turn_max_creep': ParameterValue(arg('pre_turn_max_creep'),
                                                       value_type=float),
@@ -688,13 +719,20 @@ def generate_launch_description():
                  'curtains_topic': ParameterValue(PythonExpression(
                      ["'/curtain/curtains' if '", arg('curtains'), "'.lower() in ('true', '1') "
                       "else ''"]), value_type=str),
+                 'cell_features_topic': ParameterValue(PythonExpression(["'/maze/cell_features' if '", LaunchConfiguration('cell_features'), "'.lower() in ('true', '1') else ''"]), value_type=str),
                  'qr_unread_topic': ParameterValue(PythonExpression(
-                     ["'/qr/unread' if '", arg('perception'),
-                      "'.lower() in ('true', '1') else ''"]), value_type=str),
+                     ["'/qr/unread' if '", arg('perception'), "'.lower() in ('true', '1') and '",
+                      arg('qr_detect'), "'.lower() in ('true', '1') else ''"]), value_type=str),
              }]),
 
         Node(package='scene_understanding', executable='room_scene', name='room_scene',
-             output='both', parameters=[sim_time],
+             output='both',
+             parameters=[sim_time, {
+                 # perception's colour_relay copy (no extra bridge copy), else the camera
+                 'camera_topic': PythonExpression(
+                     ["'/camera/color_relay/image_raw/compressed' if '", arg('perception'),
+                      "'.lower() in ('true', '1') else '/camera/color/image_raw/compressed'"]),
+                 'cell_size': ParameterValue(arg('cell_size'), value_type=float)}],
              condition=IfCondition(arg('scene_understanding'))),
 
         Node(package='scene_understanding', executable='task_reporter', name='task_reporter',

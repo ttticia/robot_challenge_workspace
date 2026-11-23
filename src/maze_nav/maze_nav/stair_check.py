@@ -47,7 +47,18 @@ class CheckParams:
     min_turn_rate: float = 0.15
     hold: float = 3.0              # s still, detecting
     need: int = 3                  # camera hits (lidar hits count half)
+    # cell_features hits (raised cell between rails on the lidar's cell map, 2026-11-23)
+    # count half too, but add at most cell_cap: the cell cue alone can't confirm stairs
+    # (it can't give the first riser's exact place); with a camera or lidar riser hit it
+    # can, which matters on the reflective checker-plate steps that confuse the depth camera.
+    cell_cap: float = 2.0
     turn_timeout: float = 15.0
+    # Facing first (user 2026-11-23, robot run 05:43: a check 96 deg off the stairs "confirmed"
+    # them): a turn that walls block for block_time s is tried the other way round; still not
+    # within face_tol (or turn_timeout up) -> UNFACED: no verdict, neither stairs nor not
+    # stairs. must_face False = the old way: hold and check from whatever heading.
+    must_face: bool = True
+    block_time: float = 2.0
     pose: bool = True              # HOLD in Pose mode with the pitch sweep (if available)
     pitches: tuple = ((0.0, 1.0), (-math.radians(10), 1.5), (math.radians(10), 1.5),
                       (0.0, 0.5))
@@ -64,6 +75,13 @@ class StairCheck:
         self.phase, self.since, self.t0 = 'TURN', now, now
         self.cam_hits = 0
         self.lidar_hits = 0
+        self.cell_hits = 0
+        self.must_face = self.p.must_face
+        self.force = 0.0               # turn direction forced (the long way round), 0 = none
+        self.timeout = self.p.turn_timeout
+        self.reversed = False
+        self.blocked_since = None
+        self.err = 0.0                 # last heading error to the first riser
         self.posing = False            # HOLD is in Pose mode (the pitch sweep)
         self.pose_note = ''            # why not, for the log
 
@@ -75,10 +93,15 @@ class StairCheck:
         p = self.p
         st = str(pose_status or '')
         if self.phase == 'TURN':
-            err = wrap(self.bearing(xy) - yaw)
-            if abs(err) > p.face_tol and now - self.since < p.turn_timeout:
+            self.err = err = wrap(self.bearing(xy) - yaw)
+            if abs(err) > p.face_tol and now - self.since < self.timeout:
                 w = max(p.min_turn_rate, min(p.turn_rate, 1.5 * abs(err)))
+                if self.force and abs(err) > math.radians(30):
+                    return math.copysign(w, self.force), 'TURN', None     # the long way
                 return math.copysign(w, err), 'TURN', None
+            if abs(err) > p.face_tol and self.must_face:
+                self.phase = 'UNFACED'
+                return 0.0, 'UNFACED', None
             if p.pose and p.pitches and pose_status is not None and \
                     not st.startswith('UNAVAILABLE'):
                 self.phase, self.since = 'POSE_ENTER', now
@@ -112,7 +135,32 @@ class StairCheck:
                 self.phase = 'DONE'
             else:
                 return 0.0, 'POSE_LEAVE', 'end'
+        if self.phase == 'UNFACED':
+            return 0.0, 'UNFACED', None
         return 0.0, 'DONE', None
+
+    def turn_blocked(self, now, blocked):
+        """The caller's wall check stopped (blocked True) or passed the TURN command. Blocked
+        for block_time s: the other way round once, then UNFACED (must_face) or the hold."""
+        if self.phase != 'TURN':
+            return
+        if not blocked:
+            self.blocked_since = None
+            return
+        if self.blocked_since is None:
+            self.blocked_since = now
+        if now - self.blocked_since < self.p.block_time:
+            return
+        self.blocked_since = None
+        if not self.reversed:
+            self.reversed = True
+            self.force = -math.copysign(1.0, self.err if not self.force else self.force)
+            self.since = now                       # the long way: up to a full turn
+            self.timeout = max(self.p.turn_timeout, 2 * math.pi / self.p.turn_rate + 5.0)
+        elif self.must_face:
+            self.phase = 'UNFACED'
+        else:
+            self.since = now - self.timeout        # give up turning: hold as it is
 
     def hold_time(self):
         """s the HOLD lasts (the pitch sweep's length in Pose mode)."""
@@ -124,12 +172,15 @@ class StairCheck:
             return
         if source == 'lidar':
             self.lidar_hits += 1
+        elif source == 'cells':
+            self.cell_hits += 1
         else:
             self.cam_hits += 1
 
     @property
     def score(self):
-        return self.cam_hits + 0.5 * self.lidar_hits
+        return self.cam_hits + 0.5 * self.lidar_hits + \
+            min(self.p.cell_cap, 0.5 * self.cell_hits)
 
     def passed(self):
         return self.score >= self.p.need

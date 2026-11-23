@@ -289,7 +289,7 @@ class Grid:
 class Frontier:
     goal: tuple             # world (x, y) the robot should drive to
     yaw: float              # facing the unknown
-    path_length: float      # metres along free space from the robot
+    path_length: float      # metres along free space from the robot (+ visited_cost)
     size: int               # frontier cells in the cluster
     centroid: tuple
     width: float = 0.0      # metres, longest extent of the cluster
@@ -311,8 +311,10 @@ def clearance_map(grid):
     return ndimage.distance_transform_edt(~grid.occupied) * grid.resolution
 
 
-def geodesic_distance(passable, start):
-    """Shortest path length in cells (8-connected) over `passable` from start=(col,row)."""
+def geodesic_distance(passable, start, weight=None):
+    """Shortest path length in cells (8-connected) over `passable` from start=(col,row).
+    weight (optional, per cell, >= 1): a step costs its length x the mean weight of its two
+    cells, so paths prefer low-weight floor."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import dijkstra
     h, w = passable.shape
@@ -330,7 +332,12 @@ def geodesic_distance(passable, start):
         m = (a >= 0) & (b >= 0)
         src.append(a[m])
         dst.append(b[m])
-        cost.append(np.full(m.sum(), c))
+        if weight is None:
+            cost.append(np.full(m.sum(), c))
+        else:
+            wa = weight[0:h - dy, max(0, -dx):w - max(0, dx)]
+            wb = weight[dy:h, max(0, dx):w - max(0, -dx)]
+            cost.append(c * 0.5 * (wa[m] + wb[m]))
     n = len(rows)
     g = coo_matrix((np.concatenate(cost), (np.concatenate(src), np.concatenate(dst))),
                    shape=(n, n)).tocsr()
@@ -340,8 +347,14 @@ def geodesic_distance(passable, start):
 
 
 def find_frontiers(grid, robot_xy, robot_radius=0.25, goal_clearance=0.33, min_size=4,
-                   blacklist=(), blacklist_radius=0.4, min_width=0.0):
+                   blacklist=(), blacklist_radius=0.4, min_width=0.0,
+                   visited=None, visited_cost=0.0):
     """All reachable frontiers, nearest (along free space) first.
+
+    visited (bool map, optional): floor the robot has already been over; every metre of path
+    across it counts as 1 + visited_cost metres, so a frontier reached over new floor beats
+    one a little nearer back the way the robot came (less backtracking). path_length then
+    includes that surcharge.
 
     A frontier cell is a known-free cell next to unknown space. Clusters smaller than
     min_size cells are noise (single unknown pixels between scan rays); clusters narrower than
@@ -366,7 +379,10 @@ def find_frontiers(grid, robot_xy, robot_radius=0.25, goal_clearance=0.33, min_s
         if d.min() * res > 0.6:
             return []
         start = (int(idx[d.argmin(), 1]), int(idx[d.argmin(), 0]))
-    dist = geodesic_distance(passable, start) * res
+    weight = None
+    if visited is not None and visited_cost > 0.0:
+        weight = 1.0 + visited_cost * visited
+    dist = geodesic_distance(passable, start, weight) * res
 
     near_unknown = ndimage.binary_dilation(unknown, structure=np.ones((3, 3), bool))
     frontier = free & near_unknown

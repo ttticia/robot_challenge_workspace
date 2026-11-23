@@ -13,7 +13,7 @@ def run(boxes, p=None, xy=(0.0, 0.0)):
 
 
 def test_band_matches_wall_scan():
-    assert CurtainParams().band == (0.30, 0.45)
+    assert CurtainParams().band == (0.30, 0.50)
 
 
 def test_found_curtain_fills_cells_out():

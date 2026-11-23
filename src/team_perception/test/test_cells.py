@@ -52,3 +52,20 @@ def test_tracks_in_one_frame_merge_sightings():
     tr = PosterTracker(0.5, need=5)
     ids = {tr.update((2.0 + 0.05 * k, 0.0, 0.0), POSTER, float(k))[0].id for k in range(6)}
     assert ids == {1}
+
+
+def test_poster_on_the_near_half_of_a_side_wall_belongs_to_the_room():
+    """2026-11-23: room (1, 0) entered from (0, 0) along +i; its left wall is the edge
+    v = +0.5 between (1, 0) and (1, 1). A poster on the NEAR half of it (u = 0.6), seen from
+    (0, 0): the ray pull-back lands in (0, 0); the wall rule puts it in (1, 0)."""
+    c = MazeCells(1.02, (0.0, 0.0), 0.0)
+    camera = (0.0, 0.0, 0.0)
+    poster = (0.6 * 1.02, 0.51, 0.4)
+    ray = [p - q for p, q in zip(poster, camera)]
+    room = [q + v * (1 - 0.25 / math.dist(poster, camera)) for q, v in zip(camera, ray)]
+    assert c.cell(room[:2]) == (0, 0)                      # the old placement: wrong cell
+    assert c.room_cell(poster[:2], room[:2]) == (1, 0)
+    # back wall seen head-on, and a rotated grid
+    assert c.room_cell((1.53, 0.1), (1.2, 0.05)) == (1, 0)
+    r = MazeCells(1.02, (0.3, -0.2), math.radians(90))
+    assert r.room_cell(r.centre((0.6, 0.5))[:2], r.centre((0.3, 0.3))) == (1, 0)

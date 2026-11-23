@@ -72,7 +72,7 @@ python3 src/maze_nav/test/fake_maze_lite3.py --ros-args \
     -p maze:=$PWD/src/maze_nav/test/challenge_a.json -p track_csv:=/tmp/track.csv &
 ros2 launch maze_nav maze_nav.launch.py bringup:=false udp_only:=true floor_z:=-0.35 \
     wait_for_start:=false perception:=false map_dir:=/tmp/maze_maps \
-    maze_cols:=5 maze_rows:=3 cell_size:=1.02 maze_side:=auto   # the maze file's "grid"
+    maze_cols:=5 maze_rows:=3 cell_size:=1.02   # the maze file's "grid"
 ```
 
 Sim parameters: `depth_rate` (5 Hz, 0 = no depth camera), `depth_width` (640; keep it, the stair
@@ -128,20 +128,20 @@ rec_full <name>              # teleop only: everything incl. depth, ~1.6 GB/min 
 rec_curtain <name>           # teleop only: curtain YOLO training bag (ROSBAG_GUIDE 2.5)
 rec_last                     # ros2 bag info of the newest bag
 rec_rename [old] new
-python3 ~/bag_to_video.py ~/challenge_ws/ROS_bags/<name>
+python3 ~/bag_to_video.py ~/challenge_ws/runs/ROS_bags/<name>
 ```
 
 The presets miss `/stairs/*`, `/scene/*`, `/qr/read`, `/qr/unread`, `/maze/perceive` and
-`/perception/look_request`. Add the ones you need after `--` (`ROS_bags/ROSBAG_GUIDE.md` §1).
+`/perception/look_request`. Add the ones you need after `--` (`runs/ROS_bags/ROSBAG_GUIDE.md` §1).
 Bags are git-ignored; copy them off the robot.
 
 ## 8. Test the curtain detector on a bag
 
 ```bash
 source /opt/ros/humble/setup.bash && source install/setup.bash
-nice -n 19 python3 src/maze_nav/tools/curtain_bag_replay.py ROS_bags/<bag> \
+nice -n 19 python3 src/maze_nav/tools/curtain_bag_replay.py runs/ROS_bags/<bag> \
     --max-gap 0.15 0.25 --every 5 --lidar --csv /tmp/curtain.csv
-nice -n 19 python3 src/maze_nav/tools/curtain_yolo_frames.py ROS_bags/<bag> \
+nice -n 19 python3 src/maze_nav/tools/curtain_yolo_frames.py runs/ROS_bags/<bag> \
     ~/challenge_ws/datasets/curtain --every 10 --max-gap 0.25 --lidar   # draft YOLO labels
 ```
 

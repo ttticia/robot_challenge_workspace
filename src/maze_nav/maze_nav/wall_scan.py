@@ -1,13 +1,16 @@
 """/livox/points -> /wall_scan: a 2D scan of the maze walls only.
 
 Why not lite3_launcher's /scan: it keeps 0.1..0.5 m above base_link, i.e. ~0.45..0.85 m above
-the floor. The example maze walls are only 0.45 m tall, so that scan sees none of them. A band
-fixed to base_link also moves with the body: on the 0.15 m ramps it would slide up and down.
+the floor. The example maze walls were only 0.45 m tall (the practice arena's are 0.53 m,
+maze_info.md), so that scan sees few or none of them. A band fixed to base_link also moves
+with the body: on the 0.15 m ramps it would slide up and down.
 
 This node transforms each cloud into odom (gravity-aligned, Fast-LIO), keeps points between
-band_low and band_high above the maze floor and bins them by bearing around the robot. Terrain
-(ramps, mats <= 0.15 m), stair treads (<= 0.26 m) and the floor stay out; walls (0.45 m) and
-hand rails stay in. The floor height is measured once at startup (robot standing on the
+band_low and band_high (0.30-0.50) above the maze floor and bins them by bearing around the
+robot. Terrain (trays ~0.10 m + blocks / slats / slopes, tops <= ~0.25 m) and the floor stay
+out; walls (0.53 m) and hand rails stay in. The pyramid stairs' top tread (3 x 0.15 = 0.45 m)
+is in the band: the stair cell shows as an obstacle in the middle of a cell (cell_features
+uses that as a stair cue). The floor height is measured once at startup (robot standing on the
 start cell) unless floor_z is given. Until then it publishes base_link's height above the
 floor on /maze/body_height (latched): cmd_vel_bridge holds the gait until it reads standing,
 and the floor isn't measured while the robot isn't standing (ERROR every 5 s: stand it up
@@ -77,7 +80,7 @@ class WallScan(Node):
         p('odom_frame', 'odom')
         p('base_frame', 'base_link')
         p('band_low', 0.30)       # m above the maze floor
-        p('band_high', 0.45)  # = wall top: side walls stay in band when the body rides 2-4 cm higher
+        p('band_high', 0.50)  # practice walls are 0.53 m (maze_info.md 2026-11-23): stays under the top
         p('floor_z', float('nan'))  # odom z of the floor; NaN = measure at startup
         p('expected_floor_drop', 0.35)  # base_link height when standing (odom_relay convention)
         p('floor_tolerance', 0.06)      # measured base_link height above drop + this: ignored

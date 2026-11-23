@@ -49,7 +49,7 @@ when a run goes wrong. For the design and the example maze, see [README.md](READ
    watch the robot. If the log says `gait … NOT sent`, set the gait on the handheld
    controller. Our code never sends auto or manual mode.
 4. **No raw depth recording** (`/camera/depth/image_raw`) during the run. It delayed the lidar
-   enough to stall Nav2 (see `ROS_bags/ROSBAG_GUIDE.md`).
+   enough to stall Nav2 (see `runs/ROS_bags/ROSBAG_GUIDE.md`).
 
 ## 2. Launch
 
@@ -70,7 +70,7 @@ launches anyway. Ctrl+C, stop them, and relaunch.
 
 After launch, once SLAM, TF and Nav2 are up, the robot holds still (`/maze/status` =
 `PAUSED`) until you tell it to go. Start the rosbag recording first (`rec_maze`, see
-`ROS_bags/ROSBAG_GUIDE.md`), then in another terminal:
+`runs/ROS_bags/ROSBAG_GUIDE.md`), then in another terminal:
 
 ```bash
 ros2 topic pub --once --keep-alive 2 /maze/start std_msgs/msg/Empty
@@ -408,7 +408,7 @@ person at the robot decides, then Ctrl+Cs the launch, puts the robot back square
 cell (the maze grid comes from the start pose) and relaunches. Reasons to ask:
 
 - the change needs a new launch: startup-only parameters (`cell_size`, `maze_cols` /
-  `maze_rows` / `maze_side`, `map_dir`, launch args such as `gait` or `fastlio_config`),
+  `maze_rows`, `map_dir`, launch args such as `gait` or `fastlio_config`),
   which `ros2 param set` rejects or which only take effect at startup;
 - the map or grid is broken: a SLAM jump, walls drawn twice or skewed, "grid fitted" far off
   (several degrees, or a jump between snapshots), the wrong maze side, or the run already

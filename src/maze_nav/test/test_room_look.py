@@ -68,7 +68,7 @@ def test_keepout_mask_is_lethal_in_the_cell_only():
 
 class RoomFake(Fake):
     new_look = staticmethod(Explorer.new_look)
-    for _n in ('queue_room_look', 'start_room_look'):
+    for _n in ('queue_room_look', 'start_room_look', 'side_steps'):
         locals()[_n] = getattr(Explorer, _n)
 
     def __init__(self):

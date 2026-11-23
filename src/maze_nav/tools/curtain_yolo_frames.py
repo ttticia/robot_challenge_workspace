@@ -2,7 +2,7 @@
 """Bag -> YOLO dataset frames for a curtain detector, with draft labels from depth.
 
     source /opt/ros/humble/setup.bash && source install/setup.bash
-    nice -n 19 python3 src/maze_nav/tools/curtain_yolo_frames.py ROS_bags/curtain_test1 \
+    nice -n 19 python3 src/maze_nav/tools/curtain_yolo_frames.py runs/ROS_bags/curtain_test1 \
         ~/challenge_ws/datasets/curtain [--every 3] [--max-gap 0.25] [--lidar]
 
 For every Nth colour frame (/camera/color/image_raw/compressed) it writes

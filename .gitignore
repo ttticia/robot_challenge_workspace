@@ -9,14 +9,16 @@ install/
 log/
 
 # Large local data: keep on the robot, never in git
-ROS_bags/*
-!ROS_bags/ROSBAG_GUIDE.md
-!ROS_bags/record.sh
-!ROS_bags/aliases.sh
+# runs/: bags (runs/ROS_bags), videos and run folders; only the bag guide and scripts are tracked
+runs/*
+!runs/ROS_bags/
+runs/ROS_bags/*
+!runs/ROS_bags/ROSBAG_GUIDE.md
+!runs/ROS_bags/record.sh
+!runs/ROS_bags/aliases.sh
 recordings/
-runs/
 maps/
 logs/
 
-# YOLO datasets (camera frames, may show people): keep local / share outside git
-datasets/
+# YOLO datasets are tracked; the zip snapshots are copies of datasets/curtain
+datasets/*.zip

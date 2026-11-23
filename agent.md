@@ -86,9 +86,9 @@ challenge_ws/
 │   ├── team_perception/      perception: QR scanner, depth relay (YOLO person + poster
 │   │                         detectors are built but not launched)
 │   └── to_do.md              current task list
-├── ROS_bags/                 rosbag recordings + ROSBAG_GUIDE.md (bags git-ignored, never commit)
+├── runs/ROS_bags/            rosbag recordings + ROSBAG_GUIDE.md (bags git-ignored, never commit)
 ├── hardware_testing/         logs and results from earlier hardware sessions
-├── maps/, recordings/, runs/ created by runs (git-ignored)
+├── maps/, recordings/, runs/ created by runs (git-ignored; runs/ also holds run videos)
 ├── build/ install/ log/      colcon output          (should not be in git; see section 11)
 ```
 
@@ -97,13 +97,18 @@ of the intended mission behaviour) and `SUTD_Legged_Robot_Challenge_Booklet_2026
 challenge rules). Neither is in the team repo (section 11).
 
 **Maze grid:** the explorer assumes a `maze_cols` x `maze_rows` grid (default 5 x 3) of
-`cell_size` m cells (1.02), with the start cell (0, 0) in a corner, centred on the robot's
-start pose, and +i along its start heading. The two competition arenas are mirrored: set
-`maze_side:=left` (default) or `right` for the arena you run in (`auto` is experimental and
-picked the wrong side in the sim). Every 5 s the grid is refitted to the mapped walls
+`cell_size` m cells (1.02); cell (0, 0) is centred on the robot's start pose, +i along its
+start heading. Where the maze lies around it (no side setting since 2026-11-23, user):
+the booklet only says the start is in the first row and the start heading may point any way,
+so every 5 x 3 / 3 x 5 placement with the start cell on its outline (24) counts until the map
+rules it out (`scene_cells.maze_boxes`, `Explorer.decide_side`: the robot stood well inside
+a cell outside it, or >= `box_open_sides` (2) of its outer sides read open); "maze
+placement found" is logged when one is left. The run ends only at the exit (user
+2026-11-23): with nothing left to explore and no exit found it never ends `NO_EXIT`; every
+`exit_retry_wait` s (10) it forgets its failed and visited goals and explores again. Every 5 s the grid is refitted to the mapped walls
 (at most 8° / 0.35 m off the start-pose grid; `scene_cells.fit_grid`) and published on
-`/maze/grid`, which `scene_trigger` follows. **The robot never leaves the grid:** frontier
-goals outside it are dropped. Once every cell inside is explored, the exit is an outer side
+`/maze/grid`, which `scene_trigger` and `cell_features` follow. **The robot never leaves
+the grid:** frontier goals outside every still-possible placement are dropped. Once every cell inside is explored, the exit is an outer side
 open on the final map (and on >= `exit_confirm` (3) replans during the run). It is not
 decided earlier because the start cell's sides read open until its walls are mapped. The robot
 drives to the cell inside the exit (the drone's launch cell): Nav2 stops within 0.2 m, so it
@@ -173,19 +178,21 @@ design decisions (D1–D11) are drawn in `src/bt.md`. On the way:
 - **Junctions** (`JUNCTION`, D2/D5/D6): for each adjacent cell not visited yet, left-most
   first, it turns to face it, moves sideways (`linear.y`, at most `max_lateral` 0.10 m/s in
   the bridge) onto the junction cell's centre line, and holds `junction_hold` (1 s) with
-  perception (QR) on and one `/scene/capture` (kind `junction`). The sideways move is skipped
-  when the turn ended more than 10° off the way, and stops when it stops closing in (an
-  unmapped wall). It leaves the cell only once every way is scanned, by the nearest
-  unexplored way. Dead-end ways aren't visited. An object room seen in the scan is marked
-  explored (D7: no goal, no room look-in).
+  perception (QR) on. The sideways move is skipped when the turn ended more than 10° off the
+  way, and stops when it stops closing in (an unmapped wall). Only a way into a dead end
+  sends a `/scene/capture`, followed by the dead end's side looks (user 2026-11-23). The robot
+  leaves once every way is scanned, by the nearest unexplored way; dead-end ways aren't
+  visited. An object room captured in the scan is marked explored (D7: no goal, no room
+  look-in).
 - **Candidate queue** (D3/D10): possible stairs and curtains seen in junction or dead-end
   looks are held by the detectors (`/stairs/candidate` + `/maze/stairs_release`,
   `/curtain/candidate` + `/maze/curtain_release`) and queued in the explorer. After a
   junction scan, or when nothing else is left (before `NO_EXIT`), it checks them nearest
   first: drives to 1.2 m in front, faces it, releases it, and waits `candidate_wait` (15 s)
   for the detector's `HANDOVER`.
-- **Dead ends** (`DEAD_END`): it holds facing in, then looks at each side wall in Pose mode
-  (tilt compensation over 30°). Perception runs only during these looks (`/maze/perceive`).
+- **Dead ends** (`DEAD_END`): from the centre of the cell before it, it holds facing in, then
+  turns 25° left and right (`side_turn`; `side_pose:=true` = Pose-mode yaw, ~13°). Tilt
+  compensation over 30°. Perception runs only during these looks (`/maze/perceive`).
   A dead end is never entered. With `scene_understanding:=true` the explorer waits for the
   AI verdict on `/scene/result`: a room (`scene_type` kitchen / market / workshop / clinic /
   cleaning_room, or any object) is blacklisted, stairs or a curtain go to the candidate
@@ -228,7 +235,7 @@ but the first 4 cores, and image work runs only while `/maze/perceive` is True (
 and junction looks, `FACING_QR`; `run_gate.py`). Everything runs on the robot computer (there
 is no external-computer mode any more; see section 12 for the CPU budget). Inputs, requirements and what works with less data:
 `src/team_perception/data_required.md`. Snapshots and CSV logs go to `~/qr_logs/` and
-`~/poster_logs/`. Recording guide: `ROS_bags/ROSBAG_GUIDE.md`.
+`~/poster_logs/`. Recording guide: `runs/ROS_bags/ROSBAG_GUIDE.md`.
 
 ## 4. Dependencies that are NOT in this repository
 
@@ -428,7 +435,7 @@ morning); `make_challenge_mazes.py` draws each arena in its docstring.
 | Maze | Grid | What it tests |
 |---|---|---|
 | `challenge_a.json` | 5 x 3, 1.02 m, left | Curtain and stairs on the route; exit +x of the final cell (4, 2) |
-| `challenge_a_mirror.json` | 5 x 3, 1.02 m, right | The same arena mirrored (the other competition arena); run with `maze_side:=right` (run_sim.sh passes the file's side) |
+| `challenge_a_mirror.json` | 5 x 3, 1.02 m, right | The same arena mirrored (the other competition arena); the placement is found on the map (no side setting) |
 | `challenge_a_no_curtain.json` | 5 x 3, 1.02 m, left | `challenge_a` without the curtain (its passage open) |
 | `challenge_a_flat.json` | 5 x 3, 1.02 m, left | `challenge_a` without the curtain or the stairs: the exit and launch-cell parking without the two features the sim can't cross yet (the curtain stalled the 2026-11-22 run; AI-mode stair crossing isn't simulated) |
 | `challenge_b.json` | 5 x 3, 1.02 m, left | Stairs on the route, curtain in front of a survivor room, exit on the long side (+y of (2, 2)) |
@@ -450,8 +457,8 @@ detector), `curtain_yolo_frames.py` (bag → draft YOLO curtain dataset), `step_
 
 ## 10. Recording data
 
-Use the `rec_*` aliases from `ROS_bags/aliases.sh` (loaded by `~/.bashrc` on the robot). Each
-runs a preset in `ROS_bags/record.sh`. Full guide: `ROS_bags/ROSBAG_GUIDE.md`.
+Use the `rec_*` aliases from `runs/ROS_bags/aliases.sh` (loaded by `~/.bashrc` on the robot). Each
+runs a preset in `runs/ROS_bags/record.sh`. Full guide: `runs/ROS_bags/ROSBAG_GUIDE.md`.
 
 ```bash
 rec_full <run_name>      # teleop, everything incl. depth (Ctrl+C to stop)
@@ -459,7 +466,7 @@ rec_maze                 # full maze_nav run (nav + perception + explorer topics
 rec_curtain <run_name>   # teleop: curtain YOLO training bag (colour, depth, lidar), ROSBAG_GUIDE 2.5
 rec_list                 # all presets (also navdebug, lidar)
 rec_last                 # ros2 bag info for the newest bag
-python3 ~/bag_to_video.py ~/challenge_ws/ROS_bags/<run_name>   # bag -> mp4, see ROSBAG_GUIDE §4
+python3 ~/bag_to_video.py ~/challenge_ws/runs/ROS_bags/<run_name>   # bag -> mp4, see ROSBAG_GUIDE §4
 ```
 
 `rec_full` uses about 1.6 GB per minute; the robot disk had about 11 GB free (check `df -h`). `/tf`
@@ -481,7 +488,7 @@ runs; `rec_full` and `rec_curtain` refuse to start while Nav2 is running.
   `src/bt_diagram.md` and the challenge booklet. Change code in the team repo, then refresh
   the mirror (recipe in `skills.md`); don't hand-edit the mirrored files, or the next refresh
   overwrites them.
-- Never commit `build/`, `install/`, `log/`, bags in `ROS_bags/`, `maps/`, or other
+- Never commit `build/`, `install/`, `log/`, bags in `runs/ROS_bags/`, `maps/`, or other
   files over 100 MB.
 
 ## 12. Known issues and TODO
@@ -550,12 +557,69 @@ Testing and workflow (sections 8, 9):
   `/junction_detected`, `/qr/read`, `/qr/unread`, and the 2026-11-22 topics (`/scene/result`,
   `/scene/retry`, `/maze/grid`, `/maze/launch_cell`, `/maze/ai_status`, `/*/candidate`,
   `/maze/*_release`, `/maze/floor_est`; section 5) aren't in any
-  group in `ROS_bags/record.sh`, and group G still lists the dead
+  group in `runs/ROS_bags/record.sh`, and group G still lists the dead
   `/camera/color/image_offboard/compressed`. Add them after `--` until `record.sh` is updated
-  (`ROS_bags/ROSBAG_GUIDE.md` §1).
+  (`runs/ROS_bags/ROSBAG_GUIDE.md` §1).
 - **This machine's `install/` is a copy, not symlinks** (built without
   `--symlink-install`, section 2). Rebuild `maze_nav` after changing its config, launch
   files or code, or runs use the old version.
+
+### Rolling pin: forward push (designed 2026-11-23, removed for now)
+
+The rolling pin is an ~18 cm bar across the middle of a straight cell, wall to wall. H-Step
+steps over it, but only with 0.5–2 s of steady forward drive (user). Anything that stops or
+turns the robot with its feet against the bar, or with the bar under the body, can leave it
+stuck half over. Causes: Nav2 slowing to a goal on the pin (RPP approach scaling), the
+explorer cancelling the goal (dead-end hold, QR facing, a stair or curtain handover), a turn
+on the spot, or a Pose look.
+
+**In the tree now**
+- `stairs_lidar.find_pin` finds the bar in the lidar height map and adds a `pin` entry to
+  `/maze/terrain` (odom `x`/`y`, `at` m ahead, normal `yaw` ±10°, `height`, `depth`). Only the
+  pin counts: cells ≥ 14 cm, a band ≤ 0.28 m deep covering most of a 0.6 m strip, flat floor
+  on both sides. Slats, rubble, plate edges and steps are rejected (`test_rolling_pin.py`).
+  It searches bar angles ±30°, costs ~2 ms per call, and is found from 1.2 m out to ~0.1 m.
+- `curtain_detector` remembers those pins in odom. Within the curtain crossing, a wiggle
+  becomes a straight creep when a pin lies from under the body to `pin_near` (10 cm) past its
+  front. There are no dedicated tests for this yet.
+- The `fake_maze_lite3` parameter `pin_stall` (default 0 = off) holds each pair of feet at
+  a pin until /cmd_vel has driven forward without turning for that many seconds
+  (`test_challenge_mazes.py`). Set it to 1.0 to reproduce the problem in the simulator.
+
+**Removed: the push in `cmd_vel_bridge`.** If it comes back, the design was:
+- **Start:** Nav2 walking forward (linear.x ≥ 0.03), the `/maze/terrain` pin younger than
+  1.5 s, the bar ≤ 0.35 m ahead of base_link (front feet reaching it), and a wall on
+  `/wall_scan` (±25°) further than 0.12 m from the body front.
+- **During the push:** the bridge drives itself at 10 Hz, straight ahead at
+  `terrain_obstacle_speed` (the cap already in force, so no new speed). Heading is held with
+  the AI-walk gain. Nav2 commands are dropped, and the idle stop doesn't fire.
+- **End:** /odom shows the bar distance plus 0.40 m travelled along the start heading (rear
+  feet clear; footprint rear 0.37 m). Nav2 is forwarded again, with one zero Twist if it
+  has gone quiet.
+- **Give up:** less than 3 cm of progress in 3 s, or 15 s in total. That pin is then not
+  pushed again for 30 s.
+- **Stop:** a wall closer than 0.12 m to the body front, `/wall_scan` older than 1 s,
+  stale sensors or an odom jump (the usual pause), AI mode, or a latch.
+- **Other behaviour:** Pose looks and lie-downs wait until the push is over (the explorer
+  waits up to `pose_wait`, 6 s). `/maze/push_status` reports IDLE / PUSHING / DONE /
+  GAVE UP / STOPPED.
+- **Open point:** a push can carry the robot up to ~0.4 m past a Nav2 goal, close to the
+  explorer's `false_success_dist` (0.5 m).
+
+**Pin behind a curtain** (curtain on the cell edge, bar ~0.48 m past the curtain line):
+- **Blind spot:** the fabric hides the bar. Through the 15 cm gap the lidar sees it only
+  from ≳ 1.1 m in front of the curtain (geometry estimate, not tested). During the crossing
+  the sensors are covered.
+- **Where the crossing stops:** THROUGH stops at 0.20 m past the line, with the front feet a
+  few cm short of the bar, and then wiggles ±20° and creeps 5 cm at a time. Wiggles are
+  replaced by straight creeps near a known pin (above).
+- **Ideas not done:**
+  - Look for a band of returns 10–20 cm above the floor, 0.3–0.7 m behind the line, during
+    the curtain inspection, and tag the curtain.
+  - With such a tag, walk through in one steady drive to the bar plus 0.40 m. Not for every
+    curtain: a room's back wall or toy set can be within 0.9 m.
+  - During THROUGH, treat a stall as a bar: keep driving straight for up to ~3 s before
+    calling it blocked.
 
 ### CPU budget (read before adding a node or raising a rate)
 

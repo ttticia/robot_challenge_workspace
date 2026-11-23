@@ -266,10 +266,10 @@ domain is empty with `ros2 node list` first; 89 is for `maze_nav`'s simulator:
 
 ```bash
 export ROS_DOMAIN_ID=141 ROS_LOCALHOST_ONLY=1
-ros2 bag play ~/challenge_ws/ROS_bags/<bag> &
+ros2 bag play ~/challenge_ws/runs/ROS_bags/<bag> &
 ros2 launch team_perception robot.launch.py
 ```
 
 Record perception during a run with the `rec_*` presets (for example `rec_maze`) in
-`~/challenge_ws/ROS_bags/ROSBAG_GUIDE.md`. **Don't record raw depth during an autonomous run**:
+`~/challenge_ws/runs/ROS_bags/ROSBAG_GUIDE.md`. **Don't record raw depth during an autonomous run**:
 it stalled Nav2.

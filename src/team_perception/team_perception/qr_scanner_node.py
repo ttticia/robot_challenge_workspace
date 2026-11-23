@@ -30,6 +30,11 @@ given a room point. QR DETECTION - /qr/unread (FACING_QR) and the slow contrast-
 upscale full scans - only inside maze_explorer's dead-end window (/maze/perceive,
 run_gate.py), at rate_hz. Both stop in run_gate's pause_states (stairs, curtains, start-up).
 read_everywhere:=false = the old rule (nothing outside the window).
+
+detect (default False since 2026-11-23, user: "remove QR detection, only read the QR
+codes"): no detection at all - no /qr/unread (so no FACING_QR turns), no contrast-boost /
+upscale full scans; codes are only read, with plain decodes at roam_rate_hz while the run
+is under way (dead ends included). detect:=true = the dead-end detection above.
 """
 import csv
 import json
@@ -77,6 +82,7 @@ class QrScanner(Node):
         p('rate_hz', 30.0)             # max decodes per second (0 = as fast as possible)
         #                                inside the dead-end window
         p('read_everywhere', True)     # outside the window still read codes (plain decodes)
+        p('detect', False)             # QR detection (full scans, /qr/unread); off = read only
         p('roam_rate_hz', 5.0)         # ... at most this many frames a second (0 = rate_hz)
         p('full_scan_every', 5)        # every Nth decode also tries contrast boost + 2x
         #                                upscale (finds small/far codes, ~5x slower); 0 = never
@@ -108,6 +114,7 @@ class QrScanner(Node):
         rate = g('rate_hz')
         self.min_period = 1.0 / rate if rate > 0 else 0.0
         self.read_everywhere = bool(g('read_everywhere'))
+        self.detect_on = bool(g('detect'))
         roam = g('roam_rate_hz')
         self.roam_period = 1.0 / roam if roam > 0 else 0.0
         self.last_taken = -1e9         # time the last frame was handed to the decoder
@@ -164,8 +171,8 @@ class QrScanner(Node):
 
     # --- callbacks ---------------------------------------------------------------
     def detecting(self):
-        """Dead-end window: full scans + /qr/unread (FACING_QR)."""
-        return self.gate.active
+        """Dead-end window: full scans + /qr/unread (FACING_QR); never with detect off."""
+        return self.detect_on and self.gate.active
 
     def on_image(self, msg):
         if not self.detecting():

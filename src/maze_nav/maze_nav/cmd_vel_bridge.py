@@ -49,7 +49,8 @@ Nav2 can't talk to the robot directly, so this glue stays:
   driving, then on /simple_cmd: manual mode (0x21010C02; AI mode can't be entered from auto
   mode), AI state (0x21010528), AI basic gait (0x2101052A), `ai_settle` s apart. While in AI
   mode Nav2 commands are dropped.
-  AI walk (ai_walk_distance > 0, default 1.3 m, user 2026-11-21): `ai_walk_delay` s after the
+  AI walk (ai_walk_distance > 0, default 2.0 m since 2026-11-23: over the whole pyramid into
+  the next cell's centre; heading held with ai_walk_heading_gain): `ai_walk_delay` s after the
   AI basic gait, this node itself publishes straight-ahead /cmd_vel at `ai_walk_speed`
   (0.1 m/s, 10 Hz) until /odom shows `ai_walk_distance` travelled in the plane, then ONE zero
   Twist. It also stops (zero Twist) when there is less than 0.1 m of progress in
@@ -69,6 +70,16 @@ Nav2 can't talk to the robot directly, so this glue stays:
   2026-11-21): forward speed <= `terrain_rough_speed` while the strip ahead is rough, <=
   `terrain_obstacle_speed` for obstacle / drop (slats, blocks, a plate edge). Older than
   `terrain_timeout` s or unknown: no cap. Gait switching on terrain is NOT done (to_do.md).
+- Terrain push (`terrain_push_speed`, 0 = off; user 2026-11-23, runs/IMG_1673.MOV: the robot
+  trotted on the spot with its front feet at the edge of the block field, 0.10 m/s and turns
+  on the spot never got it up): Nav2 driving forward, standing on even ground, the terrain
+  ahead 'obstacle' and its 'edge' within `terrain_push_start` m -> the bridge drives straight
+  ahead by itself at `terrain_push_speed`, holding the heading, for edge +
+  `terrain_push_past` m on /odom (all four feet onto the tile), ignoring Nav2 meanwhile.
+  Ends early on a pause / sensor fault, a Pose look, lying down, AI mode, or after the
+  distance's time + 3 s. Not again for `terrain_push_cooldown` s, nor until the robot has
+  been back on even ground with no raised edge that near (inside the cell the speed cap
+  applies as before).
   drive:=false: nothing is sent (logged).
 - Pose-mode looks (`pose_yaw_topic`, /maze/pose_yaw, std_msgs/Float32: body yaw in rad,
   + = left, relative to where the feet stand; NaN = done). The explorer uses these instead
@@ -164,6 +175,27 @@ def terrain_cap(level, age, max_v, rough=0.15, obstacle=0.10, timeout=2.0):
     return max_v
 
 
+def push_armed(armed, edge, on_rough, start=0.45):
+    """Armed = the robot was last seen on even ground with no raised edge within `start` m:
+    the next edge that comes within `start` is one it is ENTERING. (on_rough alone can't say
+    that: its 0.45 m disc under the robot reaches the edge just as the push should start.)
+    Stays as it was in between; start_push disarms it when a push starts."""
+    if not on_rough and (edge is None or edge > start):
+        return True
+    return armed
+
+
+def push_distance(level, edge, armed, age, v_cmd, start=0.45, past=0.35, timeout=2.0):
+    """m to push straight ahead onto uneven terrain, or None: /maze/terrain says 'obstacle'
+    ahead with its edge within `start` m, the robot came from even ground (`armed`: entering,
+    not already on it) and Nav2 is driving forward."""
+    if level != 'obstacle' or edge is None or not armed or age is None or age > timeout:
+        return None
+    if v_cmd <= 0.02 or edge > start:
+        return None
+    return max(0.0, edge) + past
+
+
 def clamp(value, limit):
     return max(-limit, min(limit, value))
 
@@ -209,7 +241,18 @@ class CmdVelBridge(Node):
         p('ai_on_stairs', True)         # AT_STAIRS lined up -> AI mode, no more velocity
         p('stairs_status_topic', '/stairs/status')
         p('ai_settle', 1.0)             # s still before the first mode command, and between them
-        p('ai_walk_distance', 1.3)      # m forward in AI mode after the switch; 0 = don't walk
+        # m forward in AI mode after the switch; 0 = don't walk. 2.0 (2026-11-23, was 1.3):
+        # the practice stairs are a PYRAMID, 3 x 15 cm up and 3 down, 20 cm treads, ~1.0 m in
+        # one cell (maze_info.md). From the line-up (base_link 0.45 m before the first riser)
+        # 0.45 + 1.02 (stair cell) + 0.51 = 1.98 m puts base_link at the centre of the cell
+        # after the stairs, all four feet off them; 1.3 m ended on the down flight, where AI
+        # mode would be left mid-staircase (booklet F.6: leave it 1 cell AFTER the stairs).
+        p('ai_walk_distance', 2.0)
+        # Heading hold during the walk: angular.z = -gain x (yaw - yaw at the walk's start),
+        # at most ai_walk_max_turn rad/s (0 gain = straight ahead only, as before). The walk is
+        # the only velocity sent in AI mode (user 2026-11-19); this only steers it.
+        p('ai_walk_heading_gain', 1.0)
+        p('ai_walk_max_turn', 0.15)
         p('ai_auto_exit', True)         # walk done -> leave AI mode, auto mode, explore on
         p('ai_walk_speed', 0.1)         # m/s for that walk (clamped to max_linear)
         p('ai_walk_delay', 2.0)         # s after the AI basic gait before walking
@@ -245,6 +288,11 @@ class CmdVelBridge(Node):
         p('terrain_rough_speed', 0.15)  # m/s
         p('terrain_obstacle_speed', 0.10)
         p('terrain_timeout', 2.0)
+        # Terrain push (see the module text): 0 speed = off.
+        p('terrain_push_speed', 0.25)   # m/s straight ahead onto the tile (clamped to max_v)
+        p('terrain_push_start', 0.50)   # m: the raised edge this near ahead of base_link starts it
+        p('terrain_push_past', 0.35)    # m driven past the edge (base_link; the body is 0.6 m)
+        p('terrain_push_cooldown', 5.0)  # s after a push before the next
         # Floor under the feet (stair_detector) for the lying / standing height, instead of
         # wall_scan's start floor: a curtain cell or room on the bare lab floor is 5-10 cm
         # below a raised start plate, so the robot standing there measured ~0.19 m, "not
@@ -309,6 +357,8 @@ class CmdVelBridge(Node):
         self.gait_code = GAITS.get(self.gait_req)
         self.walk_dist = max(0.0, float(get('ai_walk_distance')))
         self.walk_dist_down = max(0.0, float(get('ai_walk_distance_down')))
+        self.walk_gain = max(0.0, float(get('ai_walk_heading_gain')))
+        self.walk_max_turn = max(0.0, float(get('ai_walk_max_turn')))
         self.walk_dist_now = self.walk_dist     # the stairs being switched for: up or down
         self.walk_speed = min(abs(float(get('ai_walk_speed'))), self.max_v)
         self.walk_delay = float(get('ai_walk_delay'))
@@ -347,7 +397,12 @@ class CmdVelBridge(Node):
         self.terrain_level, self.terrain_at = None, -1e9
         self.terrain_cfg = {n: float(get(n)) for n in ('terrain_rough_speed',
                                                         'terrain_obstacle_speed',
-                                                        'terrain_timeout')}
+                                                        'terrain_timeout', 'terrain_push_speed',
+                                                        'terrain_push_start', 'terrain_push_past',
+                                                        'terrain_push_cooldown')}
+        self.terrain_edge, self.push_ready = None, True   # the start cell is even floor
+        self.push, self.push_ended = None, -1e9
+        self.create_timer(0.1, self.push_tick)
         if get('terrain_topic'):
             self.create_subscription(String, get('terrain_topic'), self.on_terrain, 10)
         self.pose_phase = 'idle'          # idle -> enter -> posing -> leave -> idle
@@ -630,6 +685,7 @@ class CmdVelBridge(Node):
             return
         if w['start'] is None:
             w['start'] = self.odom_xy
+            w['yaw0'] = getattr(self, 'odom_yaw', None)
             w['best'], w['best_t'] = 0.0, now
             self.get_logger().warn(f'AI walk: driving {w["dist"]:.2f} m forward')
         dx, dy = self.odom_xy[0] - w['start'][0], self.odom_xy[1] - w['start'][1]
@@ -645,7 +701,18 @@ class CmdVelBridge(Node):
             return
         out = Twist()
         out.linear.x = self.walk_speed
+        out.angular.z = self.walk_turn(w)
         self.pub.publish(out)
+
+    def walk_turn(self, w):
+        """Heading hold for the AI walk: back towards the yaw it started with, clamped."""
+        yaw0, yaw = w.get('yaw0'), getattr(self, 'odom_yaw', None)
+        gain = getattr(self, 'walk_gain', 0.0)
+        if yaw0 is None or yaw is None or gain <= 0.0:
+            return 0.0
+        err = math.atan2(math.sin(yaw - yaw0), math.cos(yaw - yaw0))
+        lim = getattr(self, 'walk_max_turn', 0.15)
+        return float(max(-lim, min(lim, -gain * err)))
 
     def end_walk(self, why, warn=False, done=False):
         """One zero Twist if the walk was driving. Done (the whole distance) and ai_auto_exit:
@@ -850,10 +917,67 @@ class CmdVelBridge(Node):
 
     def on_terrain(self, msg):
         try:
-            self.terrain_level = json.loads(msg.data).get('level')
+            t = json.loads(msg.data)
+            self.terrain_level = t.get('level')
         except (ValueError, AttributeError):
             return
+        self.terrain_edge = t.get('edge')
+        self.push_ready = push_armed(self.push_ready, self.terrain_edge,
+                                     bool(t.get('on_rough')),
+                                     self.terrain_cfg['terrain_push_start'])
         self.terrain_at = time.monotonic()
+
+    def start_push(self, v_cmd, now):
+        """True = a terrain push has started (or is running): on_cmd drops Nav2's command."""
+        if self.push is not None:
+            return True
+        c = self.terrain_cfg
+        speed = min(self.max_v, c['terrain_push_speed'])
+        if speed <= 0.0 or now - self.push_ended < c['terrain_push_cooldown'] \
+                or self.odom_xy is None:
+            return False
+        d = push_distance(self.terrain_level, self.terrain_edge, self.push_ready,
+                          now - self.terrain_at, v_cmd, c['terrain_push_start'],
+                          c['terrain_push_past'], c['terrain_timeout'])
+        if d is None:
+            return False
+        self.push_ready = False
+        self.push = {'start': self.odom_xy, 'yaw0': getattr(self, 'odom_yaw', None), 'dist': d,
+                     'speed': speed, 'until': now + d / speed + 3.0}
+        self.get_logger().warn(f'terrain push: raised edge {self.terrain_edge:.2f} m ahead; '
+                               f'driving {d:.2f} m straight at {speed:.2f} m/s (Nav2 ignored)')
+        return True
+
+    def push_tick(self):
+        """10 Hz while pushing onto uneven terrain: straight ahead, heading held."""
+        w = self.push
+        if w is None:
+            return
+        now = time.monotonic()
+        stale = [n for n in self.seen if self.sensor_age(n) > self.sensor_timeout]
+        why = None
+        if self.blocked or self.paused:
+            why = f'stopped ({self.blocked or self.paused})'
+        elif self.ai_mode or self.pose_phase != 'idle' or self.lie_phase != 'idle':
+            why = 'AI mode / Pose look / lying down'
+        elif stale:
+            why = f'no {"/".join(stale)} for > {self.sensor_timeout} s'
+        d = math.hypot(self.odom_xy[0] - w['start'][0], self.odom_xy[1] - w['start'][1])
+        if why is None and d >= w['dist']:
+            why = f'{d:.2f} m done'
+        elif why is None and now > w['until']:
+            why = f'timed out at {d:.2f} of {w["dist"]:.2f} m'
+        if why is not None:
+            self.push, self.push_ended = None, now
+            self.get_logger().warn(f'terrain push ended: {why}')
+            if not (self.blocked or self.paused or self.ai_mode):
+                self.last_cmd, self.active = now, True      # watchdog stops it if Nav2 is quiet
+            return
+        out = Twist()
+        out.linear.x = w['speed']
+        out.angular.z = self.walk_turn(w)
+        self.last_cmd, self.active = now, True
+        self.pub.publish(out)
 
     def body_h(self):
         """base_link height above the floor under the feet (stair_detector, while fresh;
@@ -1065,6 +1189,8 @@ class CmdVelBridge(Node):
             return
         out = Twist()
         now = time.monotonic()
+        if self.start_push(msg.linear.x, now):
+            return                                  # push_tick drives
         c = self.terrain_cfg
         cap = terrain_cap(self.terrain_level, now - self.terrain_at, self.max_v,
                           c['terrain_rough_speed'], c['terrain_obstacle_speed'],

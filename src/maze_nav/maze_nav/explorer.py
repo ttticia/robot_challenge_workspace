@@ -141,55 +141,47 @@ It goes back to EXPLORING when the code is read (`qr_read_topic`), when it hasn'
 for `face_lost` s, or after `face_timeout` s (that spot is then ignored for `face_cooldown`
 s, so the robot can't get stuck on it). Re-aims up to `face_max_turns` times if it drifts.
 Stairs (HANDOVER) interrupt it.
-Junction (`junction_topic`, from scene_trigger: a new cell with 2+ open ways on besides the
-way in, robot near its centre; user 2026-11-21): while EXPLORING, the explorer cancels the
-goal and, without leaving the junction cell, scans each adjacent cell not visited yet,
-left-most first (JUNCTION): turn on the spot to face it (cut short where the body would
-touch a wall), move sideways (`junction_centre`: linear.y, `centre_speed`) onto the line
-through the junction cell's centre along the robot's heading, then hold `junction_hold` s
-with perception on and one /scene/capture (kind junction). Possible stairs / curtains seen
-are queued by their detectors; an object room scanned this way is marked explored (no goal
-into it, no room look-in later). Then (`junction_follow`): queued candidates -> work the
-queue (see Candidate queue); none -> trace each way on the map (scene_cells.trace_way, up to
-`junction_trace_cells` cells), blacklist the ones ending in a dead end, and drive one cell
-into the nearest way to an unexplored cell, then explore on. A possible curtain queued on
-one of the junction's ways while another unexplored way is open (user 2026-11-22: a
-corridor beside a curtain most likely leads to a room) is taken out of the queue: that
-curtain way is not taken, only frontiers down the other ways are goals (curtain_branch
-branch_mask) until none are left for `done_confirm` replans, then the curtain goes back into
-the queue and is checked (lie-down inspection, crossing). Status stays JUNCTION
-throughout. Requests older than `junction_timeout` s or more than `junction_radius` m from
-the cell centre are dropped.
-Dead end (`dead_end_topic`: scene_trigger's /scene/trigger, kind dead_end, fired from the
-cell before it while facing it): the dead-end cell is held out of goals (not blacklisted)
-until scene understanding answers for it (user 2026-11-22, `scene_result_topic`): room ->
-blacklisted; stairs / curtain -> the candidate queue, checked after the junctions; anything
-else -> open again. No answer `scene_result_timeout` s after its last view: an object in it
-on the map -> blacklisted, not a dead end any more -> open, else /scene/retry (room_scene
-resends its views; `scene_max_attempts` tries); the last unanswered -> blacklisted. Without
-room_scene (no capture topic) it is blacklisted at once.
-While EXPLORING the explorer also cancels the goal and holds still `dead_end_hold`
-s (DEAD_END) so scene understanding gets a steady view, then, still in the cell before it,
-turns the camera to the middle of the dead end's left wall, then its right wall (the
-record's side_walls; at most `dead_end_look_angle` off the dead end's heading; cut short
-where the body would touch a wall), holding `dead_end_side_hold` s at each so the QR
-detector sees the side walls (candidates seen there are queued, user 2026-11-21), then
-explores on. During JUNCTION it holds
-`dead_end_hold` s at that way and scans the side walls the same way before the next way.
+Junction (`junction_topic`: scene_trigger saw a new cell with 2+ ways besides the way in,
+robot near its centre; user 2026-11-21), JUNCTION: the explorer cancels the goal and,
+without leaving the cell, scans each adjacent unvisited cell, left-most first: turns to face
+it (cut short before a wall), moves sideways onto the cell's centre line (`junction_centre`,
+`centre_speed`) and holds `junction_hold` s with perception on. Only a dead end's view goes
+to /scene/capture (see Dead end); an object room captured this way is marked explored, one
+not captured gets a room look-in later. Stairs / curtains seen are queued by their
+detectors. Then (`junction_follow`): work the candidate queue if any; else trace each way
+(scene_cells.trace_way, `junction_trace_cells`), skip dead-end ways and drive one cell into
+the nearest way to an unexplored cell. A possible curtain on one way while another
+unexplored way is open (user 2026-11-22) waits: only frontiers down the other ways are
+goals (curtain_branch branch_mask) until none are left for `done_confirm` replans, then the
+curtain is checked. Status stays JUNCTION throughout. Requests older than
+`junction_timeout` s or farther than `junction_radius` m from the cell centre are dropped.
+Dead end (`dead_end_topic`: scene_trigger's /scene/trigger, kind dead_end, sent from the
+cell before it while facing it), DEAD_END: drive to the centre of the cell before it
+(`dead_end_stance`, skipped within `dead_end_stance_tol`), square up facing in, hold
+`dead_end_hold` s, then look `side_turn` (25 deg) left and right, `dead_end_side_hold` s
+each, by physical wall-checked turns (user 2026-11-23). `side_pose` true = Pose-mode body
+yaw instead (~13 deg: misses the near half of the side walls); side_turn 0 = towards each
+side wall's middle. A dead end met in a junction scan gets the same looks after that way's
+hold (scene_trigger said so, or the map shows the cell walled on three sides:
+junction_way_dead_end); the three views make one room_scene record. Room look-ins use the
+same looks.
+Scene understanding runs only at dead ends / rooms (user 2026-11-23). A dead end is held out
+of goals until it answers (`scene_result_topic`): room -> blacklisted; stairs / curtain ->
+the candidate queue; else open. No answer `scene_result_timeout` s after the last view:
+object on the map -> blacklisted, no longer a dead end -> open, else /scene/retry
+(`scene_max_attempts` tries), then blacklisted. Without room_scene: blacklisted at once.
 Stairs interrupt both; curtains don't (see Curtains).
-Pose-mode looks (`pose_looks`, user's call 2026-11-19): the dead-end side-wall looks don't
-turn the robot (no Nav2 /spin). The start scan is NOT a Pose-mode look any more: it always
-turns the robot with Nav2 /spin, 30 deg left, 60 right, 30 left (user 2026-11-20). In a
-look the feet stay put and only the body yaws in Lite3 Pose mode: the explorer publishes the body yaw it wants (map-frame offset from
-the stance heading, + = left, at most `pose_max_yaw` * `pose_axis_limit`, cut where the body
-box + `pose_margin` would touch a wall over the sweep plus `pose_overshoot`; none when the box
-+ `pose_margin` already touches a wall at the stance: motor buzzing, run 2026-11-21 10:56) on `pose_yaw_topic` at 10 Hz, and cmd_vel_bridge switches modes and sends the yaw axis
-command (see its doc). The hold counts from the bridge's POSING (/maze/pose_status) plus
-`pose_turn_time` s for the body to get there. Dead end: left wall, right wall, `dead_end_side_hold` s
-each. No POSING within `pose_wait` s: that look is skipped. While /maze/pose_status says
-UNAVAILABLE (sim, drive:=false, no transfer_interfaces), or with pose_looks:=false, the old
-Nav2 spins are used. Also while stair_detector's /maze/terrain says the robot stands on rough
-ground (on_rough: a block field; presentation maze 2026-11-21), so no body twist is held there.
+Pose-mode looks (`pose_looks`): the feet stay put and only the body moves. Used for the side
+looks with side_pose and for the tilt-compensating pitch at a dead end; the start scan
+always spins (30 deg left, 60 right, 30 left; user 2026-11-20). The explorer publishes the
+body yaw (offset from the stance heading, + = left) on `pose_yaw_topic` at 10 Hz: at most
+`pose_max_yaw` * `pose_axis_limit`, cut where the body box + `pose_margin` would touch a
+wall over the sweep + `pose_overshoot`, none if it touches one already (motor buzzing,
+2026-11-21 10:56). cmd_vel_bridge switches modes and sends the axes (see its doc). The hold
+counts from the bridge's POSING (/maze/pose_status) + `pose_turn_time` s; no POSING within
+`pose_wait` s: look skipped. Nav2 spins instead while /maze/pose_status says UNAVAILABLE
+(sim, drive:=false, no transfer_interfaces), with pose_looks:=false, or on rough ground
+(stair_detector /maze/terrain on_rough).
 Objects (`object_keepout`, 2026-11-21): 'footprint' keeps only the object's box (+ margin) out
 of the explorer's map, /maze/map and the Nav2 keepout mask, so the free half of a room can be
 entered; 'cell' blocks the whole cell (never entered).
@@ -243,7 +235,8 @@ from maze_nav.curtain_branch import (CurtainHold, Deferral, branch_mask, in_mask
                                     needs_crossing, way_towards)
 from maze_nav.curtains import clear_curtains, curtains_from_json
 from maze_nav.scene_cells import (DIRECTIONS, CellGrid, block_boxes, block_cells,
-                                             boundary_sides, cell_objects, exit_cell,
+                                             box_contains, box_sides, cell_objects,
+                                             describe_box, exit_cell, maze_boxes,
                                              fit_grid, grow_box, in_boxes, object_box, opening,
                                              side_heading, side_walls, trace_way)
 from touble_shooting.live_params import attach as attach_live_params
@@ -388,6 +381,10 @@ class Explorer(Node):
         p('min_frontier_size', 5)      # cells
         p('robot_width', 0.46)         # m, footprint width (nav2_params.yaml)
         p('min_frontier_width_ratio', 0.8)   # frontiers narrower than this x robot_width: ignored
+        # Extra cost per metre of path over cells the robot has already stood in (user
+        # 2026-11-23: less backtracking): a frontier goal over new floor wins over one up to
+        # this fraction nearer back through visited cells. 0 = plain nearest frontier.
+        p('visited_cost', 0.25)
         # A goal is cancelled after goal_timeout s without the robot moving goal_progress m
         # (was a flat 90 s per goal: pinned on a wall, Nav2 retried 4 x 20 s in the 2026-11-21
         # sim), or after goal_max_time s in all (long goals at 0.15 m/s still get there).
@@ -448,8 +445,19 @@ class Explorer(Node):
         # robot goes to the nearest, *_approach m in front of it, faces it and releases it
         # (/maze/stairs_release, /maze/curtain_release) for the check; then the next. '' = off.
         p('stairs_candidate_topic', '/stairs/candidate')
+        # cell_features (2026-11-23): toy sets stand taller than the 0.53 m walls, so lidar
+        # points 0.58-1.30 m inside a cell mark a room even when the toys merge into the
+        # back wall on /map (object cells there missed them). An 'object' cell in
+        # toyset_confirm messages in a row (2 Hz) inside the maze gets a room look-in
+        # (queue_room_look), also next to the stairs (the high band tells the two apart).
+        p('cell_features_topic', '/maze/cell_features')
+        p('toyset_confirm', 3)
         p('stairs_release_topic', '/maze/stairs_release')
         p('stairs_approach', 1.2)
+        # Stairs beside the robot's cell are checked at once (user 2026-11-23: the stairs on
+        # the left of the 2nd cell were queued at the start and reached 5 min later, from the
+        # wrong spot); false = stairs only once nothing else is left (user 2026-11-22).
+        p('stairs_check_near', True)
         p('curtain_candidate_topic', '/curtain/candidate')
         p('curtain_release_topic', '/maze/curtain_release')
         p('curtain_check_approach', 1.2)
@@ -473,11 +481,16 @@ class Explorer(Node):
         # exit_cell_margin m outside the grid. 0 = size unknown: old exit behaviour.
         p('maze_cols', 5)
         p('maze_rows', 3)
-        # The two arenas are mirrored (booklet D, F): the maze lies to the left of the start
-        # heading (+j) or to its right; set it for the arena you run in. auto = both until the
-        # robot stands in a cell off the start row: EXPERIMENTAL, it decided the wrong side in
-        # the sim (2026-11-22: frontiers outside the real maze are allowed until it decides).
-        p('maze_side', 'left')
+        # Where the maze lies around the start cell (scene_cells.maze_boxes): the start is
+        # somewhere in the first row and the start heading may point any way (booklet H), so
+        # every cols x rows / rows x cols placement with the start cell on its outline counts
+        # until the map rules it out (decide_side: the robot stood in a cell outside it, or
+        # >= 2 of its outer sides read open). No side setting (user 2026-11-23).
+        # The run ends only at the exit (user 2026-11-23: the maze has exactly one): with
+        # nothing left to try and no exit found, the failed and visited frontier goals are
+        # forgotten, the costmaps cleared, and it explores again every exit_retry_wait s.
+        p('exit_retry_wait', 10.0)
+        p('box_open_sides', 2)       # outer sides confirmed open that rule a placement out
         p('exit_cell_margin', 0.15)
         p('exit_confirm', 3)
         p('launch_tolerance', 0.25)
@@ -570,6 +583,17 @@ class Explorer(Node):
         p('dead_end_hold', 0.5)        # s holding still facing a dead end
         p('dead_end_side_hold', 1.0)   # s holding at each of its side walls
         p('dead_end_look_angle', math.radians(60))   # rad: side-wall turn at most this off
+        # Side walls: from the centre of the cell before the dead end / room, facing in, look
+        # side_turn left and right (dead_end_side_hold s each). side_pose False (user
+        # 2026-11-23): physical wall-checked turns. True: Pose-mode body yaw, ~13 deg at most,
+        # which leaves the near half of the side walls (QR codes) out of the 69 deg view.
+        # side_turn 0 = towards each side wall's middle.
+        p('side_turn', math.radians(25))
+        p('side_pose', False)
+        # DEAD_END (while exploring): first drive to the centre of the cell before the dead
+        # end and square up facing in, unless already within dead_end_stance_tol m of it.
+        p('dead_end_stance', True)
+        p('dead_end_stance_tol', 0.12)
         # curtain_detector: map override + walk-through handshake. '' = ignore curtains.
         p('curtain_topic', '/curtain/status')
         p('curtains_topic', '/curtain/curtains')
@@ -622,7 +646,7 @@ class Explorer(Node):
         p('scene_look_grace', 30.0)
         p('map_dir', os.path.expanduser('~/challenge_ws/maps'))
         g = lambda n: self.get_parameter(n).value  # noqa: E731
-        self.cfg = {n: g(n) for n in ('go', 'start_delay', 'wait_for_start', 'robot_radius', 'goal_clearance',
+        self.cfg = {n: g(n) for n in ('go', 'start_delay', 'wait_for_start', 'robot_radius', 'goal_clearance', 'visited_cost',
                                       'min_frontier_size', 'robot_width', 'min_frontier_width_ratio', 'goal_timeout', 'goal_progress', 'goal_max_time', 'max_failures', 'done_confirm', 'max_recoveries',
                                       'max_runtime', 'map_dir', 'creep_distance', 'creep_speed',
                                       'start_scan', 'scan_angle', 'footprint_back',
@@ -642,13 +666,15 @@ class Explorer(Node):
                                       'junction_follow', 'junction_dead_end_hold',
                                       'junction_trace_cells', 'junction_align_tol',
                                       'dead_end_hold', 'dead_end_side_hold',
+                                      'side_turn', 'side_pose', 'dead_end_stance', 'dead_end_stance_tol',
                                       'dead_end_look_angle', 'curtain_timeout', 'curtain_approach',
                                       'curtain_goal_radius', 'curtain_spot_wait', 'pose_looks', 'pose_max_yaw',
                                       'pose_axis_limit', 'pose_margin', 'pose_overshoot',
-                                      'start_back_depth', 'start_back_width',
+                                      'start_back_depth', 'start_back_width', 'stairs_check_near',
                                       'stairs_approach',
                                       'block_objects', 'cell_size', 'object_border',
-                                      'maze_cols', 'maze_rows', 'maze_side', 'exit_cell_margin',
+                                      'maze_cols', 'maze_rows', 'exit_retry_wait', 'box_open_sides',
+                                      'exit_cell_margin',
                                       'exit_confirm', 'launch_tolerance', 'launch_retries',
                                       'launch_yaw_tolerance', 'grid_fit', 'grid_fit_period',
                                       'grid_fit_max_yaw', 'grid_fit_max_shift',
@@ -656,6 +682,7 @@ class Explorer(Node):
                                       'object_min_extent', 'object_min_pixels', 'object_confirm',
                                       'object_keepout', 'object_keepout_margin',
                                       'room_looks', 'room_look_radius', 'room_look_hold',
+                                      'toyset_confirm',
                                       'room_look_max', 'room_stair_radius',
                                       'pose_turn_time', 'pose_wait', 'scan_hold',
                                       'pose_max_pitch', 'tilt_comp', 'tilt_threshold',
@@ -716,6 +743,9 @@ class Explorer(Node):
             self.create_subscription(String, g('stairs_topic'), self.on_stairs, LATCHED)
         self.stairs_release_pub = self.create_publisher(
             String, g('stairs_release_topic'), 10) if g('stairs_release_topic') else None
+        if g('cell_features_topic'):
+            self.create_subscription(String, g('cell_features_topic'), self.on_cell_features,
+                                     LATCHED)
         if g('stairs_candidate_topic') and g('stairs_topic'):
             self.create_subscription(String, g('stairs_candidate_topic'),
                                      self.on_stairs_candidate, 10)
@@ -800,7 +830,9 @@ class Explorer(Node):
         self.start_pose = None       # ((x, y), yaw) in map at /maze/start: back_to_start()
         self.cells = CellGrid(float(self.cfg['cell_size']))
         self.cells0 = CellGrid(self.cells.size)   # from the start pose: fit_cells' limits
-        self.maze_sign = {'left': 1, 'right': -1}.get(str(self.cfg['maze_side']).lower())
+        # Possible maze placements (scene_cells.MazeBox), narrowed down by decide_side.
+        self.boxes = maze_boxes(self.cfg['maze_cols'], self.cfg['maze_rows'])
+        self.search_wait_until, self.searches = 0.0, 0     # search_on()
         self.grid_fit_at = -1e9
         self.object_seen = {}        # cell -> maps in a row with an object in it
         self.blocked_cells = {}      # cell -> (extent, (x, y)): objects, never entered
@@ -816,6 +848,8 @@ class Explorer(Node):
         self.launch = None           # TO_EXIT: the launch cell goal (go_to_exit)
         self.room_looks = {}         # object cell -> (x, y) of the object: look in from outside
         self.rooms_done = set()      # object cells looked into (or given up)
+        self.toyset_seen = {}        # cell -> cell_features messages in a row as 'object'
+        self.toyset_cells = set()    # cells with a toy set (cell_features): rooms
         self.room_looks_started, self.room_look_at = 0, -1e9
         self.creep_until = None      # monotonic deadline for the creep
         self.goal_result_at = None   # monotonic time goal_result arrived
@@ -1215,7 +1249,43 @@ class Explorer(Node):
     def workable(self):
         """Queued candidates to check now: stairs only once nothing else is left to explore
         (user 2026-11-22: cross stairs only when every other way is exhausted)."""
-        return [c for c in self.cand_queue if self.queue_final or c['kind'] != 'stairs']
+        return [c for c in self.cand_queue
+                if self.queue_final or c['kind'] != 'stairs' or c.get('near')]
+
+    def stairs_front_cell(self, c):
+        """The cell in front of queued stairs' first riser (the robot checks them from it)."""
+        h = c['heading']
+        return self.cells.cell((c['target'][0] - 0.3 * math.cos(h),
+                                c['target'][1] - 0.3 * math.sin(h)))
+
+    def near_stairs_queue(self, xy, frontiers=()):
+        """Queued stairs whose front cell the robot has stood in are checked (and, lined up,
+        crossed) before the very end (stairs_check_near), but only once no frontier is left
+        in that cell or the cells next to it (user 2026-11-23: unexplored ways in adjacent
+        cells first). True = the queue is being worked."""
+        if not self.cfg['stairs_check_near'] or self.queue_active:
+            return False
+        here = self.cells.cell(xy)
+        open_cells = {self.cells.cell(f.goal) for f in frontiers}
+        ready = []
+        for c in self.cand_queue:
+            if c['kind'] != 'stairs' or c.get('near'):
+                continue
+            front = self.stairs_front_cell(c)
+            if front == here:
+                c['stood'] = True
+            if not c.get('stood'):
+                continue
+            around = {front} | {(front[0] + d[0], front[1] + d[1])
+                                for d in DIRECTIONS.values()}
+            if not around & open_cells:
+                ready.append(c)
+        if not ready:
+            return False
+        for c in ready:
+            c['near'] = True
+        return self.start_queue(f'stairs {[c["id"] for c in ready]}: no way left to explore '
+                                'in the cells around them')
 
     def held_stair_cells(self):
         """Cells of queued stairs not being worked yet (the cell up from the first riser):
@@ -1226,6 +1296,9 @@ class Explorer(Node):
         out = {self.cells.cell((c['target'][0] + half * math.cos(c['heading']),
                                 c['target'][1] + half * math.sin(c['heading'])))
                for c in self.cand_queue if c['kind'] == 'stairs'}
+        # Never a cell the robot has stood in (user 2026-11-23: a false candidate in the
+        # start corridor walled the only way on; every goal failed with status 6).
+        out -= self.visited
         if out:
             pose = self.robot_pose()                # never wall the robot in
             if pose is not None:
@@ -1252,7 +1325,17 @@ class Explorer(Node):
     def candidate_spot(self, c):
         a = self.cfg['stairs_approach' if c['kind'] == 'stairs' else 'curtain_check_approach']
         h = c['heading']
-        return (c['target'][0] - a * math.cos(h), c['target'][1] - a * math.sin(h))
+        spot = (c['target'][0] - a * math.cos(h), c['target'][1] - a * math.sin(h))
+        if c['kind'] == 'stairs':
+            # Stairs on the side of a cell: stairs_approach (1.2 m) in front lies behind the
+            # opposite wall (robot 2026-11-23: "the spot in front can't be reached"). A spot
+            # not free on the map -> half a cell in front of the first riser, on its line.
+            g = self.grid_now() if self.map is not None else None
+            k = g.cell(spot) if g is not None else None
+            if g is not None and not (g.contains(k) and 0 <= g.data[k[1], k[0]] <= FREE_MAX):
+                a = min(a, self.cells.size / 2)
+                spot = (c['target'][0] - a * math.cos(h), c['target'][1] - a * math.sin(h))
+        return spot
 
     def queue_goal(self, grid, xy, yaw):
         """Queue active: the goal to the nearest candidate's spot ([Frontier]), None = wait
@@ -1590,6 +1673,28 @@ class Explorer(Node):
         self.get_logger().info(f'cell {list(cell)}: room (object at ({obj_xy[0]:.2f}, '
                                f'{obj_xy[1]:.2f})): will look in from a neighbouring cell')
 
+    def on_cell_features(self, msg):
+        """cell_features (2 Hz): toy-set cells inside the maze -> room look-in."""
+        try:
+            d = json.loads(msg.data)
+            objs = {(int(c['cell'][0]), int(c['cell'][1])): (float(c['centre'][0]),
+                                                             float(c['centre'][1]))
+                    for c in d['cells'] if c.get('kind') == 'object'}
+        except (ValueError, KeyError, TypeError, IndexError):
+            self.get_logger().warn(f'bad cell_features message: {msg.data[:80]}',
+                                   throttle_duration_sec=30.0)
+            return
+        need = int(self.cfg.get('toyset_confirm', 3))
+        self.toyset_seen = {c: self.toyset_seen.get(c, 0) + 1 for c in objs}
+        for cell, n in self.toyset_seen.items():
+            if n < need or cell in self.toyset_cells or \
+                    not self.in_grid(self.cells.centre(cell), -0.1):
+                continue
+            self.toyset_cells.add(cell)
+            self.get_logger().info(f'cell {list(cell)}: toy set above the walls (lidar): '
+                                   'a room')
+            self.queue_room_look(cell, objs[cell])
+
     def on_stair_pose(self, msg):
         """stair_detector's /stairs/pose (odom, latched): stairs read as object cells too."""
         p = (msg.pose.position.x, msg.pose.position.y)
@@ -1628,7 +1733,7 @@ class Explorer(Node):
             why = None
             if self.room_looks_started >= self.cfg['room_look_max']:
                 why = f'{self.cfg["room_look_max"]} room looks done this run'
-            elif self.near_stairs(self.cells.centre(cell)):
+            elif self.near_stairs(self.cells.centre(cell)) and cell not in self.toyset_cells:
                 why = 'next to the stairs (stairs read as objects)'
             if why:
                 del self.room_looks[cell]
@@ -1642,6 +1747,18 @@ class Explorer(Node):
         if field is None:
             return
         skip = set(self.blocked_cells) | self.dead_end_cells
+        # Never look in from behind the start pose (user 2026-11-23: the robot left through
+        # the open back of the start cell to look at lab clutter), nor into a room there.
+        for cell in list(self.room_looks):
+            if self.behind_start(self.cells.centre(cell)):
+                del self.room_looks[cell]
+                self.rooms_done.add(cell)
+                self.get_logger().info(f'cell {list(cell)}: no room look: behind the start')
+                continue
+            for d in DIRECTIONS.values():
+                n = (cell[0] + d[0], cell[1] + d[1])
+                if self.behind_start(self.cells.centre(n)):
+                    skip.add(n)
         best = None
         for cell in self.room_looks:
             spot = room_look_spot(raw, grid, self.cells, cell, field, skip,
@@ -1663,9 +1780,8 @@ class Explorer(Node):
         hold = {'do': 'hold', 's': float(self.cfg['room_look_hold']), 'group': group,
                 'name': f'{group}: facing in', 'view': 'centre'}
         look = {'do': 'look', 'group': group, 'name': f'{group}: walls',
-                'steps': [{'name': f'{group} {k} wall', 'point': p, 'facing': face, 'view': k,
-                           'hold': self.cfg['dead_end_side_hold'], 'short': True}
-                          for k, p in side_walls(self.cells, cell, into).items()]}
+                'steps': self.side_steps(group, face,
+                                         list(side_walls(self.cells, cell, into).items()))}
         dead_end_scene([hold] + look['steps'], cell, self.cells.centre(cell), kind='room')
         todo = [{'do': 'goto', 'xy': self.cells.centre(n), 'yaw': face, 'group': group,
                  'name': f'{group}: to cell {list(n)} next to it'},
@@ -2027,6 +2143,8 @@ class Explorer(Node):
                                    '(outside the global costmap); waiting',
                                    throttle_duration_sec=10.0)
             return
+        if self.near_stairs_queue(xy, reach):
+            return                                  # the queue goes to them next tick
         frontiers = self.branch_frontiers(grid, xy, reach)
         if frontiers is None:
             return                                  # waiting (deferred curtain)
@@ -2053,9 +2171,7 @@ class Explorer(Node):
                 return
             if self.go_to_exit('maze explored'):
                 return
-            # Everything mapped: stop now, even mid-goal (finish cancels it).
-            self.finish('NO_EXIT', 'all frontiers mapped, no open space found')
-            self.stop_robot()
+            self.search_on('all frontiers mapped, no exit found')
             print('nav stopped', flush=True)
             return
         self.empty_replans = 0
@@ -2336,22 +2452,29 @@ class Explorer(Node):
             self.get_logger().warn('/scene/trigger has no side_walls (old scene_trigger?): '
                                    'dead ends get no side-wall scan')
         # Left wall first, then right: one sweep, like the junction look.
-        sides = [{'name': f'dead end {k} wall', 'point': xy, 'facing': facing, 'view': k,
-                  'hold': self.cfg['dead_end_side_hold'], 'short': True} for k, xy in walls]
+        sides = self.side_steps('dead end', facing, walls)
+        scene_cell = rec.get('cell') or self.cells.cell(centre)
         steps = dead_end_scene([{'name': 'dead end', 'hold': self.cfg['dead_end_hold']}]
-                               + sides, rec.get('cell') or self.cells.cell(centre), centre)
+                               + sides, scene_cell, centre)
         if self.state == 'EXPLORING' or self.curtain_preemptable():
             if self.state == 'CURTAIN':
                 self.get_logger().info(f'{where}: before the curtain')
             self.halt_for_look()
-            self.junction = self.new_look(steps)
-            self.set_state('DEAD_END', f'{where}: holding still '
-                           f'{self.cfg["dead_end_hold"]:.1f} s, then scanning its '
-                           f'{" and ".join(k for k, _ in walls) or "no"} side walls; '
-                           'not going in')
+            self.junction = self.dead_end_look(steps, centre, facing, where)
+            self.set_state('DEAD_END', f'{where}: '
+                           + ('to the centre of the cell before it, ' if self.junction.get('todo')
+                              and self.junction['todo'][0]['do'] == 'goto' else '')
+                           + f'holding still {self.cfg["dead_end_hold"]:.1f} s facing in, then '
+                           f'its {" and ".join(s["view"] for s in sides) or "no"} side walls'
+                           + (f' (turning {math.degrees(self.cfg["side_turn"]):.0f} deg each way)'
+                              if sides and 'heading' in sides[0] else
+                              ' (Pose-mode body yaw each way)' if sides and 'look' in sides[0]
+                              else '')
+                           + '; not going in')
         elif self.state == 'JUNCTION' and self.junction is not None and \
                 self.junction.get('rec') is not None and self.cfg['junction_follow']:
-            self.get_logger().info(f'{where}: junction scan views it')
+            if not self.junction_side_views(cell, centre, facing, scene_cell, where):
+                self.get_logger().info(f'{where}: junction scan views it')
         elif self.state in ('JUNCTION', 'DEAD_END') and self.junction is not None:
             self.junction['dead_end'] = steps       # hold at this way, then scan its sides
             self.get_logger().info(f'{where}: holding at this way, then scanning its side '
@@ -2497,6 +2620,108 @@ class Explorer(Node):
         if any(s == 'open' for s in sides) and (back is not None or
                                                sum(s == 'open' for s in sides) > 1):
             return False
+        return True
+
+    def side_steps(self, name, facing, walls=()):
+        """Side-wall view steps, left then right, towards facing +- side_turn: 'heading'
+        steps (physical turns), or 'look' steps with side_pose (Pose yaw, spin fallback).
+        side_turn 0 or no facing: 'point' steps towards each wall's middle (walls)."""
+        hold, turn = self.cfg['dead_end_side_hold'], float(self.cfg.get('side_turn', 0.0))
+        if turn > 0 and facing is not None:
+            key = 'look' if self.cfg.get('side_pose', False) else 'heading'
+            return [{'name': f'{name} {k} wall', key: wrap(facing + sign * turn),
+                     'facing': facing, 'view': k, 'hold': hold, 'short': True}
+                    for k, sign in (('left', 1), ('right', -1))]
+        return [{'name': f'{name} {k} wall', 'point': xy, 'facing': facing, 'view': k,
+                 'hold': hold, 'short': True} for k, xy in walls]
+
+    def dead_end_stance(self, centre, facing):
+        """Map (x, y) of the centre of the cell before the dead end centred at `centre`,
+        looking along `facing`; None without a heading."""
+        if facing is None:
+            return None
+        size = self.cells.size
+        return (centre[0] - size * math.cos(facing), centre[1] - size * math.sin(facing))
+
+    def dead_end_look(self, steps, centre, facing, where):
+        """The DEAD_END look: with dead_end_stance (and side_turn), the junction
+        follow-up machinery runs it: to the centre of the cell before the dead end (unless
+        already within dead_end_stance_tol), square up facing in, then the view steps
+        (facing in, left wall, right wall). A failed goto / align only skips itself.
+        Otherwise the plain look from where the robot stopped."""
+        stance = self.dead_end_stance(centre, facing) if self.cfg.get('dead_end_stance') \
+            else None
+        if stance is None:
+            return self.new_look(steps)
+        j = self.new_look([])
+        j['rec'] = {}                                # follow-up only: no junction ways
+        todo = []
+        pose = self.robot_pose()
+        off = None if pose is None else math.hypot(pose[0][0] - stance[0],
+                                                   pose[0][1] - stance[1])
+        if off is None or off > self.cfg['dead_end_stance_tol']:
+            todo.append({'do': 'goto', 'xy': stance, 'yaw': facing, 'group': 'stance',
+                         'name': f'{where}: to the centre of the cell before it'
+                                 + (f' ({off:.2f} m away)' if off is not None else '')})
+        todo += [{'do': 'align', 'heading': facing, 'group': 'square', 'tries': 0,
+                  'name': f'{where}: squaring up facing in'},
+                 {'do': 'look', 'group': 'dead end', 'name': f'{where}: facing in, then its '
+                  'side walls', 'steps': steps}]
+        j['todo'] = todo
+        return j
+
+    def junction_side_views(self, cell, centre, facing, scene_cell, where):
+        """A junction scan is facing dead end `cell` from the junction cell (the cell
+        before it, robot at its centre): add the side-wall turns right after this way's
+        hold, and make this way's view the dead end's 'centre' view so room_scene gets one
+        record (centre, left, right). True if added."""
+        j = self.junction
+        k = j.get('i', 0)
+        st = j['steps'][k - 1] if 0 < k <= len(j['steps']) else None
+        if float(self.cfg.get('side_turn', 0.0)) <= 0 or st is None or not st.get('scan') \
+                or tuple(st.get('cell') or ()) != tuple(cell) or j.get('dead_end'):
+            return False
+        sides = dead_end_scene(self.side_steps('dead end', st.get('heading', facing)),
+                               scene_cell, centre)
+        view = st.get('scene')
+        if view is not None and not view.get('sent'):
+            view.update(kind='dead_end', view='centre', last=False)
+        else:
+            self.get_logger().info(f'{where}: its facing view was already sent; the side '
+                                   'views go out as their own record')
+        j['dead_end'] = sides
+        how = 'Pose-mode body yaw' if sides and 'look' in sides[0] else 'turning'
+        self.get_logger().info(f'{where}: junction scan views it, then its side walls '
+                               f'({how} {math.degrees(self.cfg["side_turn"]):.0f} deg each '
+                               'way)')
+        return True
+
+    def junction_way_dead_end(self, j, st, now_where):
+        """End of a junction way's hold: True if its cell is a dead end, so its view goes
+        to scene understanding. Either scene_trigger tagged it (junction_side_views) or the
+        map shows three walls; then the side looks are added and the cell is held."""
+        scene = st.get('scene')
+        if not scene or scene.get('sent'):
+            return False
+        if scene.get('kind') != 'junction':
+            return True
+        cell, h = tuple(st['cell']), st.get('heading')
+        grid = self.grid_now()
+        if grid is None or h is None:
+            return False
+        back = min(DIRECTIONS.values(), key=lambda d: abs(wrap(
+            self.cells.heading(d) - (h + math.pi))))
+        if any(opening(grid, self.cells, cell, d) != 'wall'
+               for d in DIRECTIONS.values() if d != back):
+            return False
+        centre = tuple(scene['cell_centre'])
+        where = f'{now_where}: dead end at cell {list(cell)} (map)'
+        self.hold_dead_end(cell, centre, h, where, captured=True)
+        if self.junction_side_views(cell, centre, h, cell, where):
+            j['steps'][j['i']:j['i']] = j['dead_end']    # right after this way
+            j['dead_end'] = None
+        else:
+            scene.update(kind='dead_end', view='centre')
         return True
 
     @staticmethod
@@ -2651,9 +2876,15 @@ class Explorer(Node):
             return
         if j['hold_until'] is not None and 0 < j['i'] <= len(j['steps']):
             held = j['steps'][j['i'] - 1]
-            self.capture_view(held.get('scene'), held['hold'])   # posed: sent in pose_tick
-            if held.get('scan'):
-                self.note_scanned(held['cell'])
+            if held.get('scan') and not self.junction_way_dead_end(j, held, what):
+                # not a dead end: no capture (an object room gets a room look-in later)
+                if held.get('scene') and not held['scene'].get('sent'):
+                    self.get_logger().info(f'{held["name"]}: cell {list(held["cell"])} is '
+                                           'not a dead end: no scene capture')
+            else:
+                self.capture_view(held.get('scene'), held['hold'])   # posed: in pose_tick
+                if held.get('scan'):
+                    self.note_scanned(held['cell'])
         j['turned'], j['hold_until'] = False, None
         if j['i'] >= len(j['steps']):
             self.release_pose()
@@ -2673,6 +2904,10 @@ class Explorer(Node):
         j['turned'] = True                                   # hold here even if no turn
         if 'heading' in step:
             h = step['heading']
+        elif 'look' in step:                                 # side wall: Pose yaw first
+            if self.use_pose():
+                return self.pose_side_wall(j, step, xy, yaw)
+            h = step['look']
         elif 'point' in step:
             if self.use_pose():
                 return self.pose_side_wall(j, step, xy, yaw)
@@ -2901,8 +3136,8 @@ class Explorer(Node):
         if not self.pose_live or 'stance' not in j:
             j['stance'] = yaw                    # body centred: this is the feet's heading
         stance = j['stance']
-        h = side_heading(xy, step['point'], step.get('facing'),
-                         self.cfg['dead_end_look_angle'])
+        h = step['look'] if 'look' in step else side_heading(
+            xy, step['point'], step.get('facing'), self.cfg['dead_end_look_angle'])
         want = wrap(h - stance)
         pitch, body_yaw = j.get('pitch'), None     # tilt compensation of this dead end
         grid, margin = self.grid_now(), self.cfg['pose_margin']
@@ -3280,7 +3515,9 @@ class Explorer(Node):
     def find(self, grid, xy, exclude):
         fs = find_frontiers(grid, xy, self.cfg['robot_radius'], self.cfg['goal_clearance'],
                             self.cfg['min_frontier_size'], exclude,
-                            min_width=self.min_frontier_width())
+                            min_width=self.min_frontier_width(),
+                            visited=self.visited_mask(grid),
+                            visited_cost=self.cfg['visited_cost'])
         # The lidar never saw behind the start pose: that patch reads as a frontier, but it
         # is the start cell's back wall (run 2026-11-20 01:28: goal (-0.73, 0.44), +67 deg).
         return [f for f in fs if not self.back_to_start(f.goal)
@@ -3289,13 +3526,20 @@ class Explorer(Node):
                 and not self.no_go_cell(self.cells.cell(f.goal))
                 and self.cells.cell(f.goal) not in self.explored_cells]
 
+    def visited_mask(self, grid):
+        """Bool map: floor inside the cells the robot has stood in (None: cost off)."""
+        if self.cfg['visited_cost'] <= 0.0 or not self.visited:
+            return None
+        blank = Grid(np.zeros(grid.data.shape, np.int16), grid.resolution, grid.origin)
+        return block_cells(blank, self.cells, self.visited).data > 0
+
     def in_reach(self, frontiers, xy):
         off = self.cfg['goal_max_offset']
         return [f for f in frontiers
                 if abs(f.goal[0] - xy[0]) < off and abs(f.goal[1] - xy[1]) < off]
 
     def recover_or_finish(self, grid, xy, why):
-        """Goals keep failing: retry while open frontiers remain, else NO_EXIT."""
+        """Goals keep failing: retry while open frontiers remain, else search on."""
         open_ = self.in_reach(self.find(grid, xy, self.blacklist), xy)
         if (not open_ or self.recoveries >= self.cfg['max_recoveries']) and \
                 self.start_queue(f'{why}; nothing else to explore', final=True):
@@ -3304,17 +3548,13 @@ class Explorer(Node):
         if not open_:
             if self.go_to_exit(f'{why}; nothing else reachable to explore'):
                 return
-            self.finish('NO_EXIT', f'{why}; no open frontier left')
-            self.stop_robot()
-            return
+            return self.search_on(f'{why}; no open frontier left')
         if self.recoveries >= self.cfg['max_recoveries']:
             if self.go_to_exit(f'{why}; {len(open_)} frontiers unreachable after '
                                f'{self.recoveries} recoveries'):
                 return
-            self.finish('NO_EXIT', f'{why}; {len(open_)} frontiers still open but unreachable '
-                        f'after {self.recoveries} recoveries')
-            self.stop_robot()
-            return
+            return self.search_on(f'{why}; {len(open_)} frontiers still open but '
+                                  f'unreachable after {self.recoveries} recoveries')
         self.recoveries += 1
         self.get_logger().warn(
             f'{why}, but {len(open_)} frontiers are still open: recovery '
@@ -3323,6 +3563,26 @@ class Explorer(Node):
             if c.service_is_ready():
                 c.call_async(ClearEntireCostmap.Request())
         self.failed, self.failures, self.empty_replans = [], 0, 0
+
+    def search_on(self, why):
+        """Nothing left to try and no exit found: the run doesn't end (user 2026-11-23: the
+        maze has exactly one exit; stop only there). Every exit_retry_wait s: forget the
+        failed and visited frontier goals, clear the costmaps and explore again; the outer
+        sides are read again on every replan (update_exit), so an exit that shows up later
+        is taken."""
+        now = time.monotonic()
+        if now < self.search_wait_until:
+            return
+        self.search_wait_until = now + self.cfg['exit_retry_wait']
+        self.searches += 1
+        self.get_logger().warn(f'{why}: not stopping, the run ends only at the exit; '
+                               f'search {self.searches}: forgetting {len(self.failed)} failed '
+                               f'and {len(self.blacklist)} visited goals, exploring again')
+        for c in self.clear_costmaps:
+            if c.service_is_ready():
+                c.call_async(ClearEntireCostmap.Request())
+        self.failed, self.blacklist = [], []
+        self.failures, self.empty_replans, self.recoveries = 0, 0, 0
 
     def scan_or_begin(self):
         if self.cfg['start_scan']:
@@ -3370,6 +3630,16 @@ class Explorer(Node):
         dx, dy = p[0] - sx, p[1] - sy
         if math.hypot(dx, dy) < 0.5:
             return True
+        return self.behind_start(p)
+
+    def behind_start(self, p):
+        """Is map point p behind the start pose (start_back_depth m back, start_back_width m
+        either side of its line)? The start cell itself doesn't count."""
+        depth = self.cfg['start_back_depth']
+        if self.start_pose is None or depth <= 0:
+            return False
+        (sx, sy), syaw = self.start_pose
+        dx, dy = p[0] - sx, p[1] - sy
         along = dx * math.cos(syaw) + dy * math.sin(syaw)
         side = -dx * math.sin(syaw) + dy * math.cos(syaw)
         return -depth <= along < -0.1 and abs(side) <= self.cfg['start_back_width']
@@ -3483,7 +3753,7 @@ class Explorer(Node):
         msg.pose.orientation.z, msg.pose.orientation.w = math.sin(f.yaw / 2), math.cos(f.yaw / 2)
         self.goal_pub.publish(msg)
         self.get_logger().info(f'frontier goal ({f.goal[0]:.2f}, {f.goal[1]:.2f}) '
-                               f'{f.path_length:.1f} m away, {f.width:.2f} m wide, {f.size} cells; '
+                               f'cost {f.path_length:.1f} m, {f.width:.2f} m wide, {f.size} cells; '
                                f'{n} frontiers')
         if self.goal_handle is not None:
             self.goal_handle.cancel_goal_async()
@@ -3558,40 +3828,65 @@ class Explorer(Node):
         return self.cfg['maze_cols'] > 0 and self.cfg['maze_rows'] > 0
 
     def extents(self):
-        """j0 of the maze grid: [0] to the left, [1 - rows] to the right, both while the
-        side isn't known yet (maze_side auto)."""
-        right = 1 - self.cfg['maze_rows']
-        return [0] if self.maze_sign == 1 else [right] if self.maze_sign == -1 else [0, right]
+        """The maze placements (scene_cells.MazeBox) still possible."""
+        return list(self.boxes)
 
     def in_grid(self, xy, margin=0.0):
-        """xy inside the maze_cols x maze_rows grid (+ margin m); True with the size unknown."""
-        return any(exit_cell(self.cells, xy, self.cfg['maze_cols'], self.cfg['maze_rows'],
-                             margin, j0) is None for j0 in self.extents())
+        """xy inside any still-possible maze placement (+ margin m); True with the size
+        unknown."""
+        if not self.grid_known():
+            return True
+        return any(exit_cell(self.cells, xy, ni, nj, margin, j0, i0) is None
+                   for i0, j0, ni, nj in self.boxes)
 
     def maze_sides(self):
-        """Every outer side of the grid that could be the exit (both candidate grids while
-        the side is unknown). Not the start cell's: the start area is never the final cell
-        (booklet), and its walls are the ones the robot never maps (too close at the start;
-        beams passing just over them free the floor beyond: sim 2026-11-22, every run)."""
+        """Every outer side of the still-possible placements that could be the exit. Not
+        the start cell's: the start area is never the final cell (booklet), and its walls
+        are the ones the robot never maps (too close at the start; beams passing just over
+        them free the floor beyond: sim 2026-11-22, every run)."""
         out = []
-        for j0 in self.extents():
-            out += [s_ for s_ in boundary_sides(self.cfg['maze_cols'], self.cfg['maze_rows'],
-                                                j0) if s_ not in out and s_[0] != (0, 0)]
+        for box in self.boxes:
+            out += [s_ for s_ in box_sides(box) if s_ not in out and s_[0] != (0, 0)]
         return out
 
+    def box_open_count(self, box):
+        """Outer sides of `box` (not the start cell's) confirmed open (>= exit_confirm
+        replans, update_exit). The real maze has at most one: the exit."""
+        need = self.cfg['exit_confirm']
+        return sum(1 for s_ in box_sides(box)
+                   if s_[0] != (0, 0) and self.exit_open.get(s_, 0) >= need)
+
     def decide_side(self, xy):
-        """maze_side auto: the first cell off the start row the robot stands well inside
-        (>= 0.2 m from its edges) shows which side of the start the maze lies on."""
-        if self.maze_sign is not None or not self.grid_known():
+        """Narrow the possible maze placements down (booklet H: start in the
+        first row, any start heading). A placement is ruled out when
+          - the robot stands well inside (>= 0.2 m from its edges) a cell outside it: the
+            maze is closed except for the exit, so every cell reached is maze, or
+          - >= box_open_sides of its outer sides are confirmed open: the real outline has
+            only the exit open.
+        The last placement left is never dropped (if every one is contradicted, the one
+        with the fewest open outer sides stays)."""
+        if len(self.boxes) <= 1 or not self.grid_known():
             return
+        before = list(self.boxes)
         cell = self.cells.cell(xy)
-        if cell[1] == 0 or abs(cell[1]) >= self.cfg['maze_rows'] or \
-                not 0 <= cell[0] < self.cfg['maze_cols'] or \
-                self.cells.depth_inside(xy, cell) < 0.2:
+        if self.state == 'EXPLORING' and self.cells.depth_inside(xy, cell) >= 0.2:
+            keep = [b for b in self.boxes if box_contains(b, cell)]
+            if keep:
+                self.boxes = keep
+        lim = int(self.cfg.get('box_open_sides', 2))
+        keep = [b for b in self.boxes if self.box_open_count(b) < lim]
+        if not keep:
+            keep = [min(self.boxes, key=self.box_open_count)]
+        self.boxes = keep
+        if self.boxes == before:
             return
-        self.maze_sign = 1 if cell[1] > 0 else -1
-        self.get_logger().info(f'maze lies to the {"left" if cell[1] > 0 else "right"} of '
-                               f'the start (robot in cell {list(cell)})')
+        why = f'robot in cell {list(cell)}'
+        if len(self.boxes) == 1:
+            self.get_logger().info(f'maze placement found ({why}): '
+                                   f'{describe_box(self.boxes[0])}')
+        else:
+            self.get_logger().info(f'maze placements: {len(before)} -> {len(self.boxes)} '
+                                   f'still possible ({why})')
 
     def fit_cells(self, grid):
         """Refit the cell grid to the walls on the map (every grid_fit_period s); changes
@@ -3613,8 +3908,10 @@ class Explorer(Node):
         u = (c0 * d[:, 0] + s0 * d[:, 1]) / self.cells.size
         v = (-s0 * d[:, 0] + c0 * d[:, 1]) / self.cells.size
         m = 0.4 / self.cells.size                   # walls on the outline + a little
-        j_lo, j_hi = min(self.extents()), max(self.extents()) + cfg['maze_rows'] - 1
-        near = (u >= -0.5 - m) & (u <= cfg['maze_cols'] - 0.5 + m) & \
+        boxes = self.boxes
+        i_lo, i_hi = min(b[0] for b in boxes), max(b[0] + b[2] - 1 for b in boxes)
+        j_lo, j_hi = min(b[1] for b in boxes), max(b[1] + b[3] - 1 for b in boxes)
+        near = (u >= i_lo - 0.5 - m) & (u <= i_hi + 0.5 + m) & \
             (v >= j_lo - 0.5 - m) & (v <= j_hi + 0.5 + m)
         if near.sum() < cfg['grid_fit_min_points']:
             return
@@ -3719,7 +4016,8 @@ class Explorer(Node):
                'exit_cell': [cell[0] + d[0], cell[1] + d[1]], 'exit_direction': list(d),
                'centre': [round(cx, 3), round(cy, 3)],
                'heading': round(self.cells.heading(d), 3), 'frame': 'map',
-               'maze_side': {1: 'left', -1: 'right'}.get(self.maze_sign, 'unknown')}
+               'maze_placement': (describe_box(self.boxes[0]) if len(self.boxes) == 1
+                                  else f'{len(self.boxes)} still possible')}
         if xy is not None:
             msg['robot'] = [round(xy[0], 3), round(xy[1], 3)]
         self.launch_pub.publish(String(data=json.dumps(msg)))
@@ -3810,9 +4108,15 @@ class Explorer(Node):
             return self.send_launch_goal()
         if self.cells.cell(xy) == L['cell']:
             return self.park(xy, yaw, f'{off:.2f} m off centre after {L["tries"]} goals')
-        self.finish('STOPPED', f'could not reach launch cell {list(L["cell"])} after '
-                    f'{L["tries"]} goals ({off:.2f} m from its centre)')
-        self.stop_robot()
+        # The run ends only at the exit (user 2026-11-23): clear the costmaps, try again.
+        self.get_logger().warn(f'could not reach launch cell {list(L["cell"])} after '
+                               f'{L["tries"]} goals ({off:.2f} m from its centre): costmaps '
+                               'cleared, trying again')
+        for c in self.clear_costmaps:
+            if c.service_is_ready():
+                c.call_async(ClearEntireCostmap.Request())
+        L['tries'] = 0
+        return self.send_launch_goal()
 
     def creep_to_centre(self, xy, yaw):
         """Nav2 stops up to xy_goal_tolerance (0.2 m) short of the cell centre, where a turn

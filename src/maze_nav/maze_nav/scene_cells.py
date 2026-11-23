@@ -79,22 +79,63 @@ class CellGrid:
         return wrap(self.yaw + math.atan2(d[1], d[0]))
 
 
-def exit_cell(cells, xy, cols, rows, margin=0.15, j0=0):
+def exit_cell(cells, xy, cols, rows, margin=0.15, j0=0, i0=0):
     """The cell xy is in if it lies outside the maze, else None.
 
-    The maze is `cols` cells along +i by `rows` along j, cells (0..cols-1, j0..j0+rows-1):
-    the start cell (0, 0) in a corner, the maze to its left (j0 = 0) or, in the mirrored
-    arena, to its right (j0 = 1 - rows). xy has to be at least `margin` m past the maze's
-    outer edge, so a point in the exit opening itself doesn't count. cols or rows <= 0 = no
-    known maze size: never an exit cell.
+    The maze is `cols` cells along +i by `rows` along j, cells (i0..i0+cols-1,
+    j0..j0+rows-1) (a MazeBox; maze_boxes() lists where it may lie around the start cell
+    (0, 0)). xy has to be at least `margin` m past the maze's outer edge, so a point in the
+    exit opening itself doesn't count. cols or rows <= 0 = no known maze size: never an exit
+    cell.
     """
     if cols <= 0 or rows <= 0:
         return None
     u, v = cells.local(xy)
     m = margin / cells.size
-    if -0.5 - m <= u <= cols - 0.5 + m and j0 - 0.5 - m <= v <= j0 + rows - 0.5 + m:
+    if i0 - 0.5 - m <= u <= i0 + cols - 0.5 + m and j0 - 0.5 - m <= v <= j0 + rows - 0.5 + m:
         return None
     return cells.cell(xy)
+
+
+# A possible maze placement in cell indices: cells i0..i0+ni-1 by j0..j0+nj-1.
+MazeBox = tuple   # (i0, j0, ni, nj)
+
+
+def maze_boxes(cols, rows):
+    """[MazeBox] where a cols x rows maze may lie around the start cell (0, 0).
+
+    Booklet H: the start is somewhere in the arena's first row (an outer row) and the
+    robot's initial heading may point any way, so every placement of a cols x rows or
+    rows x cols box with (0, 0) on its outline counts (24 for 5 x 3); the explorer drops
+    them as the map rules them out (Explorer.decide_side). There is no side setting (user
+    2026-11-23: navigation doesn't depend on which side of the start the maze lies)."""
+    if cols <= 0 or rows <= 0:
+        return []
+    out = []
+    for ni, nj in ((cols, rows), (rows, cols)):
+        for i0 in range(1 - ni, 1):
+            for j0 in range(1 - nj, 1):
+                on_outline = i0 in (0, 1 - ni) or j0 in (0, 1 - nj)
+                if on_outline and (i0, j0, ni, nj) not in out:
+                    out.append((i0, j0, ni, nj))
+    return out
+
+
+def box_contains(box, cell):
+    i0, j0, ni, nj = box
+    return i0 <= cell[0] < i0 + ni and j0 <= cell[1] < j0 + nj
+
+
+def box_sides(box):
+    """[(cell, d)] every outer side of a MazeBox (boundary_sides)."""
+    i0, j0, ni, nj = box
+    return boundary_sides(ni, nj, j0, i0)
+
+
+def describe_box(box):
+    """'cells i -2..2 x j 0..2' for the log."""
+    i0, j0, ni, nj = box
+    return f'cells i {i0}..{i0 + ni - 1} x j {j0}..{j0 + nj - 1}'
 
 
 def fit_grid(points, cells, max_yaw=math.radians(8.0), step=math.radians(0.25)):
@@ -131,13 +172,13 @@ def fit_grid(points, cells, max_yaw=math.radians(8.0), step=math.radians(0.25)):
     return CellGrid(cells.size, origin, wrap(yaw)), float(score)
 
 
-def boundary_sides(cols, rows, j0=0):
+def boundary_sides(cols, rows, j0=0, i0=0):
     """[(cell, d)] every outer side of the maze (exit_cell): cell inside, d = (di, dj) out."""
     out = []
-    for i in range(cols):
+    for i in range(i0, i0 + cols):
         out += [((i, j0), (0, -1)), ((i, j0 + rows - 1), (0, 1))]
     for j in range(j0, j0 + rows):
-        out += [((0, j), (-1, 0)), ((cols - 1, j), (1, 0))]
+        out += [((i0, j), (-1, 0)), ((i0 + cols - 1, j), (1, 0))]
     return out
 
 

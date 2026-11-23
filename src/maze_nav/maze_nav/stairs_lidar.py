@@ -995,14 +995,17 @@ class TerrainParams:
 
 def terrain(hm, base_xyz, yaw, floor_z, tp=None):
     """dict: level ('even', 'rough', 'obstacle', 'drop' or 'unknown') of the strip ahead,
-    its max_step / low / spread (m, vs floor_z), cells, and under_spread / on_rough for the
-    ground under the robot (None if not seen). Cheap: two small discs of the height map."""
+    its max_step / low / spread (m, vs floor_z), cells, 'edge' (m ahead where ground raised
+    by rough_step or more starts, or None), and under_spread / on_rough for the ground under
+    the robot (None if not seen), and 'pin' (find_pin: the rolling pin ahead, or None).
+    Cheap: small discs of the height map."""
     tp = tp or TerrainParams()
     out = {'level': 'unknown', 'max_step': None, 'low': None, 'spread': None, 'cells': 0,
-           'under_spread': None, 'on_rough': False}
+           'under_spread': None, 'on_rough': False, 'pin': None, 'edge': None}
     if floor_z is None:
         return out
     bxy = np.asarray(base_xyz[:2], float)
+    out['pin'] = find_pin(hm, bxy, yaw, floor_z)
     xy, h = hm.cells(bxy, math.hypot(tp.ahead[1], tp.half_width))
     rel = xy - bxy
     c, s = math.cos(yaw), math.sin(yaw)
@@ -1021,6 +1024,12 @@ def terrain(hm, base_xyz, yaw, floor_z, tp=None):
     step, low = float(np.percentile(zs, 95)), float(np.percentile(zs, 5))
     spread = float(np.percentile(zs, 90) - np.percentile(zs, 10))
     out.update(max_step=step, low=low, spread=spread)
+    # 'edge': m ahead of base_link where the raised ground starts (the plate edge / first
+    # block or slat): cmd_vel_bridge's terrain push starts there. 10th percentile of the raised
+    # cells, so a few stray cells don't pull it in.
+    up = strip & (z >= tp.rough_step)
+    if up.sum() >= tp.min_cells:
+        out['edge'] = float(np.percentile(u[up], 10))
     if low <= -tp.drop_low:
         out['level'] = 'drop'
     elif step >= tp.obstacle_step or spread >= tp.obstacle_spread:
@@ -1030,6 +1039,142 @@ def terrain(hm, base_xyz, yaw, floor_z, tp=None):
     else:
         out['level'] = 'even'
     return out
+
+
+@dataclass
+class PinParams:
+    """find_pin(): the rolling pin (user 2026-11-22/23: ~18 cm, a thin bar across a straight
+    cell, wall to wall; H-Step steps over it but needs 0.5-2 s of steady forward drive, which
+    cmd_vel_bridge's pin push gives it). Only the pin, not other 'obstacle' terrain: real slats
+    are 12 cm bars every 17 cm, rubble blocks up to 15 cm, terrain plates 10 cm (maze_info.md),
+    so a pin row must be higher than all of those, thin, and have flat floor on both sides."""
+    ahead: tuple = (0.0, 1.20)          # m ahead of base_link: where the bar is looked for
+    half_width: float = 0.30            # m either side of the heading (the strip)
+    row: float = 0.04                   # m across the bar per row (= height-map cell)
+    lane: float = 0.04                  # m along the bar per lane
+    min_height: float = 0.14            # m above the floor: a pin cell (pin 0.18; slats 0.12)
+    max_height: float = 0.30            # m: higher is a wall (terrain ignore_above)
+    min_lanes: int = 6                  # lanes with a pin cell in a pin row (of 15)
+    min_cover: float = 0.6              # and that fraction of the lanes seen in the row
+    # m across the bar: a 6-8 cm bar measures 0.16-0.24 (4 cm cells, smoothing, the fitted
+    # direction; simulated walks, 0-30 deg off square); a plate edge or a step goes on and on
+    max_depth: float = 0.28
+    gap: float = 0.04                   # m left out each side of the bar (edge cells blur)
+    clear: float = 0.30                 # m each side checked for flat floor
+    clear_step: float = 0.06            # m: higher there = not a lone bar (slats, blocks, plate)
+    clear_frac: float = 0.10            # fraction of those cells allowed above clear_step
+    # floor cells that must have been seen before the bar. 0: the lidar sees the floor only
+    # from ~1.4 m out, so with the pin just round a corner the floor before it was never
+    # seen; the strip behind it is often shadowed too (18 cm hides ~0.6 m at 1 m). Seen
+    # cells on either side must still be flat; height and depth do the rest.
+    min_before: int = 0
+    max_skew: float = math.radians(30)  # rad: bar directions tried either side of square
+    skew_step: float = math.radians(5)
+
+
+def find_pin(hm, base_xy, yaw, floor_z, pp=None):
+    """The nearest rolling pin ahead in the height map, or None: dict with 'x', 'y' (odom,
+    where the heading line crosses the bar), 'at' (m along the heading from base_link to the
+    bar), 'yaw' (odom, the bar's normal pointing away from the robot; 'skew' deg off the
+    heading), 'height' (m, 90th percentile of its cells), 'depth' (m across the bar),
+    'lanes' (lanes with pin cells). The bar is looked for square to the heading and up to
+    pp.max_skew either way (the fit covering most lanes wins): crossed 10 deg off square, it smears over
+    ~0.1 m more along the heading in a 0.6 m strip. The map keeps cells once seen, so the bar
+    is still found when it is too close for the sensors (body box) or under the body."""
+    pp = pp or PinParams()
+    if floor_z is None:
+        return None
+    bxy = np.asarray(base_xy[:2], float)
+    reach = pp.ahead[1] + pp.clear
+    xy, h = hm.cells(bxy, math.hypot(reach, pp.half_width) + pp.clear)
+    if len(h) == 0:
+        return None
+    rel = xy - bxy
+    c, s = math.cos(yaw), math.sin(yaw)
+    u, v = rel[:, 0] * c + rel[:, 1] * s, -rel[:, 0] * s + rel[:, 1] * c
+    z = h - floor_z
+    keep = (np.abs(v) <= pp.half_width) & (u >= pp.ahead[0] - pp.clear - pp.half_width) & \
+        (u <= reach + pp.half_width) & (z <= pp.max_height)
+    rel, z = rel[keep], z[keep]
+    if len(z) == 0:
+        return None
+    best, best_rank = None, None
+    n_skew = int(round(pp.max_skew / pp.skew_step)) if pp.skew_step > 0 else 0
+    for k in range(-n_skew, n_skew + 1):
+        d = k * pp.skew_step
+        cd, sd = math.cos(yaw + d), math.sin(yaw + d)
+        ud = rel[:, 0] * cd + rel[:, 1] * sd
+        vd = -rel[:, 0] * sd + rel[:, 1] * cd
+        found = _pin_across(ud, vd, z, pp)
+        if found is None:
+            continue
+        mid, depth, height, lanes = found
+        at = mid / math.cos(d)
+        if not pp.ahead[0] <= at <= pp.ahead[1]:
+            continue
+        # Most lanes covered first (a wrong direction catches only part of the bar, and can
+        # look thinner: 7-11 cm off on a square approach when thinnest won), then thinnest,
+        # then closest to square.
+        rank = (-lanes, round(depth, 3), abs(k))
+        if best is None or rank < best_rank:
+            best_rank = rank
+            best = {'x': float(bxy[0] + at * c), 'y': float(bxy[1] + at * s), 'at': float(at),
+                    'yaw': float(math.atan2(sd, cd)), 'skew': float(math.degrees(d)),
+                    'height': height, 'depth': depth, 'lanes': lanes}
+    return best
+
+
+def _pin_across(u, v, z, pp):
+    """find_pin for one bar direction (u across the bar, v along it): the nearest bar as
+    (middle u, depth, height, lanes), or None."""
+    keep = np.abs(v) <= pp.half_width
+    u, v, z = u[keep], v[keep], z[keep]
+    if len(z) == 0:
+        return None
+    rows = np.floor(u / pp.row).astype(np.int64)
+    n_lanes = int(math.ceil(2 * pp.half_width / pp.lane)) + 1
+    lanes = np.clip(np.floor((v + pp.half_width) / pp.lane).astype(np.int64), 0, n_lanes - 1)
+    hi = z >= pp.min_height
+    r0 = int(math.floor(pp.ahead[0] / pp.row))
+    r1 = int(math.floor(pp.ahead[1] / pp.row))
+    # Two rows together (window w = rows w and w + 1): the map's cells are on the odom grid,
+    # not on rows across the bar, so a 6 cm bar falls into either one row or two (found on
+    # every other 0.1 m step with single rows, simulated walks).
+    def lanes_per_window(mask):
+        w = np.concatenate([rows[mask], rows[mask] - 1]) - r0
+        ln = np.concatenate([lanes[mask], lanes[mask]])
+        ok = (w >= 0) & (w <= r1 - r0)
+        keys = np.unique(w[ok] * n_lanes + ln[ok])
+        return np.bincount(keys // n_lanes, minlength=r1 - r0 + 1)
+    seen = lanes_per_window(np.ones(len(z), bool))
+    n_hi = lanes_per_window(hi)
+    is_pin = (n_hi >= pp.min_lanes) & (n_hi >= pp.min_cover * seen)
+    w = 0
+    while w <= r1 - r0:
+        if not is_pin[w]:
+            w += 1
+            continue
+        start = w
+        while w + 1 <= r1 - r0 and is_pin[w + 1]:
+            w += 1
+        end = w
+        w += 1
+        win = hi & (rows >= start + r0) & (rows <= end + r0 + 1)
+        u0, u1 = float(u[win].min()) - pp.row / 2, float(u[win].max()) + pp.row / 2
+        if u1 - u0 > pp.max_depth + 1e-9:
+            continue                    # deep: a raised plate or a step, not a bar
+        before = (u >= u0 - pp.gap - pp.clear) & (u < u0 - pp.gap)
+        after = (u > u1 + pp.gap) & (u <= u1 + pp.gap + pp.clear)
+        if before.sum() < pp.min_before:
+            continue
+        if before.any() and np.mean(z[before] > pp.clear_step) > pp.clear_frac:
+            continue
+        if after.any() and np.mean(z[after] > pp.clear_step) > pp.clear_frac:
+            continue                    # more terrain behind it: slats, rubble
+        band = (u >= u0) & (u < u1) & hi
+        return ((u0 + u1) / 2, float(u1 - u0), float(np.percentile(z[band], 90)),
+                int(n_hi[start:end + 1].max()))
+    return None
 
 
 # ---------------------------------------------------------------- camera check and fusion

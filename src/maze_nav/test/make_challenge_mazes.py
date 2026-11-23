@@ -10,8 +10,10 @@ curtain (passable, mounted ~1 m up), rooms with survivors (QR codes on their sid
 object of interest and a hazard; the final cell is the exit / drone launch cell, with its
 outer wall towards the target left out (a plain opening, never stairs or a curtain). The
 layout changes on competition morning, so the interiors below are made up, and so are all
-heights (terrain <= 12 cm, steps 11 cm, walls 0.45 m on a flat floor), except the rolling
-pin in challenge_a (18 cm, user 2026-11-22).
+heights (terrain <= 12 cm), except the rolling pin in challenge_a (18 cm, user 2026-11-22)
+and what maze_info.md gives for the practice arena (2026-11-23): walls 0.53 m, pyramid stairs
+of 3 levels (15 cm rise, 20 cm tread, top 0.45 m) between railings, toy sets taller than the
+walls at the back of the rooms.
 
 challenge_a.json (maze to the left), exit +x of the final cell (4, 2):
 
@@ -55,7 +57,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 CELL = 1.02
 COLS, ROWS = 5, 3
-TOP = 0.45                                 # wall height
+TOP = 0.53                                 # wall height (maze_info.md, practice arena)
 T = 0.05                                   # wall thickness
 H = CELL / 2
 
@@ -156,16 +158,22 @@ def ramp(cell, axis, height=0.10):
                 high_xy=[round(cx, 4), round(cy, 4)])]
 
 
-def stairs(cell, rise=0.11, treads=2, landing=0.15):
-    """Up `treads` steps along +x to a landing at the centre, and down again (a straight
-    cell on the route: the robot crosses it along x)."""
+def stairs(cell, rise=0.15, tread=0.20, levels=3, rail_top=0.9):
+    """Pyramid stairs along x (maze_info.md): `levels` steps of `rise` up to a top tread,
+    and down again, every tread `tread` wide (3 levels: 1.0 m long, top 0.45 m), between
+    two railings ~0.9 m tall just inside the cell's side edges (open truss frames on the
+    real stairs; solid here)."""
     cx, cy = c(*cell)
-    top = rise * treads
-    return [box('steps', cx - 0.45, cy - 0.45, cx - landing / 2, cy + 0.45, 0.0, top,
-                down='-x', treads=treads),
-            box('tile', cx - landing / 2, cy - 0.45, cx + landing / 2, cy + 0.45, 0.0, top),
-            box('steps', cx + landing / 2, cy - 0.45, cx + 0.45, cy + 0.45, 0.0, top,
-                down='+x', treads=treads)]
+    top = rise * levels
+    half = (2 * levels - 1) * tread / 2
+    run = levels * tread
+    # the up flight carries the top tread; the down flight starts one level lower (no overlap)
+    return [box('steps', cx - half, cy - 0.45, cx - half + run, cy + 0.45, 0.0, top,
+                down='-x', treads=levels),
+            box('steps', cx - half + run, cy - 0.45, cx + half, cy + 0.45, 0.0,
+                top - rise, down='+x', treads=levels - 1),
+            box('rail', cx - half, cy - 0.47, cx + half, cy - 0.45, 0.0, rail_top),
+            box('rail', cx - half, cy + 0.45, cx + half, cy + 0.47, 0.0, rail_top)]
 
 
 def curtain(a, b, gap=0.13, top=1.0):
@@ -180,8 +188,9 @@ def curtain(a, b, gap=0.13, top=1.0):
                travel=[0.0, float(np.sign(by - ay))])
 
 
-def object_box(cell, back, size=0.3, height=0.5):
-    """A free-standing prop (toy kitchen, shop counter) 0.15 m off the room's back wall."""
+def object_box(cell, back, size=0.3, height=1.0):
+    """A free-standing prop (toy kitchen, shop counter) 0.15 m off the room's back wall,
+    taller than the walls like the practice arena's toy sets (~0.8-1.2 m)."""
     cx, cy = c(*cell)
     ox, oy = cx + back[0] * (H - 0.15 - size / 2), cy + back[1] * (H - 0.15 - size / 2)
     return box('wall', ox - size / 2, oy - size / 2, ox + size / 2, oy + size / 2, 0.0, height)
@@ -309,7 +318,7 @@ def without(a, name, features):
         drop += [s for s in m['solids'] if s['kind'] == 'curtain']
     if 'stairs' in features:
         cx, cy = c(*m['features']['stairs'])
-        drop += [s for s in m['solids'] if s['kind'] in ('steps', 'tile')
+        drop += [s for s in m['solids'] if s['kind'] in ('steps', 'tile', 'rail')
                  and abs((s['min'][0] + s['max'][0]) / 2 - cx) < H
                  and abs((s['min'][1] + s['max'][1]) / 2 - cy) < H]
     m['solids'] = [s for s in m['solids'] if not any(s is d for d in drop)]

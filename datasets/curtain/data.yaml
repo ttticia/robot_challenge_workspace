@@ -1,0 +1,12 @@
+# YOLO dataset: curtains (maze_nav/tools/curtain_yolo_frames.py makes images/ + DRAFT labels/).
+# Review every draft and label the rest by hand first (CVAT / Label Studio / labelImg, YOLO
+# format), then split into train/val by bag or time (not random frames: neighbours are
+# near-identical), e.g. images/train, images/val + labels/train, labels/val.
+# Train off the robot (Robot-Dog-Grp4 dev machine), then export for the robot's OpenVINO:
+#   yolo detect train model=yolo11n.pt data=data.yaml imgsz=416 epochs=100 batch=16
+#   yolo export model=runs/detect/train/weights/best.pt format=openvino imgsz=320,416
+path: .
+train: images        # -> images/train after the split
+val: images          # -> images/val after the split
+names:
+  0: curtain

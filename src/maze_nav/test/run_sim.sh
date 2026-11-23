@@ -88,7 +88,7 @@ sleep 3
 # and set off curtain inspections (2026-11-21).
 setsid ros2 launch maze_nav maze_nav.launch.py bringup:=false udp_only:=true floor_z:=-0.35 \
     map_dir:="$LOG/maps" wait_for_start:=false perception:=false \
-    maze_cols:="$COLS" maze_rows:="$ROWS" cell_size:="$CELL" maze_side:="$SIDE" > "$LOG/launch.log" 2>&1 &
+    maze_cols:="$COLS" maze_rows:="$ROWS" cell_size:="$CELL" > "$LOG/launch.log" 2>&1 &
 LAUNCH=$!
 
 end=$((SECONDS + TIMEOUT))

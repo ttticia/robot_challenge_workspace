@@ -1,6 +1,6 @@
 """Synthetic depth images for the stair detector tests: axis-aligned boxes on a floor, seen by
 the Lite3's Orbbec depth camera (intrinsics and mount from the robot's /camera/depth/camera_info
-and /tf_static, ROS_bags/perception_test)."""
+and /tf_static, runs/ROS_bags/perception_test)."""
 import json
 import math
 import os

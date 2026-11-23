@@ -1,5 +1,34 @@
 What to test after the 2026-11-21/22 changes (simulator and robot): `test_checklist.md`.
 
+## practice-arena changes 2026-11-23 (maze_info.md): unit-tested only, NOT run in sim or on the robot
+- maze_side auto (default): 24 placements (start on the outline, any heading), narrowed down by
+  cells reached / outer sides open. Watch for "maze placement found" and that no goal leaves
+  the maze through the exit early (the union of placements is large until it narrows).
+- Wall band 0.30-0.50 (walls 0.53 m). Sim mazes regenerated: 0.53 m walls, pyramid stairs
+  (3 x 15 cm, 20 cm treads) with rails, 1 m toy sets.
+- AI walk 2.0 m (over the whole pyramid into the next cell) with heading hold
+  (ai_walk_heading_gain 1.0, <= 0.15 rad/s). MEASURE the real pyramid (one cell? 3 levels up
+  AND down?) before trusting 2.0.
+- cell_features node (/maze/cell_features): toy sets above the walls -> room look-in; raised cell
+  between rails -> stair candidate (+ capped 'cells' hits in the stair check). Check its log
+  ("cell [i, j]: object / stairs") against the real arena; people inside the arena would read
+  as toy sets.
+- Curtains: a segment needs fabric 0.58-0.85 m along its line (min_tall 0.3) when lidar is in
+  the batch: walls with 10-25 cm gaps no longer pass. Check the real curtain over a raised tray.
+- room_scene depth mask (<name>_masked.jpg): check on robot frames that toy sets survive and
+  the hall is greyed. The VLM should be given the masked frames.
+- Perception: QR READ only (qr_detect:=false: no FACING_QR, no full scans); survivor posters
+  NOT started (user); one colour_relay for qr_scanner / room_scene / curtain_yolo.
+- Side walls: physical 25 deg turns (side_turn; side_pose:=true = Pose yaw) from the centre
+  of the cell before the dead end / room, for dead ends, junction-scan dead ends and room
+  look-ins. Junction ways capture for scene understanding only into dead ends (11-23). QR
+  sim: 25 deg reads codes 0.06-0.32 m into the room at <= 0.40 m high. Check on the robot:
+  the stance goal when the trigger fires past it, 25 deg spins not cut by the walls.
+- Curtain YOLO CPU (benchmark 2026-11-23, yolo11n 416, niced on cores 4-9, 640x480 frames, JPEG
+  decode included): torch 92 ms CPU/frame, OpenVINO 416 56 ms (curtain_yolo now prefers the
+  OpenVINO copy next to the .pt). At rate 2 Hz: ~11 % of one core (OpenVINO) / ~18 % (torch),
+  only in JUNCTION / DEAD_END / CURTAIN.
+
 ## stairs
 reduce stair detection CPU usage. 
 
@@ -22,8 +51,8 @@ some walls have a cavity that could be read as curtain gap. when checking for cu
 6. Robot test with `curtain_yolo:=true curtain_inspect_mode:=yolo` on the spec curtain and on a cavity wall. If it holds up, make `yolo` the default verification and keep `lie` as the fallback.
 
 **Dataset state 2026-11-23** (`~/challenge_ws/datasets/curtain`, NOT in git; README.md there): 396 frames after de-duplication (`dedup_frames.py 0.45`), every label hand-checked: 205 curtain / 191 negative. Robot bags: curtain_test1, curtain_lab_45deg_lit_01, curtain_slit_square_lit_01, curtain_bag1 (degraded recording), curtain_bag2 (163 curtain views in all), curtain_n1 (negatives only); plus phone_IMG_1671/1672 (42 curtain frames from phone videos in maze_examples/curtains - training only, never val/test). Checked: no missing/orphan/invalid labels, `--cv --dry-run` gives 5 folds (17-50 curtain frames in each val), test_curtain_yolo.py passes. Nothing blocks a first training run. Before / around it:
-- [ ] Commit `tools/train_curtain_yolo.py` + `test/test_curtain_yolo.py` (bag-safe split: `--val-bags`, `--test-bags`, `--cv`, `--dry-run`, phone frames train-only).
-- [ ] Back up the dataset again (zip images/ labels/ manifest.csv README.md data.yaml + scripts; the 2026-11-23 zips predate curtain_bag2 and the phone frames).
+- [x] (bb582c4) Commit `tools/train_curtain_yolo.py` + `test/test_curtain_yolo.py` (bag-safe split: `--val-bags`, `--test-bags`, `--cv`, `--dry-run`, phone frames train-only).
+- [x] Back up the dataset: `datasets/curtain_dataset_20261123b.zip` (training set + scripts, 27 MB) and `_extras.zip` (duplicates/ excluded/, 76 MB), copies in ~/backups; upload them to the team SharePoint (by hand).
 - [ ] Training time: CPU here ~2 h per fold at imgsz 320 / 80 epochs (estimate), `--cv` = 5 folds. Quick check first, one fold: `nice -n 19 python3 src/maze_nav/tools/train_curtain_yolo.py ~/challenge_ws/datasets/curtain --val-bags curtain_lab_45deg_lit_01 --imgsz 320 --epochs 50`; full `--cv --imgsz 320` overnight or on a GPU machine. Never while the robot stack runs.
 - [ ] Final test bag: record one more curtain bag and keep it out of everything (`--test-bags`) for the acceptance test (step 5).
 - [ ] Evaluation script (needed to judge the model, not to train): recall per distance band from manifest.csv `ahead_m` (0.3-1.5 m) and false positives on negatives at conf 0.5, per held-out bag.
@@ -133,7 +162,7 @@ Built and OFF by default (`scene_understanding:=true` to use it); how it works i
 
 Toy-market sim test (2026-11-22, paused, fix during the actual run): object_maze.json with market-sized boxes (stand, counter, trolley) in dead-end cell grid [2, 1] + a fake colour camera playing the market photos (scene_understanding/test/data/photo_*). Hold -> retry -> blacklist worked, but:
 8. AI not connected: room_scene still has vlm 'none', so the market came back scene_type 'unknown', no objects. Needs the organisers' AI server address + request/response format (scene-understanding lab, group id group04_grp4) and the client code from ~/test_scene_understanding (not on this machine). Expected answer for this room: scene_type 'market'.
-9. Dead end met during a junction scan gets only the junction's single frame (facing in), no left/right wall views: photo 2 (counter) and photo 3 (trolley, right wall) never captured; QR codes / signs on side walls would be missed. Give such a dead end the full dead-end look (hold + left + right) before leaving the junction.
+9. DONE (11-23, sim-untested): a dead end in a junction scan gets centre + left + right views (junction_side_views, or junction_way_dead_end from the map).
 10. block_objects saw no object in the market cell: the toys stand against the walls and merge into them on /map, so the "object on the map -> room" shortcut on a timeout never fires. Expect the same for real props against walls.
 11. Possible false stairs next to the market: stair_detector reported 2 risers of 12 cm twice (camera at 1.76 m during the junction scan, then lidar), lined up 0.37 m from them and handed over to AI mode (transfer_interfaces not found in the sim). Probably the ramp wedges in the cell before the market (maze (-1, 1)), not the toys - check on the real ramp.
 12. room_scene saves into the real logs dir (~/challenge_ws/logs/scene/); save_dir isn't a launch argument, so sim test images land there too.

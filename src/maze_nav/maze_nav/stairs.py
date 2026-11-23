@@ -39,7 +39,7 @@ below the line of sight, so one grid row (4 px) covers ~10 cm of floor: a 15 cm 
   missing; tried on the live robot 2026-11-18 it added a step that wasn't there.
 
 Tested on synthetic depth (test/stair_scene.py, incl. the example maze), on the real lab
-frames of ROS_bags/perception_test (no stairs; 3 false hits in 1432, all while standing up)
+frames of runs/ROS_bags/perception_test (no stairs; 3 false hits in 1432, all while standing up)
 and on live frames of real stairs (test/data/live_stairs_close.npz), ~30 ms a frame.
 
 StairTracker fuses per-frame detections (in odom) once vote_need of the last vote_window agree;

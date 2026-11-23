@@ -1,16 +1,22 @@
 """
-Start perception on the robot: qr_scanner (QR codes) only.
+Start perception on the robot: qr_scanner, READING QR codes only (no detection, no posters).
 
     ros2 launch team_perception robot.launch.py
     ros2 launch team_perception robot.launch.py depth_topic:=/camera/aligned_depth/image_raw \
         depth_camera_info_topic:=''        # depth already aligned by the driver
     ros2 launch team_perception robot.launch.py depth_relay:=false   # qr_scanner reads raw depth
 
-Human / survivor poster detection (human_detector + poster_detector) was removed from this
-launch on 2026-11-19: each extra camera subscriber is another full copy from
-lite3_domain_bridge_4, and with them running the bridge fell behind (IMU 23 Hz instead of
-200, lidar 1.1 s late, so SLAM never built a map). The node code and `ros2 run` entry points
-are still in the package.
+Survivor posters (human_detector + poster_detector): NOT started (removed again 2026-11-23,
+user). The nodes and `ros2 run` entry points stay in the package; poster_detector now follows
+maze_explorer's /maze/grid and places a poster in the room cell on the camera's side of its
+wall (poster_utils.MazeCells.room_cell) should it come back.
+QR codes (user 2026-11-23): READ only (qr_detect:=false -> qr_scanner detect false): plain
+decodes at roam_rate_hz while the run is under way; no /qr/unread / FACING_QR, no full scans.
+qr_detect:=true = the old dead-end detection.
+Colour: ONE colour_relay (depth_relay_node with compressed:=true) takes the JPEG stream once;
+qr_scanner (and maze_nav's room_scene) read its local copy
+(/camera/color_relay/image_raw/compressed, <= colour_rate_hz). colour_relay:=false =
+qr_scanner reads image_topic itself.
 
 Depth goes through ONE depth_relay (depth_relay:=true): it subscribes the camera's raw depth
 once and republishes it at relay_rate_hz (10) on /camera/depth_relay/*, and qr_scanner reads
@@ -28,9 +34,9 @@ CPU (shared with navigation on the robot computer):
     lower priority, so Fast-LIO, wall_scan and the DDS receive threads are never queued behind
     it. cpus:=auto = all but the first 4 cores; cpus:=all / nice:=0 = off. depth_relay is
     left alone (stairs/curtains need it).
-  - qr_scanner READS codes everywhere (plain decodes, roam_rate_hz 5) but DETECTS
-    (full scans, /qr/unread -> FACING_QR) only at dead ends, while maze_explorer's
-    /maze/perceive is True (run_gate.py). Without maze_explorer it always detects.
+  - qr_scanner only READS codes (plain decodes, roam_rate_hz 5) while the run is under way;
+    with qr_detect:=true it also DETECTS (full scans, /qr/unread -> FACING_QR) at dead ends,
+    while maze_explorer's /maze/perceive is True (run_gate.py).
 """
 import os
 
@@ -55,6 +61,11 @@ ARGS = {
                             'themselves'),
     'relay_rate_hz': ('10.0', 'depth_relay: max depth frames a second passed on'),
     'qr': ('true', 'run qr_scanner'),
+    'qr_detect': ('false', 'QR detection (full scans + /qr/unread for FACING_QR); false = '
+                           'only read codes'),
+    'colour_relay': ('true', 'take the compressed colour stream once (colour_relay) for '
+                             'qr_scanner (and room_scene)'),
+    'colour_rate_hz': ('10.0', 'colour_relay: max colour frames a second passed on'),
     'nice': ('10', 'perception nodes run at this nice level (0 = normal priority)'),
     'cpus': ('auto', "perception nodes only on these cores (taskset list, e.g. '4-9'); "
                      "auto = all but the first 4, all = no limit"),
@@ -80,6 +91,7 @@ def cpu_prefix(nice, cpus):
     return ' '.join(parts) or None
 
 
+RELAY_COLOUR = '/camera/color_relay/image_raw'      # + /compressed
 RELAY_DEPTH = '/camera/depth_relay/image_raw'
 RELAY_INFO = '/camera/depth_relay/camera_info'
 
@@ -93,7 +105,9 @@ def nodes(context):
     c = {name: LaunchConfiguration(name) for name in ARGS}
     v = {name: c[name].perform(context) for name in ('depth_topic', 'depth_camera_info_topic',
                                                      'depth_relay', 'relay_rate_hz', 'nice',
-                                                     'cpus')}
+                                                     'cpus', 'image_topic', 'image_transport',
+                                                     'colour_relay', 'colour_rate_hz',
+                                                     'qr_detect')}
     prefix = cpu_prefix(v['nice'], v['cpus'])
     relay = v['depth_relay'].lower() in ('true', '1')
     depth, info = v['depth_topic'], v['depth_camera_info_topic']
@@ -106,13 +120,24 @@ def nodes(context):
                                      'out_info_topic': RELAY_INFO,
                                      'rate_hz': float(v['relay_rate_hz'])}]))
         depth, info = relay_topics(depth, info)
-    camera = {'image_topic': c['image_topic'], 'image_transport': c['image_transport'],
+    image_topic = v['image_topic']
+    if v['colour_relay'].lower() in ('true', '1') and v['image_transport'] == 'compressed':
+        out.append(Node(package='team_perception', executable='depth_relay', name='colour_relay',
+                        output='screen', additional_env=THREAD_ENV,
+                        parameters=[{'in_depth_topic': image_topic.rstrip('/') + '/compressed',
+                                     'in_info_topic': '',
+                                     'out_depth_topic': RELAY_COLOUR + '/compressed',
+                                     'out_info_topic': '', 'compressed': True,
+                                     'rate_hz': float(v['colour_rate_hz'])}]))
+        image_topic = RELAY_COLOUR
+    camera = {'image_topic': image_topic, 'image_transport': c['image_transport'],
               'depth_topic': depth, 'camera_info_topic': c['camera_info_topic'],
               'depth_camera_info_topic': info,
               'use_depth': c['use_depth'], 'map_frame': c['map_frame']}
+    qr_params = dict(camera, detect=v['qr_detect'].lower() in ('true', '1'))
     out += [
         Node(package='team_perception', executable='qr_scanner', name='qr_scanner',
-             exec_name='qr_scanner', output='screen', parameters=[camera], condition=IfCondition(c['qr']),
+             exec_name='qr_scanner', output='screen', parameters=[qr_params], condition=IfCondition(c['qr']),
              prefix=prefix, additional_env=THREAD_ENV),
     ]
     return out

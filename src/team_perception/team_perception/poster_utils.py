@@ -319,6 +319,29 @@ class MazeCells:
         c, s = math.cos(self.yaw), math.sin(self.yaw)
         return self.origin[0] + c * u - s * v, self.origin[1] + s * u + c * v
 
+    def local(self, xy):
+        dx, dy = xy[0] - self.origin[0], xy[1] - self.origin[1]
+        c, s = math.cos(self.yaw), math.sin(self.yaw)
+        return (c * dx + s * dy) / self.size, (-s * dx + c * dy) / self.size
+
+    def room_cell(self, poster_xy, toward_xy):
+        """The cell a poster on a wall belongs to: the poster hangs on the cell edge nearest
+        it, and its room is the cell on that edge's side `toward_xy` (a point on the camera's
+        side, e.g. the pulled-back room point) lies on; along the edge the poster's own
+        position counts. A ray pull-back alone put posters on the near half of a side wall
+        (where QR posters hang, booklet FAQ 4), seen from the cell before the room, into that
+        cell (2026-11-23)."""
+        pu, pv = self.local(poster_xy)
+        tu, tv = self.local(toward_xy)
+        eu, ev = math.floor(pu) + 0.5, math.floor(pv) + 0.5      # nearest edge lines
+        eu = eu if abs(pu - eu) <= abs(pu - (eu - 1)) else eu - 1
+        ev = ev if abs(pv - ev) <= abs(pv - (ev - 1)) else ev - 1
+        if abs(pu - eu) <= abs(pv - ev):                          # on a constant-u edge
+            i = int(math.floor(eu)) + (1 if tu > eu else 0)
+            return i, int(math.floor(pv + 0.5))
+        j = int(math.floor(ev)) + (1 if tv > ev else 0)
+        return int(math.floor(pu + 0.5)), j
+
 
 def pull_back(xyz, dist):
     """

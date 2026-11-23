@@ -55,7 +55,7 @@ YOLO is capped (`yolo_threads:=2`, `yolo_rate_hz:=5.0`) so it leaves the CPU to 
 5. **Write access** to `~/qr_logs/` and `~/poster_logs/` on the robot (snapshots and CSVs).
 6. **Don't record raw depth** (`/camera/depth/image_raw`) during an autonomous run: it stalled
    Nav2 on 2026-11-13. Record perception results with the `rec_*` presets in
-   `ROS_bags/ROSBAG_GUIDE.md` (group G).
+   `runs/ROS_bags/ROSBAG_GUIDE.md` (group G).
 
 ## 2. Launch
 

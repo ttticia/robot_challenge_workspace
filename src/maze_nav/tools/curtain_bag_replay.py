@@ -2,7 +2,7 @@
 """Replay a bag's depth (and lidar) frames through curtains.detect_curtains, offline.
 
     source /opt/ros/humble/setup.bash && source install/setup.bash
-    nice -n 19 python3 src/maze_nav/tools/curtain_bag_replay.py ROS_bags/curtain_test1 \
+    nice -n 19 python3 src/maze_nav/tools/curtain_bag_replay.py runs/ROS_bags/curtain_test1 \
         [--max-gap 0.15 0.25] [--every 5] [--lidar] [--csv out.csv]
 
 Needs no /tf: every frame is taken on its own in base_link (camera pose from /tf_static's

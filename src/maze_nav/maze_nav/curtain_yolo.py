@@ -100,6 +100,12 @@ class CurtainYolo:
 
     def __init__(self, model, conf=0.5, imgsz=416, device='cpu', threads=2, class_id=0):
         path = resolve_model(model)
+        # The OpenVINO copy train_curtain_yolo.py --install exports next to the .pt: ~40 % less
+        # CPU a frame on the robot (yolo11n 416: 56 vs 92 ms CPU, benchmark 2026-11-23).
+        ov = path[:-3] + OPENVINO_SUFFIX if path.endswith('.pt') else None
+        if ov and os.path.isdir(ov):
+            path = ov
+        self.openvino = path.rstrip('/').endswith(OPENVINO_SUFFIX)
         if not os.path.exists(path):
             raise FileNotFoundError(f'no model at {path} (train one: '
                                     'maze_nav/tools/train_curtain_yolo.py)')

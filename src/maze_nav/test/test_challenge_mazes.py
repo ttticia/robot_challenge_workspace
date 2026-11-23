@@ -175,6 +175,77 @@ def test_sim_steps_over_the_rolling_pin():
     assert on.sum() > 50 and occ[on].all()
 
 
+
+class _PinSim:
+    """fake_maze_lite3's step() pin model on a stand-in node (no ROS)."""
+    def __init__(self, maze, x, y, th, stall=1.0):
+        from types import SimpleNamespace
+        import fake_maze_lite3 as F
+        for n in ('pin_hold', 'straddling'):
+            setattr(self, n, getattr(F.FakeMazeLite3, n).__get__(self))
+        self.logs = []
+        log = SimpleNamespace(info=self.logs.append, warn=self.logs.append)
+        self.get_logger = lambda: log
+        self.pin_stall, self.pin_feet, self.dt = stall, 0.22, 0.05
+        self.pins = [(s['min'][0], s['min'][1], s['max'][0], s['max'][1])
+                     for s in maze.solids if s['kind'] == 'pin']
+        self.pin_over, self.pin_drive = set(), 0.0
+        self.x, self.y, self.th = x, y, th
+
+    def drive(self, v, w=0.0, t=1.0):
+        for _ in range(int(round(t / self.dt))):
+            th = self.th + w * self.dt
+            nx, ny = self.x + v * math.cos(th) * self.dt, self.y + v * math.sin(th) * self.dt
+            if not self.pin_hold(nx, ny, th, v, w):
+                self.x, self.y = nx, ny
+            self.th = th
+
+
+def r_pins(m):
+    return [(s['min'][0], s['min'][1]) for s in m.solids if s['kind'] == 'pin']
+
+
+def test_sim_pin_needs_steady_forward_drive():
+    """pin_stall > 0 (off by default; user 2026-11-23: H-Step needs 0.5-2 s of steady forward drive): the front
+    feet are held at the bar until 1 s of steady drive, a stop restarts the count, then the
+    rear feet are held the same way; with steady drive the robot gets over."""
+    m = Maze(os.path.join(HERE, 'challenge_a.json'))
+    px = 2 * SIZE
+    bar_x0 = min(p[0] for p in r_pins(m))
+    front = bar_x0 - 0.03 - 0.22 - 0.001          # front feet just short of the bar
+    r = _PinSim(m, front, 0.0, 0.0)
+    r.drive(0.10, t=0.6)
+    assert r.x == pytest.approx(front + 0.005, abs=0.006), 'front feet held at the bar'
+    front = r.x
+    r.drive(0.0, t=0.2)                         # Nav2 stops: the count starts again
+    r.drive(0.10, t=0.6)
+    assert r.x == pytest.approx(front, abs=0.01), 'still held: 0.6 s since the stop'
+    r.drive(0.10, t=0.5)
+    assert r.x > front + 0.005, 'front feet over after 1 s of steady drive'
+    r.drive(0.10, t=8.0)
+    assert r.x - 0.22 > px + 0.03, f'rear feet over too ({r.x:.2f})'
+    assert any('rear feet over' in str(l) for l in r.logs), r.logs
+
+
+def test_sim_pin_turning_against_the_bar_never_gets_over():
+    m = Maze(os.path.join(HERE, 'challenge_a.json'))
+    px = 2 * SIZE
+    r = _PinSim(m, px - 0.5, 0.0, 0.0)
+    r.drive(0.10, t=3.0)
+    x = r.x
+    r.drive(0.10, w=0.3, t=3.0)                 # forward while turning: never over
+    assert (0, True) not in r.pin_over and r.x + 0.22 * math.cos(r.th) < px, (r.x, r.th)
+    assert x < px
+
+
+def test_sim_pin_stall_off_steps_straight_over():
+    m = Maze(os.path.join(HERE, 'challenge_a.json'))
+    px = 2 * SIZE
+    r = _PinSim(m, px - 0.5, 0.0, 0.0, stall=0.0)
+    r.drive(0.10, t=10.0)
+    assert r.x == pytest.approx(px + 0.5, abs=0.01)
+
+
 # ------------------------------------------------------------------ depth camera
 
 def rays_640():

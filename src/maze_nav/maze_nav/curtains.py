@@ -83,7 +83,7 @@ class CurtainParams:
     slit_max: float = 0.0
     min_width: float = 0.60        # m; curtain must be wider (spec 0.7; the measured
     #                                width runs 5-10 cm short: folds, frame posts; 2026-11-20)
-    band: tuple = (0.30, 0.45)     # m above the floor: wall band (= wall_scan band_low /
+    band: tuple = (0.30, 0.50)     # m above the floor: wall band (= wall_scan band_low /
     #                                band_high; curtain_detector takes them from the launch)
     fov: float = math.radians(60)  # rad either side of the heading ("the wall in front")
     bin_width: float = math.radians(1.5)
@@ -104,6 +104,15 @@ class CurtainParams:
     line_tol: float = 0.15         # m off the fitted line (fabric hangs in folds)
     min_bins: int = 4
     min_core: float = 0.35         # m of curtain bins in one stretch (see _segment)
+    # Fabric above the wall top (2026-11-23): maze walls are 0.53 m tall (maze_info.md) and
+    # some have 10-25 cm gaps, which read just like a curtain's gap in the wall band. A
+    # curtain hangs from ~0.9 m, so it also returns points tall_band m above the floor along
+    # its line (within tall_depth m); a wall with a gap returns none there. A segment needs
+    # >= min_tall of its 5 cm slices (ends trimmed 0.1 m: frame posts) to have such points.
+    # 0 = off.
+    tall_band: tuple = (0.58, 0.85)
+    tall_depth: float = 0.12
+    min_tall: float = 0.3
 
 
 @dataclass
@@ -351,9 +360,32 @@ def join_runs(runs, p):
     return out
 
 
-def detect_curtains(pts, lidar_xy, yaw, floor_z, p=None, cells_out=None):
+def tall_cover(pts, p1, p2, floor_z, band=(0.58, 0.85), depth=0.12, step=0.05, trim=0.10):
+    """Fraction of the 5 cm slices along p1-p2 (trim m off each end) with points `band` m
+    above floor_z within `depth` m of the line: fabric hanging above the 0.53 m wall tops
+    (CurtainParams.min_tall). 0.0 for an empty or too short segment."""
+    pts = np.asarray(pts, float)
+    p1, p2 = np.asarray(p1, float)[:2], np.asarray(p2, float)[:2]
+    length = float(np.linalg.norm(p2 - p1))
+    if len(pts) == 0 or length <= 2 * trim + step:
+        return 0.0
+    u = (p2 - p1) / length
+    n = np.array([-u[1], u[0]])
+    rel = pts[:, :2] - p1
+    t, off = rel @ u, rel @ n
+    h = pts[:, 2] - floor_z
+    keep = (np.abs(off) <= depth) & (t >= trim) & (t <= length - trim) & \
+        (h >= band[0]) & (h <= band[1])
+    slices = max(1, int((length - 2 * trim) / step))
+    hit = np.unique(np.clip(((t[keep] - trim) / step).astype(int), 0, slices - 1))
+    return len(hit) / slices
+
+
+def detect_curtains(pts, lidar_xy, yaw, floor_z, p=None, cells_out=None, tall_check=True):
     """[Curtain] in the frame of pts (odom) from one batch of points. n points away from
-    the lidar. cells_out (a list): gets classify_bins()'s bins, for diagnose()."""
+    the lidar. cells_out (a list): gets classify_bins()'s bins, for diagnose(). tall_check:
+    apply CurtainParams.min_tall (fabric above the wall tops); only when lidar points are in
+    the batch: the depth camera alone doesn't see 0.58-0.85 m closer than ~1 m."""
     p = p or CurtainParams()
     cells = classify_bins(pts, lidar_xy, yaw, floor_z, p)
     if cells_out is not None:
@@ -389,6 +421,9 @@ def detect_curtains(pts, lidar_xy, yaw, floor_z, p=None, cells_out=None):
         p1, p2, gap = seg
         if np.linalg.norm(p2 - p1) <= p.min_width:
             continue
+        if tall_check and p.min_tall > 0 and tall_cover(pts, p1, p2, floor_z, p.tall_band, p.tall_depth) \
+                < p.min_tall:
+            continue                     # nothing above the wall top: a wall with a gap
         d = p2 - p1
         n = np.array([d[1], -d[0]]) / np.linalg.norm(d)
         if np.dot((p1 + p2) / 2 - lxy, n) < 0:

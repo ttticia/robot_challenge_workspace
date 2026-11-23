@@ -22,6 +22,12 @@ loopback at a third of the rate.
 Started by team_perception robot.launch.py (depth_relay:=true) and by maze_nav.launch.py
 (which shares one relay between perception and stair_detector). Run only one.
 
+Colour (compressed:=true, 2026-11-23): the same for the camera's JPEG stream
+(sensor_msgs/CompressedImage, no camera_info): robot.launch.py starts it as colour_relay
+(/camera/color/image_raw/compressed -> /camera/color_relay/image_raw/compressed) so
+qr_scanner and human_detector (survivor posters) share one bridge copy; human / poster
+detection was removed on 2026-11-19 because each colour subscriber was another copy.
+
     ros2 run team_perception depth_relay
     ros2 run team_perception depth_relay --ros-args -p rate_hz:=15.0
 """
@@ -29,7 +35,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 
 OUT_QOS = QoSProfile(depth=2, history=HistoryPolicy.KEEP_LAST,
                      reliability=ReliabilityPolicy.RELIABLE)
@@ -75,15 +81,18 @@ class DepthRelay(Node):
         p('out_info_topic', '/camera/depth_relay/camera_info')
         p('rate_hz', 10.0)               # 0 = forward every frame
         p('stats_period', 60.0)          # s between rate log lines
+        p('compressed', False)           # True: relay sensor_msgs/CompressedImage (colour)
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self.gate = RateGate(float(g('rate_hz')))
         self.info = None
         self.n_in = self.n_out = 0
         self.last_in = None
-        self.depth_pub = self.create_publisher(Image, g('out_depth_topic'), OUT_QOS)
+        self.kind = 'colour' if g('compressed') else 'depth'
+        msg_type = CompressedImage if g('compressed') else Image
+        self.depth_pub = self.create_publisher(msg_type, g('out_depth_topic'), OUT_QOS)
         self.info_pub = (self.create_publisher(CameraInfo, g('out_info_topic'), OUT_QOS)
                          if g('in_info_topic') else None)
-        self.create_subscription(Image, g('in_depth_topic'), self.on_depth,
+        self.create_subscription(msg_type, g('in_depth_topic'), self.on_depth,
                                  qos_profile_sensor_data)
         if g('in_info_topic'):
             self.create_subscription(CameraInfo, g('in_info_topic'), self.on_info,
@@ -112,11 +121,12 @@ class DepthRelay(Node):
     def watch(self):
         now = self.get_clock().now()
         if self.last_in is None or (now - self.last_in).nanoseconds > 5e9:
-            self.get_logger().warn('no depth images for 5 s (camera driver / bridge up?)',
+            self.get_logger().warn(f'no {self.kind} images for 5 s (camera driver / bridge up?)',
                                    throttle_duration_sec=30.0)
         dt = (now - self.stats_at).nanoseconds * 1e-9
         if dt >= self.stats_period:
-            self.get_logger().info(f'depth in {self.n_in / dt:.1f} Hz, out {self.n_out / dt:.1f} Hz')
+            self.get_logger().info(f'{self.kind} in {self.n_in / dt:.1f} Hz, out '
+                                   f'{self.n_out / dt:.1f} Hz')
             self.n_in = self.n_out = 0
             self.stats_at = now
 

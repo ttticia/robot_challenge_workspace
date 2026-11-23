@@ -623,3 +623,24 @@ def test_lidar_self_returns_dropped_but_walls_kept():
     assert not np.isfinite(after[b])                          # gone with it
     right = int((-math.pi / 2 + math.pi) / INC)
     assert after[right - 3:right + 4].min() == pytest.approx(0.5, abs=0.03)  # side wall kept
+
+
+def test_visited_cost_prefers_new_floor():
+    # Corridor 4 m long, open (unknown) at both ends; robot a little left of the middle.
+    res = 0.05
+    data = np.full((30, 100), 100, np.int16)
+    data[5:25, 10:90] = 0
+    data[5:25, :10] = -1
+    data[5:25, 90:] = -1
+    g = Grid(data, res, (0.0, 0.0))
+    xy = (2.4, 0.75)
+    plain = find_frontiers(g, xy, min_size=1)
+    assert plain[0].goal[0] < xy[0]                      # nearest: the left end
+    visited = np.zeros(data.shape, bool)
+    visited[:, :48] = True                               # came from the left
+    fs = find_frontiers(g, xy, min_size=1, visited=visited, visited_cost=0.25)
+    assert fs[0].goal[0] > xy[0]                         # new floor on the right wins
+    assert choose_frontier(fs).goal[0] > xy[0]
+    # ...but only slightly: a clearly nearer frontier over visited floor still wins
+    fs = find_frontiers(g, (1.2, 0.75), min_size=1, visited=visited, visited_cost=0.25)
+    assert fs[0].goal[0] < 1.2

@@ -60,9 +60,47 @@ def test_lidar_hits_count_half():
     assert chk.passed()
 
 
-def test_turn_gives_up_after_timeout_and_still_holds():
+def test_no_verdict_when_the_robot_cannot_face_the_stairs():
+    """User 2026-11-23: face the stairs fully before verifying or ruling them out (robot run
+    05:43: a check 96 deg off "confirmed" them). Walls stop the turn: the other way round
+    once, then UNFACED - never HOLD / DONE."""
+    chk = StairCheck(stairs_at(0.0, 1.0, math.pi / 2), (0.0, 0.0), 0.0)
+    t, ws, phase = 0.0, [], None
+    while t < 10.0 and phase != 'UNFACED':
+        w, phase, _ = chk.tick(t, (0.0, 0.0), 0.0)
+        if phase == 'TURN':
+            ws.append(w)
+            chk.turn_blocked(t, True)                  # the wall check zeroes every turn
+        t += 0.1
+    assert phase == 'UNFACED' and 4.0 <= t <= 5.0      # 2 s each way
+    assert ws[0] > 0 and ws[-1] < 0                    # short way first, then the long way
+    chk.add_hit('camera')
+    assert chk.cam_hits == 0 and chk.tick(t, (0.0, 0.0), 0.0)[1] == 'UNFACED'
+
+
+def test_turn_timeout_without_facing_is_no_verdict_either():
     chk = StairCheck(stairs_at(0.0, 1.0, math.pi / 2), (0.0, 0.0), 0.0,
                      CheckParams(turn_timeout=1.0))
+    phases = [chk.tick(0.1 * k, (0.0, 0.0), 0.0)[1] for k in range(30)]
+    assert phases[-1] == 'UNFACED' and 'HOLD' not in phases
+
+
+def test_the_long_way_round_faces_them():
+    chk = StairCheck(stairs_at(0.0, 1.0, math.pi / 2), (0.0, 0.0), 0.0)
+    t, yaw, phase = 0.0, 0.0, 'TURN'
+    while t < 40.0 and phase == 'TURN':
+        w, phase, _ = chk.tick(t, (0.0, 0.0), yaw)
+        blocked = w > 0 and yaw >= 0                   # a wall stops the short (left) turn
+        chk.turn_blocked(t, blocked)
+        yaw += 0.0 if blocked else w * 0.1
+        t += 0.1
+    assert phase != 'UNFACED' and abs(math.atan2(math.sin(yaw - math.pi / 2),
+                                                 math.cos(yaw - math.pi / 2))) < math.radians(7)
+
+
+def test_turn_gives_up_after_timeout_and_still_holds():
+    chk = StairCheck(stairs_at(0.0, 1.0, math.pi / 2), (0.0, 0.0), 0.0,
+                     CheckParams(turn_timeout=1.0, must_face=False))
     # a robot that cannot turn (walls): ticks without integrating w
     t, phase = 0.0, None
     while t < 10.0 and phase != 'DONE':

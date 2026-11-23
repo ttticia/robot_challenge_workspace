@@ -255,7 +255,8 @@ def sense(boxes, mode, dist_base=None, base=(0.0, 0.0), yaw=0.0):
     if mode in ('depth', 'both'):
         parts.append(depth_points(render_depth(boxes, base, yaw), K4, r, t, stride=1))
     origin = lid if mode != 'depth' else t
-    return detect_curtains(np.concatenate(parts), origin[:2], yaw, 0.0)
+    return detect_curtains(np.concatenate(parts), origin[:2], yaw, 0.0,
+                           tall_check=mode != 'depth')
 
 
 def curtain_at(d, gap=0.08):
