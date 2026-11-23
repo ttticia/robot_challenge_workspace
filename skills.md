@@ -142,7 +142,7 @@ source /opt/ros/humble/setup.bash && source install/setup.bash
 nice -n 19 python3 src/maze_nav/tools/curtain_bag_replay.py ROS_bags/<bag> \
     --max-gap 0.15 0.25 --every 5 --lidar --csv /tmp/curtain.csv
 nice -n 19 python3 src/maze_nav/tools/curtain_yolo_frames.py ROS_bags/<bag> \
-    ~/challenge_ws/datasets/curtain --every 3 --max-gap 0.25 --lidar   # draft YOLO labels
+    ~/challenge_ws/datasets/curtain --every 10 --max-gap 0.25 --lidar   # draft YOLO labels
 ```
 
 Needs no `/tf`, so teleop bags without Fast-LIO work.

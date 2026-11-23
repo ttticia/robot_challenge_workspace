@@ -10,7 +10,9 @@
 #   maze        full maze_nav run, no depth              (guide 2.2, groups A, B, D-H)
 #   navdebug    why it moved/stopped/turned             (guide 2.3)
 #   lidar       raw sensors to re-run Fast-LIO / SLAM   (guide 2.4, groups A, D)
-#   curtain     curtain YOLO training data: colour, depth, lidar, /tf_static (guide 2.5)
+#   curtain     curtain YOLO training data: colour, depth, lidar, tf, odometry, IMU,
+#               controller (guide 2.5). Raw /livox/points automatically when maze_nav's
+#               lidar_relay isn't running; warns if the camera isn't publishing.
 #
 # Options:
 #   -n, --dry-run   print the command, don't record
@@ -47,8 +49,11 @@ preset_topics() {
     navdebug)   echo "$A /livox/points_local /odom /scan /map /leg_odom2 $F" ;;
     lidar)      echo "$A /livox/lidar /livox/imu /livox/points_local /imu/data /leg_odom2" ;;
     # curtain_yolo_frames.py: colour + depth + both camera_infos + /tf_static (camera pose),
-    # lidar for its --lidar draft labels, /odom to see how the robot moved past the curtain.
-    curtain)    echo "$A $B $C /livox/points_local /odom" ;;
+    # lidar for its --lidar draft labels. Motion and context for picking / checking frames:
+    # /odom (Fast-LIO, only with maze_nav), /leg_odom2 (robot's own odometry, always there),
+    # /imu/data (body pitch / roll while walking: tilts the camera), /handle_state +
+    # /simple_cmd (controller sticks and mode: moving or still, which frames blur).
+    curtain)    echo "$A $B $C /livox/points_local /odom /leg_odom2 /imu/data /handle_state /simple_cmd" ;;
     *)          return 1 ;;
   esac
 }
@@ -183,6 +188,9 @@ EOF
   echo "Created $QOS_FILE"
 fi
 
+NODES=$(timeout 5 ros2 node list 2>/dev/null || true)
+node_running() { grep -qx "$1" <<<"$NODES"; }
+
 free_gb=$(df -Pk "$BAG_DIR" | awk 'NR==2 {print int($4 / 1048576)}')
 if (( free_gb < MIN_FREE_GB )); then
   echo "Warning: only ${free_gb} GB free in $BAG_DIR (depth + lidar use ~1 GB/min)." >&2
@@ -191,7 +199,7 @@ fi
 # Recording raw depth while Nav2 drives delayed /livox/points ~1.2 s and collision_monitor
 # held the robot at zero (2026-11-13). Refuse unless the user insists.
 if [[ " $TOPICS " == *" /camera/depth/image_raw "* ]] \
-   && timeout 5 ros2 node list 2>/dev/null | grep -qE "controller_server|collision_monitor"; then
+   && grep -qE "controller_server|collision_monitor" <<<"$NODES"; then
   echo "Nav2 is running and preset '$PRESET' records raw depth, which stalls the lidar." >&2
   echo "Use 'maze' instead, or set ALLOW_DEPTH_WITH_NAV2=1 to record anyway." >&2
   [[ "${ALLOW_DEPTH_WITH_NAV2:-0}" == 1 ]] || exit 1
@@ -203,19 +211,39 @@ fi
 # the old "swap if lidar_relay is listed" check missed it). So every preset records
 # /livox/points_local (ros2 bag record subscribes once it appears: starting before maze_nav is
 # fine). RAW_LIDAR=1 = raw /livox/points instead (teleop bags without maze_nav).
+# The curtain preset is teleop only (it records raw depth), so it picks for itself: raw
+# /livox/points unless lidar_relay runs (RAW_LIDAR=0 forces /livox/points_local).
+if [[ "$PRESET" == curtain && -z "${RAW_LIDAR:-}" ]] && ! node_running /lidar_relay; then
+  RAW_LIDAR=1
+  echo "curtain: maze_nav's lidar_relay isn't running, so the lidar is recorded as raw /livox/points."
+fi
 if [[ "${RAW_LIDAR:-0}" == 1 ]]; then
   TOPICS=" $TOPICS "
   TOPICS="${TOPICS// \/livox\/points_local / \/livox\/points }"
   echo "RAW_LIDAR=1: recording raw /livox/points (a second bridge copy if maze_nav runs)."
-elif [[ " $TOPICS " == *" /livox/points_local "* ]] \
-   && ! timeout 5 ros2 node list 2>/dev/null | grep -qx "/lidar_relay"; then
+elif [[ " $TOPICS " == *" /livox/points_local "* ]] && ! node_running /lidar_relay; then
   echo "Note: /livox/points_local comes from maze_nav's lidar_relay, not seen yet. It is" \
        "recorded once maze_nav starts; for a teleop bag without maze_nav use RAW_LIDAR=1." >&2
 fi
-if [[ " ${EXTRA[*]} " == *" /livox/points "* ]] \
-   && timeout 5 ros2 node list 2>/dev/null | grep -qx "/lidar_relay"; then
+if [[ " ${EXTRA[*]} " == *" /livox/points "* ]] && node_running /lidar_relay; then
   echo "Warning: you added /livox/points; with lidar_relay running that is a second bridge" \
        "copy (lidar and odom late). Use /livox/points_local." >&2
+fi
+
+# Topics a curtain bag is useless without (curtain_yolo_frames.py: frames, depth for the range
+# and draft labels, camera pose, lidar drafts). Checked before (published?) and after (count).
+REQUIRED=()
+if [[ "$PRESET" == curtain ]]; then
+  LIDAR_TOPIC=/livox/points_local
+  [[ " $TOPICS " == *" /livox/points "* ]] && LIDAR_TOPIC=/livox/points
+  REQUIRED=(/camera/color/image_raw/compressed /camera/color/camera_info /camera/depth/image_raw
+            /camera/depth/camera_info /tf_static "$LIDAR_TOPIC")
+  LISTED=$(timeout 5 ros2 topic list 2>/dev/null || true)
+  for t in "${REQUIRED[@]}"; do
+    [[ "$t" == /livox/points_local ]] && continue      # appears when maze_nav starts
+    grep -qx "$t" <<<"$LISTED" || echo "Warning: $t is not published (camera / lidar driver" \
+      "running? ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-unset}). The bag will be missing it." >&2
+  done
 fi
 
 # ---- record ------------------------------------------------------------------------------
@@ -234,7 +262,16 @@ trap - INT
 
 if [[ -f "$OUT/metadata.yaml" ]]; then
   echo
-  ros2 bag info "$OUT" | grep -E "Duration|Bag size|Messages|Topic:.*Count: 0" || true
+  INFO=$(ros2 bag info "$OUT" 2>/dev/null || true)
+  grep -E "Duration|Bag size|Messages|Topic:.*Count: 0" <<<"$INFO" || true
   echo "Topics with 'Count: 0' above were not published during the recording."
+  missing=()
+  for t in "${REQUIRED[@]}"; do
+    n=$(grep -E "Topic: $t \|" <<<"$INFO" | sed -nE 's/.*Count: ([0-9]+).*/\1/p')
+    [[ "${n:-0}" -gt 0 ]] || missing+=("$t")
+  done
+  if (( ${#missing[@]} )); then
+    echo "WARNING: this $PRESET bag has no ${missing[*]}. Fix the driver / topic and record again." >&2
+  fi
   ask_new_name
 fi

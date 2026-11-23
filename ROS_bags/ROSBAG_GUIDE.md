@@ -289,24 +289,31 @@ The inputs to re-run Fast-LIO and `slam_toolbox` offline. On replay, leave `/tf`
 
 Bags for training the curtain YOLO model (`maze_nav/curtain_yolo.py`; plan in
 `src/to_do.md`, "YOLO curtain detector"). It records what `maze_nav/tools/curtain_yolo_frames.py`
-reads: compressed colour + `camera_info`, raw depth + `camera_info`, `/tf_static` (camera pose),
-plus `/livox/points_local` for its `--lidar` draft labels and `/odom`. Teleop only: it records
-raw depth, so it refuses to start while Nav2 runs. Without maze_nav running, use
-`RAW_LIDAR=1 rec_curtain` so the lidar is recorded as `/livox/points`. About 1.5 GB/min, so keep
-each bag to one approach of 1-2 minutes.
+reads: compressed colour + `camera_info`, raw depth + `camera_info`, `/tf` + `/tf_static` (camera
+pose), and the lidar for its `--lidar` draft labels. Also `/odom` (Fast-LIO, only with maze_nav),
+`/leg_odom2` (the robot's own odometry), `/imu/data` (body pitch / roll while walking) and
+`/handle_state` + `/simple_cmd` (controller sticks and mode), to tell moving / blurred frames
+from still ones. Teleop only (manual mode with the controller is fine): it records raw depth,
+so it refuses to start while Nav2 runs. The lidar is recorded as raw `/livox/points` by itself
+when maze_nav's `lidar_relay` isn't running (no `RAW_LIDAR=1` needed). It warns before
+recording if the camera or lidar isn't publishing, and after Ctrl+C if the bag is missing one
+of them. About 1.5 GB/min, so keep each bag to one approach of 1-2 minutes.
 
 ```bash
 rec_curtain curtain_spec_square_lit_01        # name: curtain, angle, lighting, number
-RAW_LIDAR=1 rec_curtain neg_extru_cavity_01   # negatives too (walls, cavities, doorways)
+rec_curtain neg_extru_cavity_01               # negatives too (walls, cavities, doorways)
 nice -n 19 python3 src/maze_nav/tools/curtain_yolo_frames.py ~/challenge_ws/ROS_bags/<bag> \
-    ~/challenge_ws/datasets/curtain --every 3            # add --lidar (and
-    # --cloud-topic /livox/points_local for a bag recorded with maze_nav running)
+    ~/challenge_ws/datasets/curtain --every 10 --lidar --cloud-topic /livox/points
+    # --max-gap 0.25 for a curtain hanging ~20 cm up; /livox/points_local for a bag
+    # recorded with maze_nav running
 ```
 
-What to record: the spec curtain (gap < 15 cm) and the lab curtain, approaching from 2.5 m to
-0.5 m, square on and 30-45° off, lit and in shadow, still and swaying, from both sides. Record
-negatives too: plain walls, extrusion walls with cavities or windows, doorways, slats, open
-floor, people. Spread the bags over several sessions and days.
+What to record: the competition curtains (both halves, closed with the 1-3 cm slit, parted,
+swaying; also in front of the raised platform). Detection has to work from **1.5 m down to
+0.3 m**, so approach slowly from about 2 m to 0.3 m and spend most of the bag in that range:
+square on and 30-45° off, from both sides, lit and in shadow. Record negatives too: plain walls,
+extrusion walls with cavities or windows, doorways, slats, open floor, people. Spread the bags
+over several sessions and days.
 
 #### While recording
 

@@ -7,6 +7,7 @@ import sys
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from maze_nav import curtain_yolo as Y
 from maze_nav.curtain_detector import CurtainDetector
@@ -136,3 +137,86 @@ def test_training_split_keeps_each_bag_on_one_side():
     train, val = T.split_by_bag(imgs, 0.2)
     assert {T.bag_of(i) for i in train}.isdisjoint({T.bag_of(i) for i in val})
     assert len(train) + len(val) == 50 and 0 < len(val) < 25
+
+
+def test_bag_of_real_frame_names():
+    """curtain_yolo_frames.py names: <bag>_<SSSS>_<cc>.jpg, bag names with '_' in them.
+    Frames from different seconds of one bag are one bag (not one group per second)."""
+    assert T.bag_of('/d/images/curtain_lab_45deg_lit_01_0060_07.jpg') == \
+        'curtain_lab_45deg_lit_01'
+    assert T.bag_of('curtain_test1_0001_29.jpg') == 'curtain_test1'
+    assert T.bag_of('curtain_test1_0123_99.jpg') == T.bag_of('curtain_test1_0000_59.jpg')
+    imgs = [f'/d/images/{b}_{s:04d}_{c:02d}.jpg'
+            for b in ('curtain_test1', 'curtain_lab_45deg_lit_01', 'neg_wall_01')
+            for s in range(10) for c in (5, 55)]
+    train, val = T.split_by_bag(imgs, 0.3)
+    assert {T.bag_of(i) for i in train}.isdisjoint({T.bag_of(i) for i in val})
+    assert len({T.bag_of(i) for i in imgs}) == 3
+
+
+def _bags(spec):
+    """{bag: (curtain frames, negative frames)} -> (image list, is_pos)."""
+    imgs, pos = [], set()
+    for b, (p, n) in spec.items():
+        for k in range(p + n):
+            im = f'/d/images/{b}_{k:04d}_00.jpg'
+            imgs.append(im)
+            if k < p:
+                pos.add(im)
+    return imgs, pos.__contains__
+
+
+def test_split_never_puts_only_negatives_in_val():
+    """2026-11-23: the old split sent the negatives-only bag curtain_n1 (71 frames) to val
+    alone - no curtain to score. Whatever the seed, val has curtain frames, a curtain bag
+    still trains, and the single negatives-only bag stays in train."""
+    imgs, pos = _bags({'curtain_bag1': (37, 26), 'curtain_lab': (50, 33), 'curtain_n1': (0, 71),
+                       'curtain_slit': (35, 16), 'curtain_test1': (17, 19)})
+    for seed in range(20):
+        train, val = T.split_by_bag(imgs, 0.2, seed=seed, is_pos=pos)
+        assert any(pos(i) for i in val) and any(pos(i) for i in train)
+        assert all(T.bag_of(i) != 'curtain_n1' for i in val)
+        assert {T.bag_of(i) for i in train}.isdisjoint({T.bag_of(i) for i in val})
+        assert len(train) + len(val) == len(imgs)
+
+
+def test_split_negatives_only_bag_can_validate_when_there_are_two():
+    imgs, pos = _bags({'a': (40, 10), 'b': (40, 10), 'c': (40, 10), 'neg1': (0, 15),
+                       'neg2': (0, 15)})
+    vals = [{T.bag_of(i) for i in T.split_by_bag(imgs, 0.4, seed=s, is_pos=pos)[1]}
+            for s in range(20)]
+    assert any(v & {'neg1', 'neg2'} for v in vals)
+    assert all(len(v & {'neg1', 'neg2'}) < 2 for v in vals)   # one always trains
+
+
+def test_split_named_val_bags_and_one_curtain_bag_fallback():
+    imgs, pos = _bags({'a': (10, 5), 'b': (10, 5), 'neg': (0, 8)})
+    train, val = T.split_by_bag(imgs, 0.2, is_pos=pos, val_bags=['b'])
+    assert {T.bag_of(i) for i in val} == {'b'} and len(train) == 23
+    with pytest.raises(ValueError):
+        T.split_by_bag(imgs, 0.2, is_pos=pos, val_bags=['nope'])
+    one, pos1 = _bags({'a': (10, 10), 'neg': (0, 8)})
+    train, val = T.split_by_bag(one, 0.2, is_pos=pos1)
+    assert len(val) == 4 and all(T.bag_of(i) == 'a' for i in val)   # last 20 % of 'a'
+
+
+def test_leave_one_bag_out_folds():
+    imgs, pos = _bags({'a': (10, 5), 'b': (8, 2), 'c': (6, 6), 'neg': (0, 9)})
+    folds = T.leave_one_bag_out(imgs, pos, test_bags=('c',))
+    assert [f[0] for f in folds] == ['a', 'b']               # no fold for neg / test bag c
+    for bag, train, val in folds:
+        assert {T.bag_of(i) for i in val} == {bag}
+        assert bag not in {T.bag_of(i) for i in train} and 'c' not in {T.bag_of(i) for i in train}
+        assert 'neg' in {T.bag_of(i) for i in train}
+
+
+def test_phone_frames_train_only():
+    """Phone-video frames (phone_*) are another camera: never val, no CV fold of their own."""
+    imgs, pos = _bags({'a': (20, 5), 'b': (20, 5), 'phone_IMG_1': (30, 0), 'neg': (0, 10)})
+    for seed in range(10):
+        train, val = T.split_by_bag(imgs, 0.4, seed=seed, is_pos=pos)
+        assert all(not T.bag_of(i).startswith('phone_') for i in val)
+        assert any(T.bag_of(i) == 'phone_IMG_1' for i in train)
+    assert [f[0] for f in T.leave_one_bag_out(imgs, pos)] == ['a', 'b']
+    with pytest.raises(ValueError):
+        T.split_by_bag(imgs, 0.2, is_pos=pos, val_bags=['phone_IMG_1'])
