@@ -14,9 +14,10 @@ def look(names, i, hold_until=None, dead_end=None):
 
 
 def test_states():
-    for s in ('DEAD_END', 'FACING_QR', 'LOOKING'):
+    for s in ('DEAD_END', 'FACING_QR'):
         assert at(s)
-    for s in ('EXPLORING', 'TURNING', 'SCANNING', 'PAUSED', 'STAIRS', 'CURTAIN', 'CREEPING'):
+    for s in ('EXPLORING', 'TURNING', 'SCANNING', 'PAUSED', 'STAIRS', 'CURTAIN', 'CREEPING',
+              'LOOKING'):
         assert not at(s)
     assert not at('JUNCTION', None)
 
@@ -41,3 +42,11 @@ def test_junction_follow_up():
         assert at('JUNCTION', j) is want, (do, group)
     j['todo'] = []
     assert not at('JUNCTION', j)
+
+
+def test_junction_way_scan_holds():
+    steps = [{'name': 'junction way +i', 'scan': True}, {'name': 'junction way +j', 'scan': True}]
+    j = {'steps': steps, 'i': 1, 'hold_until': None, 'dead_end': None}
+    assert not at('JUNCTION', j)                         # turning / centring
+    j['hold_until'] = 5.0
+    assert at('JUNCTION', j)                             # scanning way +i

@@ -70,6 +70,17 @@ class CurtainParams:
     # m; and at least this. A wall on the floor reads ~0.03-0.04 (face points start 3 cm
     # above the ground), so stray returns behind a wall must not make it a curtain.
     min_gap: float = 0.05
+    # m; a bin seen under with a gap of candidate_min_gap..min_gap is 'low' (logged, never a
+    # curtain or a candidate): practice-maze curtains hang 1-3 cm up (user 2026-11-22), but
+    # extru walls read the same (floor seen through their side windows, test_curtains), so
+    # 'low' bins can't be used until something else tells the two apart (to_do.md).
+    candidate_min_gap: float = 0.01
+    # m; runs of curtain-like bins whose facing ends are at most this far apart, on one
+    # line, are one curtain: the practice-maze curtain is two halves with a slit between
+    # (photos 2026-11-22), each ~0.45 m wide, under min_width alone. 0 = off (default):
+    # joining also stitched side-wall pieces into a curtain along a corridor
+    # (test_rolling_pin, 2026-11-22); needs a facing / doorway check first (to_do.md).
+    slit_max: float = 0.0
     min_width: float = 0.60        # m; curtain must be wider (spec 0.7; the measured
     #                                width runs 5-10 cm short: folds, frame posts; 2026-11-20)
     band: tuple = (0.30, 0.45)     # m above the floor: wall band (= wall_scan band_low /
@@ -256,8 +267,10 @@ def classify_bins(pts, lidar_xy, yaw, floor_z, p=None):
         gap = float(hb[face].min()) - ground
         behind = int((past & (np.abs(hb - ground) < p.floor_tol)).sum())
         cell['gap'], cell['behind'] = gap, behind
-        if gap < p.min_gap:
+        if gap < p.candidate_min_gap or gap < p.min_gap and behind < p.min_behind:
             cell['kind'] = 'wall'      # the face reaches the floor
+        elif gap < p.min_gap:
+            cell['kind'] = 'low'       # seen under, but too low to tell from a wall
         elif behind >= p.min_behind:
             cell['kind'] = 'curtain' if gap < p.max_gap else 'high'
         else:
@@ -307,6 +320,37 @@ def _segment(cells, p):
     return m + lo * u, m + hi * u, float(np.median(gaps))
 
 
+def join_runs(runs, p):
+    """Runs of bins (left to right) with the facing ends of neighbours at most slit_max
+    apart joined into one: the two halves of a split curtain, with the slit between them
+    (bins that looked through it are not in any run, or form a short run further away,
+    which is dropped). Whether the result is one straight line is _segment's check."""
+    if p.slit_max <= 0:
+        return [r for r in runs if r]
+    out = []
+    for run in runs:
+        if not run:
+            continue
+        if out:
+            a = out[-1]
+            gap = math.hypot(run[0]['xy'][0] - a[-1]['xy'][0], run[0]['xy'][1] - a[-1]['xy'][1])
+            if gap <= p.slit_max:
+                out[-1] = a + run
+                continue
+            # a short run seen through the slit (further than both halves): skip it
+            if len(out) >= 2 and len(a) <= 3:
+                b = out[-2]
+                far = min(c['r'] for c in a) > max(b[-1]['r'], run[0]['r']) + 0.3
+                gap2 = math.hypot(run[0]['xy'][0] - b[-1]['xy'][0],
+                                  run[0]['xy'][1] - b[-1]['xy'][1])
+                if far and gap2 <= p.slit_max:
+                    out.pop()
+                    out[-1] = b + run
+                    continue
+        out.append(list(run))
+    return out
+
+
 def detect_curtains(pts, lidar_xy, yaw, floor_z, p=None, cells_out=None):
     """[Curtain] in the frame of pts (odom) from one batch of points. n points away from
     the lidar. cells_out (a list): gets classify_bins()'s bins, for diagnose()."""
@@ -338,7 +382,7 @@ def detect_curtains(pts, lidar_xy, yaw, floor_z, p=None, cells_out=None):
             cur, holes = [], 0
     found = []
     lxy = np.asarray(lidar_xy, float)[:2]
-    for run in runs:
+    for run in join_runs(runs, p):
         seg = _segment(run, p)
         if seg is None:
             continue
@@ -417,7 +461,7 @@ def near_miss_segment(cells, p=None, max_gap=0.30, min_width=0.60):
                 runs.append(cur)
             cur, holes = [], 0
     best = None
-    for run in runs:
+    for run in join_runs(runs, p):
         under = [c for c in run if c['kind'] in ('curtain', 'high')]
         if len(under) < 2:
             continue
@@ -431,23 +475,61 @@ def near_miss_segment(cells, p=None, max_gap=0.30, min_width=0.60):
     return None if best is None else best[:3]
 
 
+def floor_at_line(pts, p1, p2, n, floor_z, near=0.45, behind=0.8, clear=0.10, search=0.15,
+                  tol=0.03, min_pts=6, end_margin=0.10):
+    """Floor height (frame of pts) right at a curtain line, measured from the points
+    themselves, or None.
+
+    The floor the robot stands on is a poor reference for a curtain: the curtain cell can be
+    5-10 cm lower than the start plate, and the lidar never sees the floor under the robot
+    (nearest floor ~1.4 m ahead; stairs_lidar.floor_under), so the floor handed in is often
+    the start plate's. Here: points along the line (end_margin m in from each end: the side
+    walls the curtain hangs between reach down to the floor there), `clear` m or more off it
+    (the fabric's folds), within `search` of floor_z; their lowest dense layer (10th
+    percentile + tol). In front of the line (up to `near` m: the side the robot crosses
+    from) first, else behind it (up to `behind` m). pts / p1 / p2 / n as in gap_at_line.
+    """
+    pts = np.asarray(pts, float)
+    p1, p2, n = (np.asarray(v, float)[:2] for v in (p1, p2, n))
+    width = float(np.linalg.norm(p2 - p1))
+    if width < 1e-6 or len(pts) == 0:
+        return None
+    rel = pts[:, :2] - p1
+    t, d = rel @ ((p2 - p1) / width), rel @ n
+    z = pts[:, 2]
+    m = min(end_margin, 0.25 * width)
+    ok = (t >= m) & (t <= width - m) & (np.abs(z - floor_z) <= search)
+    for side in ((d <= -clear) & (d >= -near), (d >= clear) & (d <= behind)):
+        zs = z[ok & side]
+        if len(zs) >= min_pts:
+            low = zs[zs <= np.percentile(zs, 10) + tol]
+            return float(np.median(low))
+    return None
+
+
 def gap_at_line(pts, p1, p2, n, floor_z, face_depth=0.10, floor_tol=0.04, behind=0.8,
-                top=0.45, slices=8):
+                top=0.45, slices=8, local_floor=True):
     """Gap under a known curtain line, measured while the robot lies down (user 2026-11-20):
     the sensors sit ~0.15-0.25 m up, about level with the hem, so they see straight under it.
 
     pts (N, 3) in the frame of p1, p2 (curtain ends) and n (normal pointing away from the
-    robot); floor_z the floor's height there. The curtain is cut into `slices` along its
-    width. Per slice: hem = lowest point on the curtain (within face_depth of the line,
-    > floor + floor_tol, <= top), floor behind = points 0.05..behind past the line within
-    floor_tol of the floor. Returns (gap, coverage, slices_seen): gap = median hem height of
-    the slices that have both (None if none), coverage = that fraction of the slices.
+    robot); floor_z the floor's height there (local_floor: only a starting point, re-measured
+    at the line with floor_at_line when the points show the floor there). The curtain is cut
+    into `slices` along its width. Per slice: hem = lowest point on the curtain (within
+    face_depth of the line, > floor + floor_tol, <= top), floor behind = points 0.05..behind
+    past the line within floor_tol of the floor. Returns (gap, coverage, slices_seen): gap =
+    median hem height of the slices that have both (None if none), coverage = that fraction
+    of the slices.
     """
     pts = np.asarray(pts, float)
     p1, p2, n = (np.asarray(v, float)[:2] for v in (p1, p2, n))
     width = float(np.linalg.norm(p2 - p1))
     if width < 1e-6 or len(pts) == 0:
         return None, 0.0, 0
+    if local_floor:
+        f = floor_at_line(pts, p1, p2, n, floor_z, behind=behind)
+        if f is not None:
+            floor_z = f
     u = (p2 - p1) / width
     rel = pts[:, :2] - p1
     t = rel @ u                                  # along the curtain

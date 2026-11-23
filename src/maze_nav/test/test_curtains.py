@@ -363,7 +363,7 @@ def test_extru_wall_ahead_is_a_wall_not_a_curtain(d, board_side):
     kinds = [c['kind'] for c in cells if c['r'] is not None]
     assert 'curtain' not in kinds
     ahead = {c['kind'] for c in cells if c['r'] is not None and abs(c['bearing']) < 0.15}
-    assert ahead == {'wall'}            # the board reaches the floor
+    assert ahead <= {'wall', 'low'}     # the board reaches the floor: never a curtain
 
 
 @pytest.mark.parametrize('d', [0.6, 0.8, 1.2])
@@ -436,3 +436,22 @@ def test_curtain_mask_widens_near_the_robot_but_keeps_side_walls():
     near = curtain_mask(pts, [c], robot_xy=(2.2, 0.0))
     assert near.tolist() == [True, True, True, False, False]
     assert (curtain_mask(pts, [c]) == in_curtains(pts, [c])).all()
+
+
+def test_split_curtain_halves_join_into_one():
+    """Practice-maze curtain (2026-11-22): two 0.45 m halves with a 10 cm slit, each under
+    min_width alone; joined they are one curtain."""
+    import maze_nav.curtains as C
+    p = C.CurtainParams(slit_max=0.20)            # off by default (to_do.md)
+    def bins(y0, y1, x=1.5):
+        return [{'kind': 'curtain', 'xy': (x, y), 'r': x, 'gap': 0.1}
+                for y in np.arange(y0, y1, 0.04)]
+    left, right = bins(0.05, 0.50), bins(-0.50, -0.05)
+    joined = C.join_runs([right, left], p)
+    assert len(joined) == 1
+    seg = C._segment(joined[0], p)
+    assert seg is not None and np.linalg.norm(seg[1] - seg[0]) > p.min_width
+    far = [{'kind': 'face', 'xy': (3.0, 0.0), 'r': 3.0, 'gap': None}]
+    assert len(C.join_runs([right, far, left], p)) == 1      # seen through the slit
+    apart = bins(0.40, 0.85)
+    assert len(C.join_runs([right, apart], p)) == 2          # 45 cm apart: two things

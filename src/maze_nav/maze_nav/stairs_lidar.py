@@ -31,6 +31,7 @@ may be a step nearer than the camera's when the camera can't see the bottom one)
 map is well covered there and flat: no stairs), or unknown (not enough lidar coverage).
 fuse(): one estimate from the camera tracker, the lidar tracker and that check.
 """
+import collections
 import math
 import statistics
 from dataclasses import dataclass
@@ -210,61 +211,273 @@ class HeightMap:
         return f if abs(f - guess) <= p.floor_max_off else None
 
 
-    def floor_under(self, base_xyz):
+    def floor_under(self, base_xyz, also=()):
         """Odom z of the floor under the robot's feet (median of the cells within
         floor_under_radius, seen from further back while it walked there, within
-        floor_under_window of base_z - standing_height), or None.
+        floor_under_window of base_z - standing_height), or None. also: more HeightMaps
+        whose cells count too (stair_detector: the depth camera's floor map).
 
         Not floor(): that takes the LOWEST dense layer in a 0.5-3 m ring, which on a raised
         plate is the lab floor seen past the maze walls. This is the surface the robot stands
         on: the start plate, the bare floor of a room or a curtain cell 5-10 cm lower, the
         block tops on rough terrain. Lying down it is out of the window: None (keep the last).
-        None too until the robot has walked ~1 m: the lidar never sees the floor within ~1.1 m
-        ahead, so at the start nothing under it was seen. No wider fallback disc: next to slats
-        it took the slats' smeared tops (0.155) for a 0.10 plate (simulated scans) - callers
-        fall back to wall_scan's start floor instead."""
+
+        The lidar alone rarely sees it: its lowest forward ray is ~22 deg down, so the nearest
+        floor it hits is ~1.4 m ahead of base_link on level floor and ~1.75 m ahead looking
+        down onto a floor 10-16 cm lower; ~2.7 m to the sides (walls block that in a maze) and
+        never behind. A cell is only under the feet if it was seen from that far back,
+        straight ahead - after a turn into a 1 m cell, never. The depth camera (20 deg down,
+        +-33 deg vertical FOV) sees the floor from ~0.6 m ahead: pass its map in `also`.
+        No wider fallback disc: next to slats it took the slats' smeared tops (0.155) for a
+        0.10 plate (simulated scans) - callers fall back to wall_scan's start floor instead."""
         p = self.p
         guess = base_xyz[2] - p.standing_height
         xy, h = self.cells(base_xyz[:2], p.floor_under_radius)
+        for m in also:
+            if m is not None:
+                h = np.concatenate([h, m.cells(base_xyz[:2], p.floor_under_radius)[1]])
         z = h[np.abs(h - guess) <= p.floor_under_window]
         return float(np.median(z)) if len(z) >= p.floor_under_min_cells else None
 
 
-class LocalFloor:
-    """The floor under the robot's feet (odom z) for /maze/local_floor_z, while standing.
+def floor_tilt_from_depth(pts_odom, base_xyz, base_yaw, floor_z, ahead=(0.45, 1.2),
+                          half_width=0.35, window=0.10, inlier=0.02, min_pts=150):
+    """(forward slope, sideways slope, offset m, points) of the floor seen by the depth
+    camera, or None. pts_odom: depth_floor_points() of one frame; floor_z: the known floor
+    (start cell: wall_scan's /maze/floor_z).
 
-    Seen floor (HeightMap.floor_under) when the lidar saw the ground the robot now stands on;
-    otherwise base_z - stand_h, the robot's standing height. A standing robot's base_link
-    rides a fixed height over whatever it stands on, so this follows it onto a curtain cell
-    10 cm below the start plate even where the lidar never saw that floor (from the plate,
-    the lab floor is first seen ~1.8 m ahead: the inspection spot mid-cell never is;
-    simulated scans, presentation curtain maze). stand_h: base_z - wall_scan's start floor at
-    the first update, then a running mean of base_z - seen floor. Lying down (cmd_vel_bridge
-    /maze/lie_status not IDLE): None, and stand_h isn't touched - listeners keep the value
-    from just before lying, which is what the lying height and the gap need."""
+    Fits dz = offset + a * forward + b * left over points ahead / beside base_link (level
+    frame) within `window` of floor_z, then once more over the points within `inlier` of the
+    first fit. On a flat floor a and b are 0 when the camera's extrinsic is right; a slope is
+    a mount angle error (1 deg ~ 1.7 cm per m of range). Picks the start cell's own floor:
+    0.45-1.2 m ahead, +-0.35 m sideways (inside a 1 m cell's walls)."""
+    p = np.asarray(pts_odom, float)
+    if len(p) == 0:
+        return None
+    c, s = math.cos(base_yaw), math.sin(base_yaw)
+    dx, dy = p[:, 0] - base_xyz[0], p[:, 1] - base_xyz[1]
+    fx, fy = c * dx + s * dy, -s * dx + c * dy
+    dz = p[:, 2] - floor_z
+    sel = (fx >= ahead[0]) & (fx <= ahead[1]) & (np.abs(fy) <= half_width) & \
+        (np.abs(dz) <= window)
+    if sel.sum() < min_pts:
+        return None
+    a = np.stack([np.ones(sel.sum()), fx[sel], fy[sel]], 1)
+    sol = np.linalg.lstsq(a, dz[sel], rcond=None)[0]
+    keep = np.abs(a @ sol - dz[sel]) <= inlier
+    if keep.sum() < min_pts:
+        return None
+    sol = np.linalg.lstsq(a[keep], dz[sel][keep], rcond=None)[0]
+    return float(sol[1]), float(sol[2]), float(sol[0]), int(keep.sum())
 
-    def __init__(self, stand_range=(0.20, 0.45), alpha=0.2):
-        self.stand_h = None
-        self.stand_range = stand_range
-        self.alpha = alpha
 
-    def update(self, base_z, seen=None, start_floor=None, lying=False):
-        """(floor z or None, 'seen' / 'body' / None)."""
-        if lying:
+def tilt_fix(forward_slope, side_slope):
+    """3x3 rotation (base_link frame) that levels a floor seen with these slopes: corrected
+    r_base_cam = tilt_fix(...) @ r_base_cam (rotation about the camera's own origin)."""
+    ph, ps = math.atan(forward_slope), -math.atan(side_slope)
+    ry = np.array([[math.cos(ph), 0, math.sin(ph)], [0, 1, 0],
+                   [-math.sin(ph), 0, math.cos(ph)]])
+    rx = np.array([[1, 0, 0], [0, math.cos(ps), -math.sin(ps)],
+                   [0, math.sin(ps), math.cos(ps)]])
+    return rx @ ry
+
+
+class StartCalibration:
+    """Calibration on the start cell (its floor = the maze's main floor; raised floors are
+    only the uneven-terrain cells), while the robot stands still before /maze/start:
+
+      standing_height: median of base_z - floor_z (the real height in the current gait,
+                       instead of the 0.35 m default the floor searches are centred on);
+      camera tilt:     median slopes of the start floor seen by the depth camera
+                       (floor_tilt_from_depth) -> tilt_fix for the camera extrinsic.
+
+    add_pose() each tick (moving more than still_xy m / still_yaw rad since the last call
+    starts the collection over); add_tilt() per depth frame. ready() once `duration` s of
+    still samples (>= min_samples poses). result(): dict with standing_height / pitch_deg /
+    roll_deg (None when missing or outside min/max_height, max_tilt_deg: then the default
+    stays and 'why' says so)."""
+
+    def __init__(self, duration=3.0, min_samples=5, min_height=0.28, max_height=0.42,
+                 max_tilt_deg=3.0, still_xy=0.02, still_yaw=math.radians(1.0)):
+        self.duration, self.min_samples = duration, min_samples
+        self.min_height, self.max_height = min_height, max_height
+        self.max_tilt = math.radians(max_tilt_deg)
+        self.still_xy, self.still_yaw = still_xy, still_yaw
+        self.reset()
+
+    def reset(self):
+        self.since, self.last = None, None
+        self.heights, self.tilts = [], []
+
+    def add_pose(self, now, base_xyz, yaw, floor_z):
+        if self.last is not None:
+            lx, ly, lyaw = self.last
+            if math.hypot(base_xyz[0] - lx, base_xyz[1] - ly) > self.still_xy or \
+                    abs(math.atan2(math.sin(yaw - lyaw), math.cos(yaw - lyaw))) > \
+                    self.still_yaw:
+                self.reset()
+        self.last = (base_xyz[0], base_xyz[1], yaw)
+        if self.since is None:
+            self.since = now
+        self.heights.append(float(base_xyz[2]) - float(floor_z))
+
+    def add_tilt(self, forward_slope, side_slope):
+        if self.since is not None:
+            self.tilts.append((forward_slope, side_slope))
+
+    def ready(self, now):
+        return self.since is not None and now - self.since >= self.duration and \
+            len(self.heights) >= self.min_samples
+
+    def result(self):
+        out = {'standing_height': None, 'pitch_deg': None, 'roll_deg': None, 'why': []}
+        if self.heights:
+            h = float(np.median(self.heights))
+            out['measured_height'] = round(h, 4)
+            if self.min_height <= h <= self.max_height:
+                out['standing_height'] = h
+            else:
+                out['why'].append(f'standing height {h:.3f} m outside '
+                                  f'{self.min_height:.2f}..{self.max_height:.2f}')
+        if len(self.tilts) >= 3:
+            a, b = (float(np.median([t[i] for t in self.tilts])) for i in (0, 1))
+            pitch, roll = math.atan(a), math.atan(b)
+            out['slopes'] = (a, b)
+            if abs(pitch) <= self.max_tilt and abs(roll) <= self.max_tilt:
+                out['pitch_deg'], out['roll_deg'] = math.degrees(pitch), math.degrees(roll)
+            else:
+                out['why'].append(f'camera tilt {math.degrees(pitch):+.1f} / '
+                                  f'{math.degrees(roll):+.1f} deg (pitch / roll) over '
+                                  f'{math.degrees(self.max_tilt):.0f}: not applied')
+        else:
+            out['why'].append('no depth floor frames')
+        return out
+
+
+class FloorTracker:
+    """Floor under the feet between measurements: the last measured floor (floor_under),
+    carried along by how much base_link has risen / dropped since, while standing.
+
+    Why not base_z - standing_height: cmd_vel_bridge measures posture as base_z minus the
+    floor under the feet; a floor derived from base_z would always say "standing". This only
+    tracks CHANGES of base_z from a measured anchor, only while the robot is known standing
+    (cmd_vel_bridge's lie / pose state: commanded, not measured from this floor), and its
+    output stays off /maze/local_floor_z (measured only, cmd_vel_bridge's input).
+
+    update() -> (floor z or None, source): 'measured' (handed in this call), 'tracked'
+    (anchor + base_z change), 'frozen' (not standing: lying, getting up, a Pose look - the
+    last tracked value, so a 15-20 cm lie-down drop never reads as a step), None (no anchor,
+    or it expired: older than max_age s, more than max_travel m walked, or base_z more than
+    max_rise m from the anchor - Fast-LIO's z drifts a few cm per minute). After standing
+    again, tracking waits settle s (still rising) and re-anchors on the frozen value at the
+    new base_z (a different gait height after a stand-up is not a floor change).
+
+    Gait bob: base_z goes up and down with every step (trot ~2-3 Hz), and a 2 Hz update()
+    lands on a random phase of it. Two filters:
+      * base_z is the median over the last `window` s of observe() samples (fed at ~10 Hz:
+        several steps), for the anchor and for the tracking alike (instantaneous base_z
+        when fewer than 3 samples);
+      * steps only: the tracked floor moves only once anchor + base_z change differs from
+        it by >= step_min for step_hold s, and then by the whole difference (following the
+        median for one more window, until it holds only post-step heights). Maze floors
+        change in steps >= 5 cm (plate edges, curtain cells, treads); smaller changes (what
+        is left of the bob, slow odom z drift) never move it."""
+
+    def __init__(self, max_age=60.0, max_travel=2.0, max_rise=0.6, settle=1.5, window=1.0,
+                 step_min=0.04, step_hold=0.5):
+        self.max_age, self.max_travel = max_age, max_travel
+        self.max_rise, self.settle = max_rise, settle
+        self.window, self.step_min, self.step_hold = window, step_min, step_hold
+        self.floor = self.anchor_z = self.anchor_t = self.last_xy = None
+        self.travel = 0.0
+        self.value = None               # last returned floor (frozen while not standing)
+        self.standing_since = None
+        self.reanchor = False           # stood up again: anchor anew once settled
+        self.zs = collections.deque()   # (t, base_z) from observe()
+        self.step_since = None          # monotonic s the candidate first left the value
+        self.refine_until = -1e9        # after a step: follow the median for one window
+
+    def observe(self, now, z):
+        """A base_z sample (~10 Hz) for the bob filter."""
+        self.zs.append((now, float(z)))
+        while self.zs and now - self.zs[0][0] > self.window:
+            self.zs.popleft()
+
+    def _z(self, now, z):
+        """base_z with the bob filtered out: median of the last `window` s of samples."""
+        recent = [v for t, v in self.zs if now - t <= self.window]
+        return float(np.median(recent)) if len(recent) >= 3 else z
+
+    def _anchor(self, floor, z, t, xy, travel=0.0):
+        self.floor, self.anchor_z, self.anchor_t = floor, z, t
+        self.last_xy, self.travel, self.value = xy, travel, floor
+        self.reanchor, self.step_since, self.refine_until = False, None, -1e9
+
+    def update(self, now, base_xyz, measured=None, standing=True):
+        xy = (float(base_xyz[0]), float(base_xyz[1]))
+        if not standing:
+            if self.standing_since is not None and self.value is not None:
+                self.reanchor = True
+            self.standing_since = None
+            self.zs.clear()             # lying / posing heights must not reach the median
+            return (self.value, 'frozen') if self.value is not None else (None, None)
+        z = self._z(now, float(base_xyz[2]))
+        if self.standing_since is None:
+            self.standing_since = now
+        if measured is not None:
+            self._anchor(float(measured), z, now, xy)
+            return self.value, 'measured'
+        if self.floor is None:
             return None, None
-        if self.stand_h is None and start_floor is not None:
-            h = base_z - start_floor
-            if self.stand_range[0] <= h <= self.stand_range[1]:
-                self.stand_h = h
-        if seen is not None:
-            h = base_z - seen
-            if self.stand_range[0] <= h <= self.stand_range[1]:
-                self.stand_h = h if self.stand_h is None else \
-                    (1 - self.alpha) * self.stand_h + self.alpha * h
-                return seen, 'seen'
-        if self.stand_h is not None:
-            return base_z - self.stand_h, 'body'
-        return None, None
+        if self.reanchor:              # stood up again: wait until settled, then anchor the
+            if now - self.standing_since < self.settle:    # frozen value at this base_z
+                return self.value, 'frozen'
+            self._anchor(self.value, z, self.anchor_t, xy, self.travel)
+        if self.last_xy is not None:
+            self.travel += math.hypot(xy[0] - self.last_xy[0], xy[1] - self.last_xy[1])
+        self.last_xy = xy
+        rise = z - self.anchor_z
+        if now - self.anchor_t > self.max_age or self.travel > self.max_travel or \
+                abs(rise) > self.max_rise:
+            self.floor = self.value = None
+            return None, None
+        cand = self.floor + rise
+        if now < self.refine_until:
+            self.value = cand               # just after a step: until the median window
+            return self.value, 'tracked'    # holds only post-step heights
+        if abs(cand - self.value) < self.step_min:
+            self.step_since = None          # bob / drift: keep the value
+        elif self.step_since is None:
+            self.step_since = now
+        if self.step_since is not None and now - self.step_since >= self.step_hold:
+            self.value, self.step_since = cand, None      # a real step: all of it
+            self.refine_until = now + self.window
+        return self.value, 'tracked'
+
+
+def depth_floor_points(depth, k, r_odom_base, r_base_cam, t_base_cam, base_xyz, stride=8,
+                       min_depth=0.3, max_depth=2.0):
+    """Odom points (N, 3) from a depth image, for a floor-only HeightMap (floor_under).
+
+    depth: HxW uint16 mm or float m (0 / nan = none); k = (fx, fy, cx, cy); r_odom_base:
+    base_link rotation in odom (roll / pitch / yaw); (r_base_cam, t_base_cam): the optical
+    frame's pose in base_link; base_xyz: base_link in odom. Every stride-th pixel, camera z
+    in min_depth..max_depth only (depth noise grows with range: ~1 cm at 1 m, a few cm past
+    2 m on the robot's camera). No median filter: a flying pixel is one sample of a cell's
+    smoothed top, and floor_under takes a median over many cells."""
+    full = np.asarray(depth)
+    d = full[::stride, ::stride]
+    z = d.astype(np.float64) * 0.001 if d.dtype == np.uint16 else d.astype(np.float64)
+    fx, fy, cx, cy = k
+    v, u = np.mgrid[0:full.shape[0]:stride, 0:full.shape[1]:stride]
+    ok = np.isfinite(z) & (z >= min_depth) & (z <= max_depth)
+    z, u, v = z[ok], u[ok], v[ok]
+    if len(z) == 0:
+        return np.zeros((0, 3))
+    cam = np.stack([(u - cx) / fx * z, (v - cy) / fy * z, z], 1)
+    r_oc = np.asarray(r_odom_base) @ np.asarray(r_base_cam)
+    origin = np.asarray(base_xyz, float) + np.asarray(r_odom_base) @ np.asarray(t_base_cam)
+    return cam @ r_oc.T + origin
 
 
 # ---------------------------------------------------------------- profiles

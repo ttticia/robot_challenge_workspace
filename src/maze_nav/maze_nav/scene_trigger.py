@@ -67,8 +67,9 @@ from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
+from touble_shooting.live_params import attach as attach_live_params
 from maze_nav.core import Grid
-from maze_nav.scene_understanding.scene_cells import (ACTIVE_STATES, DIRECTIONS, CellGrid,
+from maze_nav.scene_cells import (ACTIVE_STATES, DIRECTIONS, CellGrid,
                                                       DeadEndDetector, JunctionDetector,
                                                       NewCellTrigger, opening, run_active,
                                                       side_walls)
@@ -81,7 +82,7 @@ class SceneTrigger(Node):
     def __init__(self):
         super().__init__('scene_trigger')
         p = self.declare_parameter
-        p('cell_size', 1.0)            # m
+        p('cell_size', 1.02)           # m (same as maze_explorer's cell_size)
         p('origin_x', 0.0)             # map (x, y) of the start cell's centre
         p('origin_y', 0.0)
         p('grid_yaw_deg', 0.0)         # map heading of the grid's +i axis
@@ -97,6 +98,7 @@ class SceneTrigger(Node):
         p('bool_topic', '/junction_detected')   # '' = don't publish the Bool
         p('junction_topic', '/scene/junction')  # '' = no junction events
         p('status_topic', '/maze/status')        # '' = always active (no maze_explorer)
+        p('grid_topic', '/maze/grid')            # maze_explorer's wall-fitted grid; '' = off
         p('active_states', list(ACTIVE_STATES))  # /maze/status states that count as running
         g = lambda n: self.get_parameter(n).value  # noqa: E731
 
@@ -120,6 +122,8 @@ class SceneTrigger(Node):
         self.tf = Buffer()
         self.tf_listener = TransformListener(self.tf, self)
         self.create_subscription(OccupancyGrid, g('map_topic'), self.on_map, LATCHED)
+        if g('grid_topic'):
+            self.create_subscription(String, g('grid_topic'), self.on_grid, LATCHED)
         if self.status_topic:
             self.create_subscription(String, self.status_topic, self.on_status, LATCHED)
         self.trigger_pub = self.create_publisher(String, g('trigger_topic'), 10)
@@ -135,6 +139,36 @@ class SceneTrigger(Node):
             + (f', junctions on {g("junction_topic")}' if self.junction_pub else '')
             + (f'; only while {self.status_topic} is {"/".join(self.active_states)}'
                if self.status_topic else '; always on (no status gate)'))
+        self.attach_live_params()
+
+    def attach_live_params(self):
+        """`ros2 param set /scene_trigger <name> <value>` while running (touble_shooting).
+        The cell grid (cell_size, origin_*, grid_yaw_deg) stays startup-only: every
+        visited / reported cell is keyed on it."""
+        attach_live_params(self, setters={
+            'enter_margin': lambda v: setattr(self.logic, 'enter_margin', float(v)),
+            'opening_half_width': lambda v: setattr(self, 'half_width', float(v)),
+            'dead_end_heading_tol_deg':
+                lambda v: setattr(self.dead_ends, 'heading_tol', math.radians(float(v))),
+            'junction_centre_radius':
+                lambda v: setattr(self.junctions, 'centre_radius', float(v)),
+        })
+
+    def on_grid(self, msg):
+        """maze_explorer refitted the grid to the walls: follow it (in place, so the
+        trigger and detectors holding self.cells do too). Same cell size only."""
+        try:
+            d = json.loads(msg.data)
+            if abs(float(d['size']) - self.cells.size) > 1e-6:
+                return
+            self.cells.origin = (float(d['origin'][0]), float(d['origin'][1]))
+            self.cells.yaw = float(d['yaw'])
+        except (ValueError, KeyError, TypeError, IndexError):
+            self.get_logger().warn(f'bad /maze/grid message: {msg.data[:80]}')
+            return
+        self.get_logger().info(f'grid from maze_explorer: yaw '
+                               f'{math.degrees(self.cells.yaw):+.1f} deg, cell (0, 0) at '
+                               f'({self.cells.origin[0]:+.2f}, {self.cells.origin[1]:+.2f})')
 
     def on_status(self, msg):
         active = run_active(msg.data, self.active_states)

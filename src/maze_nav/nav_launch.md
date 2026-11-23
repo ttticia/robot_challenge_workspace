@@ -25,12 +25,13 @@ when a run goes wrong. For the design and the example maze, see [README.md](READ
    ```
    The only subscriber should be the robot bridge, and there should be no publishers yet.
 
-2. **Robot on the start cell, standing or lying down.** With `auto_stand:=true` (default),
-   `cmd_vel_bridge` stands a lying robot up at launch, before the gait and before
-   `/maze/start`: log `robot LYING DOWN … standing it up`, then `robot standing`. Stand
-   (`0x21010202`) is a stand/sit **toggle**, so it is sent only when the lidar shows the robot
-   lying down (base_link ≤ 0.18 m above the floor), never when it already stands (≥ 0.25 m) or
-   the height is unknown (`posture unknown … stand NOT sent`, e.g. with `floor_z:=` given).
+2. **Robot STANDING on the start cell.** With `wait_for_stand:=true` (default) a robot that
+   isn't standing at launch (base_link < 0.25 m above the floor) gets an ERROR every 5 s
+   (`robot NOT STANDING … stand it up with the handheld controller`) from `cmd_vel_bridge`
+   and `wall_scan`; nothing is sent to stand it up (stand, `0x21010202`, is a stand/sit
+   toggle). The launch waits: no gait, no floor, no map, no `PAUSED` until it stands, then
+   carries on by itself (`robot standing now … carrying on with the startup`). Posture
+   unknown (no height, e.g. with `floor_z:=` given): the gait goes out after 30 s anyway.
    `wall_scan` measures the floor once the robot stands and its height is steady. It accepts a floor that
    puts base_link 0.27–0.41 m above it (the Lite3 stood at 0.29 m on 2026-11-19). The `wall_scan`
    parameter `floor_start_tile` (default 0) widens that for an arena where the robot starts on a raised
@@ -41,8 +42,8 @@ when a run goes wrong. For the design and the example maze, see [README.md](READ
    does it fall back to a guess (`FLOOR DETECTION FAILED`). **Keep clear of the legs at launch.**
    If the robot is in fall protection, recover it with the handheld controller first.
 3. **Operator next to the robot with the handheld controller.** At launch `cmd_vel_bridge`
-   sends (after the stand, if any) Move mode and the RUG gait General gear once on `/simple_cmd` (`gait:=rug`, the
-   default; `gait:=hstep` = H-Step, the high-stepping RUG gait; `gait:=none` leaves the gait alone). **The operator sends `lite3_auto` after the
+   sends Move mode and H-Step, the high-stepping RUG gait, once on `/simple_cmd` (`gait:=hstep`, the
+   default since 2026-11-22; `gait:=rug` = RUG gait General gear; `gait:=none` leaves the gait alone). **The operator sends `lite3_auto` after the
    log says `gait sent`**, before `/maze/start`: the documented order is gait request, then
    auto mode, and Move mode may take the robot out of auto. There is no gait feedback, so
    watch the robot. If the log says `gait … NOT sent`, set the gait on the handheld
@@ -85,9 +86,10 @@ send it again once the status reads `PAUSED`. After a start the explorer also wa
 wall it can't see (the lidar sees no wall within ~0.5 m beside the robot). The lidar sees
 nothing behind the robot, so the SLAM map ends at about the start pose and the robot can start
 a few cm off it (log: `Robot is out of bounds of the costmap`). The creep also moves it off the
-start cell's back wall. Then it scans (`SCANNING`, Nav2's `spin` behavior, always a real turn,
+start cell's back wall. Then it starts exploring. There is no start scan by default (D9,
+`src/bt.md`). With `start_scan:=true` it first scans (`SCANNING`, Nav2's `spin` behavior, always a real turn,
 never Pose mode): 30° left, 60° right, 30° left, which brings it back to the heading it had before the scan. A failed turn is
-logged and the run carries on. Then it starts exploring.
+logged and the run carries on.
 
 The robot may start with its body as little as **0.15 m from a wall**. Before moving, the
 explorer checks the footprint against the walls SLAM has already mapped: the creep is cut
@@ -105,10 +107,10 @@ relaunch without it.
 | `go` | `true` | `false`: explorer picks goals and publishes them on `/maze/goal` but never sends them. The robot stays still |
 | `drive` | `true` | `false`: Nav2 drives, but commands go to `/cmd_vel_bridge/cmd_vel_preview`, not `/cmd_vel` |
 | `perception` | `true` | Also start team_perception's `robot.launch.py` (`qr_scanner` only: human / survivor poster detection was removed on 2026-11-19, because each camera subscriber is another copy from the robot bridge and with them the bridge fell behind: IMU 23 Hz, lidar 1.1 s late, no map). Don't start it separately as well (preflight warns about it). If team_perception isn't built, the run goes ahead without it, with a warning. `false` = navigation only (the simulator script sets this) |
-| `auto_stand` | `true` | Robot lying down at launch: send stand once, wait until it stands (15 s), then the gait. Never sent to a standing robot or if the posture is unknown. `false` = never |
+| `wait_for_stand` | `true` | Robot not standing at launch: ERROR every 5 s and wait (no gait, no map) until it is stood up by hand; never sends stand. `false` = don't wait |
 | `wait_for_start` | `true` | Hold still once everything is up until `/maze/start` is published. `false` = start right away (simulator) |
 | `creep_distance` | `0.10` | m driven straight ahead (no steering) after `/maze/start`, before the scan: onto the SLAM map and off the start cell's back wall so the scan turns clear it. `0` = off |
-| `stairs` | `true` | `stair_detector`: stairs seen within 1.5 m, with the robot in front of them (≤ 0.35 m off their centre line) → explorer stops Nav2 (`STAIRS`), the robot faces them square and stops 0.45 m (`base_link`) from the first riser (`AT_STAIRS`). Lined up, `cmd_vel_bridge` then switches to AI mode (manual → AI state → AI basic gait) and walks 1.2 m straight ahead at 0.1 m/s, measured on `/odom` (`cmd_vel_bridge` parameters `ai_walk_distance` / `ai_walk_speed`, `0` = no walk; it stops after 8 s without progress). Then it holds until `/maze/start`, which leaves AI mode. Every move is checked against walls on `/map`; blocked or over 45 s, it holds anyway as `AT_STAIRS: NOT LINED UP: <reason>` for a hand line-up. Follows `go` (`go:=false` = detect and log only). `false` = off, Nav2 drives over the stairs as floor |
+| `stairs` | `true` | `stair_detector`: stairs seen within 1.5 m, with the robot in front of them (≤ 0.35 m off their centre line) → explorer stops Nav2 (`STAIRS`), the robot faces them square and stops 0.45 m (`base_link`) from the first riser (`AT_STAIRS`). Lined up, `cmd_vel_bridge` then switches to AI mode (manual → AI state → AI basic gait) and walks 1.3 m straight ahead at 0.1 m/s, measured on `/odom` (`cmd_vel_bridge` parameters `ai_walk_distance` / `ai_walk_speed`, `0` = no walk; it stops after 8 s without progress). Then it leaves AI mode by itself (AI exit → manual → Move → gait → auto mode), publishes `DONE` on `/maze/ai_status`, and the explorer resumes. A walk that ended early holds until `/maze/start`. Stairs seen in a junction or dead-end look are queued first and checked after the scan. Every move is checked against walls on `/map`; blocked or over 45 s, it holds anyway as `AT_STAIRS: NOT LINED UP: <reason>` for a hand line-up. Follows `go` (`go:=false` = detect and log only). `false` = off, Nav2 drives over the stairs as floor |
 | `curtains` | `true` | `curtain_detector`: a wall in front with a gap at the bottom of 5–15 cm, wider than 0.7 m, is a curtain (seen ~0.6–2.6 m from base_link with `curtain_sensors:=both`): cleared from the wall scan and the explorer's map. Within 2 m, robot in front of it → explorer stops Nav2 (`CURTAIN`), the robot walks through its middle at 70 % of `max_speed` to 0.2 m past it, turns 20° left / 40° right / 20° left, and while the lidar or depth camera stays covered creeps 5 cm and turns again, alternately; still covered after 12 steps → `AT_CURTAIN`, hold until `/maze/start`. Follows `go`. `false` = off, curtains stay walls |
 | `curtain_sensors` | `both` | What sees the curtain's gap: `both` (lidar + depth camera, ~0.6–2.6 m from base_link), `lidar` (~1.2–2.6 m: its lowest beam only gets under the curtain from ~1 m) or `depth` (~0.7–2.0 m, ±40° only). Closer than ~0.55 m no sensor sees under a 5–15 cm gap. Depth comes through `depth_relay` (needs `team_perception` built); without it, lidar only |
 | `curtain_max_gap` | `0.15` | m: a gap at the bottom at least this big makes it a hurdle, not a curtain (to-do spec < 15 cm). The lab test curtain hangs ~20 cm up: `curtain_max_gap:=0.25` to test with it |
@@ -189,7 +191,7 @@ files in `~/.ros/log` always keep the full prefix.
 On a laptop on the same network with `ROS_DOMAIN_ID=4`:
 
 ```bash
-ros2 topic echo /maze/status          # STARTING → PAUSED → CREEPING → SCANNING → EXPLORING (⇄ TURNING: turn, or creep ahead and turn, before a goal near a wall, ⇄ LOOKING: look-around in a QR room, ⇄ FACING_QR: turn to an unreadable QR code until it is read, ⇄ JUNCTION: face each way on at a junction, left first, then visit any way ending in a dead end (cell before it, square up, 3 s) and take the rightmost other way, ⇄ DEAD_END: hold 0.5 s facing a dead end, then look at its left and right walls (1 s each), ⇄ STAIRS → AT_STAIRS: stair line-up, hold until /maze/start, ⇄ CURTAIN (→ AT_CURTAIN): walk through a curtain, hold until /maze/start if the sensors stay covered) → EXITED | NO_EXIT | STOPPED
+ros2 topic echo /maze/status          # STARTING → PAUSED → CREEPING (→ SCANNING with start_scan:=true) → EXPLORING (⇄ TURNING: turn, or creep ahead and turn, before a goal near a wall, ⇄ FACING_QR: turn to an unreadable QR code until it is read, ⇄ JUNCTION: for each unvisited way, left first, face it, move sideways onto the cell's centre line, hold 1 s; then check queued stairs / curtain candidates nearest first; then leave by the nearest unexplored way, ⇄ DEAD_END: hold 0.5 s facing a dead end, then look at its left and right walls (1 s each); with scene_understanding:=true wait for the AI verdict, ⇄ STAIRS → AT_STAIRS: stair line-up, AI walk 1.3 m, resumes by itself (holds until /maze/start if not lined up), ⇄ CURTAIN (→ AT_CURTAIN): walk through a curtain, hold until /maze/start if the sensors stay covered) → TO_EXIT → AT_EXIT | NO_EXIT | STOPPED | EXITED (maze_cols:=0)
 
 # RViz with the maze_nav layout (config/maze_nav.rviz). If the laptop has this workspace built:
 rviz2 -d $(ros2 pkg prefix maze_nav)/share/maze_nav/config/maze_nav.rviz
@@ -322,7 +324,192 @@ pointing to the newest.
 | `/tf_static also has base_link -> camera_depth_optical_frame` (perception) | The robot's TF gives the depth camera a second, unpitched parent | Handled (`tf_pin`); report it to whoever runs the robot's driver container (`agent.md` §12) |
 | Ends `NO_EXIT` with the robot pinned on the stair handrail just past the stairs | Known since 2026-11-16 (open item in `agent.md` §12) | Take over with the handheld controller |
 
-## 5. Without the robot
+## 5. Troubleshooting and tuning live with a Claude agent
+
+A Claude Code session can watch a run and adjust parameters while the robot is in the maze. Claude
+can't watch a video stream. It works in turns: it wakes up, reads files, runs a command, then
+waits again. Each turn takes from seconds to tens of seconds. So Claude never drives the robot;
+it reads snapshots and changes parameters. Code is in `touble_shooting/`.
+
+### Turn it on
+
+```bash
+ros2 launch maze_nav maze_nav.launch.py troubleshoot:=true            # + your usual args
+# snapshot_camera:=event (default) | always | none
+```
+
+`telemetry_snapshot` writes to `~/live_debug/<launch time>/` on the computer running the launch,
+and `~/live_debug/current` points to the newest run. Run Claude Code on that computer, or point
+it at the folder over ssh / sshfs.
+
+| File | What |
+|---|---|
+| `events.log` | one line per event: `<time> #<snap> <KIND> <detail>` |
+| `snap_NNNNN_<reason>.png` | top-down 6 x 6 m map crop around the robot (map frame, x right, y up, 1 m grid): SLAM map, `/wall_scan` points (red), footprint + heading (blue), `/maze/goal` (green), status banner with wall clearances |
+| `snap_NNNNN_<reason>.json` | explorer / stairs / curtain status, pose, goal + distance, last `/cmd_vel`, wall_scan clearances front/left/right/back, distance moved, every live param change so far, the last 20 events |
+| `snap_NNNNN_<reason>.jpg` | camera frame (see below) |
+| `latest.png` / `latest.json` / `latest.jpg` | copies of the newest snapshot |
+
+A snapshot is taken every 5 s (`period`) and on each event:
+
+| Event | When |
+|---|---|
+| `STATE` | `/maze/status`, `/stairs/status` or `/curtain/status` changes state |
+| `DEAD_END`, `JUNCTION` | `/scene/trigger`, `/scene/junction` |
+| `STUCK` / `UNSTUCK` | explorer in EXPLORING / TURNING / CREEPING / JUNCTION / DEAD_END but moved < 0.15 m in 20 s (`stuck_dist`, `stuck_time`) |
+| `PARAM` | a live parameter change on any node (`/troubleshoot/param_change`) |
+| `MARK` | you flag a moment: `ros2 topic pub --once /troubleshoot/mark std_msgs/msg/String "data: 'missed the curtain'"` |
+
+Camera: every camera copy goes over the robot bridge (see `lidar_relay:=` in `maze_nav.launch.py`). The default
+`snapshot_camera:=event` subscribes only for an event snapshot and drops the subscription after
+the first frame (or 3 s), so periodic snapshots have no `.jpg`. `always` keeps one subscription
+open, and `none` never subscribes. The node publishes nothing the robot acts on.
+
+### Point Claude at it
+
+In a Claude Code session in this workspace, after launching:
+
+```text
+Watch ~/live_debug/current/events.log with the Monitor tool and wake on STUCK, STATE, DEAD_END,
+JUNCTION and MARK lines. On each one, read the matching snap_*.png / .json (and .jpg if there
+is one), say what the robot is doing and whether it looks wrong, and suggest a parameter change.
+Only run `ros2 param set` after I say yes. Never publish to /cmd_vel, /simple_cmd or /maze/start.
+If you are unsure about anything (what the robot is doing, whether it is wrong, which parameter
+or value would fix it, or whether a change is safe), stop and ask me instead of guessing. Say
+what you saw, what you are unsure about, and what would settle it (a MARK, a look at the robot,
+another snapshot). Don't suggest a change until it is cleared up.
+If carrying on would teach us nothing more, ask me for a run reset: start the message with
+"RESET REQUESTED", then say why, what to change before relaunching (parameters, launch args,
+the robot's placement), and what the next run should show. Never stop, kill or relaunch
+anything yourself; I decide and do the reset.
+```
+
+To have Claude check at a fixed interval instead: `/loop 30s review ~/live_debug/current/latest.*
+and report anything wrong; ask me if you are unsure about anything`. Waking on events is
+cheaper, because Claude only runs when something happens.
+
+**Asking instead of guessing.** A snapshot is a moment, not the whole story. The camera may have
+no frame (periodic snapshots never do), the map crop can hide what's behind the robot, and the
+person at the robot can see things the files don't show. So the prompt tells Claude to ask when
+it isn't sure, for example:
+
+- the snapshot and the status disagree (status says EXPLORING, but the robot hasn't moved);
+- it can't tell a real problem from expected behaviour (a long hold at a dead end, a slow turn
+  next to a wall);
+- more than one parameter could explain what it sees, or it doesn't know how far to change one;
+- a change would touch safety margins (footprint, clearances, timeouts) or rejects a value it
+  expected to be live;
+- the data is stale or missing (an old `latest.*`, no camera frame, `age_s` of several seconds).
+
+**Asking for a run reset.** Some problems can't be fixed mid-run, and a run that has gone wrong
+only wastes time and battery. So the prompt lets Claude ask for a reset (it never does one): it
+writes "RESET REQUESTED", why, what to change first, and what the next run should show. The
+person at the robot decides, then Ctrl+Cs the launch, puts the robot back square on the start
+cell (the maze grid comes from the start pose) and relaunches. Reasons to ask:
+
+- the change needs a new launch: startup-only parameters (`cell_size`, `maze_cols` /
+  `maze_rows` / `maze_side`, `map_dir`, launch args such as `gait` or `fastlio_config`),
+  which `ros2 param set` rejects or which only take effect at startup;
+- the map or grid is broken: a SLAM jump, walls drawn twice or skewed, "grid fitted" far off
+  (several degrees, or a jump between snapshots), the wrong maze side, or the run already
+  heading to a false exit;
+- the robot is stuck or lost beyond what one parameter change can fix (`STUCK` that doesn't
+  clear, repeated failed goals in the same place, Nav2 down);
+- the robot left the maze, or the explorer reached an end state (`AT_EXIT`, `NO_EXIT`,
+  `STOPPED`, `EXITED`) and more data from this layout is needed.
+
+Each reset costs a few minutes, so Claude should first say what it would change, and batch
+several changes into one reset where it can.
+
+The person at the robot answers in the same session. Expect questions: a wrong change made from
+a guess costs a run, and a question costs a few seconds. To help it decide, flag moments
+yourself with `ros2 topic pub --once /troubleshoot/mark std_msgs/msg/String "data: 'what you
+saw'"`, which adds a snapshot and an `events.log` line it reads.
+
+Drop "after I say yes" only on a test rig. Either way, use the permission allowlist
+(`/fewer-permission-prompts` or `.claude/settings.json`) so Claude can run only `ros2 param
+get/set/list`, `ros2 topic echo` and file reads without asking. Keep a person on the handheld
+controller: Claude takes seconds to respond, not milliseconds.
+
+### Changing parameters while running
+
+```bash
+ros2 param set /maze_explorer goal_clearance 0.30
+ros2 param set /wall_scan band_low 0.28
+ros2 param set /curtain_detector max_gap 0.18
+ros2 param get /maze_explorer goal_clearance
+```
+
+Each node checks a change before applying it. If one name in a set is refused, nothing
+changes:
+
+- **Applied immediately**: values the node reads while running. Each change logs a WARN
+  `live param <name>: <old> -> <new>` and shows up as a `PARAM` line in `events.log`.
+- **Refused** with `read only at startup; restart <node> ...`: topics, frames, timer rates
+  and grid geometry. Without the check, these would be stored but never used. Set them with the
+  launch argument or `-p` on the next run.
+- **Refused** with `locked`: values that must not change mid-run.
+
+| Node | Live | Startup only / locked |
+|---|---|---|
+| `maze_explorer` | everything in its `cfg` (goal / frontier / timeouts / looks / pose / curtain / stairs / room-look settings), footprint, pivot, `exit_*` | `replan_period`, topics, `cell_size` + `map_dir` (locked) |
+| `wall_scan` | `band_low/high`, `body_*`, `range_min/max`, `floor_tolerance`, `lidar_min_range`, `max_cloud_age`, `voxel_size`, `expected_floor_drop` | `floor_z`, `angle_increment`, topics, frames |
+| `curtain_detector` | its `cfg` + `inspect_*` / `gap_min/max`, `max_gap`, `min_width`, `max_range`, `band_low/high`, `diag_period` | `inspect_distance/pitch/...` (InspectParams), topics, `drive` (locked) |
+| `stair_detector` | its `cfg`, wall-check and lidar flags, `min_risers`, `max_range`, `infer_bottom`, `vote_*`, `lidar_vote_*` | `standing_height`, depth settings, rates, `drive` + `lidar_topic` + `map_frame` (locked) |
+| `scene_trigger` | `enter_margin`, `opening_half_width`, `dead_end_heading_tol_deg`, `junction_centre_radius` | the cell grid (`cell_size`, `origin_*`, `grid_yaw_deg`), `rate`, topics |
+| `telemetry_snapshot` | `period`, `min_gap`, `keep`, `camera_wait`, `window`, `px_per_m`, `stuck_time`, `stuck_dist` | `out_dir`, `camera_mode`, topics |
+
+`cmd_vel_bridge` (speed limits, sensor watchdog) and Nav2 aren't hooked up. Speed and safety
+changes should be a deliberate restart. Nav2 has its own live parameters (`ros2 param set
+/controller_server FollowPath.lookahead_dist 0.30`), but those changes don't show up in
+`events.log`.
+
+**Live changes are lost on restart.** When a value works, write it into the node's default or
+`maze_nav.launch.py`. The `PARAM` lines in `events.log` (and `param_overrides` in each snapshot
+JSON) list every change made in the run.
+
+Adding a parameter to the live set: if the node reads it from `self.cfg[...]` while running, it's
+already live. If it's copied somewhere at startup (a dataclass field, tuple or helper object),
+add a setter in that node's `attach_live_params()` (see `touble_shooting/live_params.py`).
+
+### Manually triggering a dead-end scan or scene understanding
+
+These commands test the dead-end look and scene understanding without waiting for a real
+dead end. Both use the cell the robot is facing. They read the grid from the running
+`scene_trigger`, so cell numbers match its records. Use `--cell I J` to pick a cell.
+
+```bash
+# Dead-end look: hold facing the cell ahead, scan its left and right walls, one /scene/capture per view
+ros2 run maze_nav trigger_scene
+
+# Scene understanding only: no motion; room_scene takes the camera frame from the last --hold s
+ros2 run maze_nav trigger_scene capture
+ros2 run maze_nav trigger_scene capture --cell 3 1 --hold 2.0
+```
+
+| | `trigger_scene` (dead_end) | `trigger_scene capture` |
+|---|---|---|
+| Sends | a `/scene/trigger` record, like `scene_trigger`'s, marked `"manual": true` | one `/scene/capture` (single view, `last`) |
+| Robot moves | yes: the explorer's usual look (`dead_end_hold`, then the side walls) | no |
+| Works when | the explorer is `EXPLORING` with `go:=true`. Otherwise it logs `manual dead end ...: ignored` (a look ends in EXPLORING, so from PAUSED it would start the run) | any state |
+| Needs | `scene_trigger` running for the grid (otherwise 1 m cells from 0 0); `scene_understanding:=true` for the captures (the look still runs without it) | `room_scene`, so `scene_understanding:=true` |
+| Side effects | none: unlike a real dead end, the cell is **not** blacklisted, so the explorer may still drive into it | `room_scene` analyses each cell once; repeat with another `--cell` |
+
+The commands print the robot's cell, its heading and the explorer state, and refuse to send if
+nothing subscribes to the topic. With `troubleshoot:=true`, each trigger also sends a `MARK`, so it
+gets a snapshot and an `events.log` line. Results go to `room_scene`'s `save_dir`
+(`~/challenge_ws/logs/scene/<date>/`). Point the robot at the wall or room first: turn it with
+the handheld controller, or let it reach the spot while exploring.
+
+### Live or offline
+
+Live tuning is best for spotting problems ("it hesitates at every junction"). Settling on values
+is faster offline: record a bag of the run, mark the bad moments (`MARK`, or the snapshot numbers
+in `events.log`), then have Claude replay those parts or run `test/run_sim.sh` with candidate
+values. It can try many settings in the time one hardware run takes, with nothing to crash.
+Confirm the winner on the robot.
+
+## 6. Without the robot
 
 One command (runs, waits for the result, stops everything; exit 0 = EXITED, logs in `/tmp/maze_sim`):
 `src/maze_nav/test/run_sim.sh`. Run it on an idle machine: if the CPU is overloaded, Nav2 misses its control rate and the result means nothing. Or by hand:
@@ -333,8 +520,10 @@ python3 src/maze_nav/test/fake_maze_lite3.py &      # example maze in a 10 x 8 m
 ros2 launch maze_nav maze_nav.launch.py bringup:=false udp_only:=false map_dir:=/tmp/maze_maps
 ```
 
-The simulator logs `OUT OF THE MAZE` once the robot is past the stairs, and `/maze/status` should end at `EXITED`.
-It publishes no depth image, so the stair line-up never runs there. `89` is for these
+The simulator logs `OUT OF THE MAZE` once the robot is past the stairs, and `/maze/status` should end at `EXITED`
+(the example maze has no `grid`, so `run_sim.sh` runs it with `maze_cols:=0`; the 5 x 3 `challenge_*` mazes end at `AT_EXIT`).
+It renders a depth camera since 2026-11-22, but at the default 640 px / 5 Hz odometry lags about 1.5 s and no map forms,
+so use `depth_rate:=0` for now (no stair detection). `89` is for these
 simulator runs; other test setups (and other Claude sessions) need their own domain: check it
 is empty first (`ros2 node list`), and stop only your own processes (no `pkill -f <name>`).
 Unit tests: `cd src/maze_nav && python3 -m pytest -q test`.

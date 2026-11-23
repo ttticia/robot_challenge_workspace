@@ -9,7 +9,7 @@ import numpy as np
 import maze_nav.explorer as explorer_mod
 from maze_nav.core import Grid
 from maze_nav.explorer import Explorer, keepout_mask, path_field, room_look_spot
-from maze_nav.scene_understanding.scene_cells import CellGrid
+from maze_nav.scene_cells import CellGrid
 
 from test_junction_dead_end_look import Fake, run
 
@@ -75,6 +75,7 @@ class RoomFake(Fake):
         super().__init__()
         self.cfg.update({'room_looks': True, 'room_look_hold': 0.0, 'room_look_max': 6})
         self.room_looks, self.rooms_done, self.room_looks_started = {}, set(), 0
+        self.scanned_cells, self.explored_cells = set(), set()
         self.goals = []
 
     def halt_for_look(self):

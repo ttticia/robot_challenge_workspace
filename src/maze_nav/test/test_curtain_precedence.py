@@ -9,19 +9,20 @@ import time
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from maze_nav.core import Frontier, Grid
 from maze_nav.curtain_branch import CurtainHold, Deferral, branch_mask, in_mask, way_towards
 from maze_nav.curtains import Curtain
 from maze_nav.explorer import Explorer
-from maze_nav.scene_understanding.scene_cells import CellGrid
+from maze_nav.scene_cells import CellGrid
 
 
 class Fake:
     for _n in ('on_curtain', 'on_junction', 'junction_pending', 'curtain_preemptable',
                'junction_age', 'preempt_curtain', 'set_state', 'take_for_curtain',
                'pause_junction', 'end_curtain', 'publish_hold', 'defer_curtain',
-               'curtain_by_id', 'branch_frontiers'):
+               'curtain_by_id', 'branch_frontiers', 'on_handover'):
         locals()[_n] = getattr(Explorer, _n)
 
     def __init__(self, state, junction_req=None, curtain_status=None):
@@ -40,6 +41,7 @@ class Fake:
         self.look_turns = self.face = self.turn_creep = None
         self.junction = self.paused_junction = None
         self.inspecting, self.defers, self.hold, self.branch_cache = False, [], None, None
+        self.queue_wait = None
         self.blacklist, self.failed, self.curtains, self.pose = [], [], [], None
         self.map = object()
 
@@ -455,61 +457,108 @@ def test_crossing_back_triggers_with_looser_limits():
     assert t.state == 'HANDOVER'
 
 
-# ------------------------------------------------------------------ stairs held at a junction
+# ------------------------------------------------------------------ candidate queue
 
-class StairFake(Fake):
-    on_stairs_candidate = Explorer.on_stairs_candidate
-    release_stairs = Explorer.release_stairs
-    stairs_spot = Explorer.stairs_spot
+class QueueFake(Fake):
+    for _n in ('to_map', 'queue_candidate', 'on_stairs_candidate', 'on_curtain_candidate',
+               'release', 'start_queue', 'candidate_spot', 'queue_goal',
+               'deferred_candidates', 'defer_side_curtains', 'workable', 'held_stair_cells'):
+        locals()[_n] = getattr(Explorer, _n)
 
     def __init__(self, state):
         super().__init__(state)
-        self.cfg['stairs_approach'] = 1.2
-        self.released = []
-        self.stairs_release_pub = SimpleNamespace(
-            publish=lambda m: self.released.append(json.loads(m.data)['id']))
+        self.cfg.update({'stairs_approach': 1.2, 'curtain_check_approach': 1.2,
+                         'candidate_wait': 15.0, 'robot_radius': 0.25, 'turn_margin': 0.03})
+        self.cand_queue, self.queue_active, self.queue_final = [], False, False
+        self.released, self.spins = [], []
+        self.cells = CellGrid()
+        pub = lambda kind: SimpleNamespace(  # noqa: E731
+            publish=lambda m: self.released.append((kind, json.loads(m.data)['id'])))
+        self.stairs_release_pub, self.curtain_release_pub = pub('stairs'), pub('curtain')
+        self.spin = SimpleNamespace(server_is_ready=lambda: True)
+        self.box, self.pivot = (0.37, 0.27, 0.23), (0.0, 0.0)
 
-    def back_to_start(self, p):
-        return False
+    def grid_now(self):                          # no map: nothing held back beside a way
+        return None
+
+    def publish_curtain_map(self):
+        self.map_pubs = getattr(self, 'map_pubs', 0) + 1
+
+    def halt_for_look(self):
+        pass
+
+    def send_spin(self, angle, why=''):
+        self.spins.append(angle)
 
 
-def stairs_msg(sid=7):
-    """Possible stairs up the east way, first riser at x = 2.0 (map frame)."""
-    return SimpleNamespace(data=json.dumps({'id': sid, 'frame': 'map', 'edge': [2.0, 0.0],
+def stairs_msg(sid=7, edge=(2.0, 0.0)):
+    return SimpleNamespace(data=json.dumps({'id': sid, 'frame': 'map', 'edge': list(edge),
                                             'heading': 0.0}))
 
 
-def test_stairs_at_junction_wait_for_the_other_ways_then_are_checked():
-    e = StairFake('JUNCTION')
-    e.junction = look(i=1)
+def curtain_msg(cid=2, centre=(1.0, 2.5)):
+    """Possible curtain across the north way, normal pointing north (away from the robot)."""
+    return SimpleNamespace(data=json.dumps({'id': cid, 'frame': 'map', 'centre': list(centre),
+                                            'normal': [0.0, 1.0]}))
+
+
+def test_candidates_are_queued_not_released():
+    e = QueueFake('JUNCTION')
     e.on_stairs_candidate(stairs_msg())
+    e.on_stairs_candidate(stairs_msg())                          # seen again: one entry
+    e.on_curtain_candidate(curtain_msg())
     assert e.released == []
-    assert e.junction['rec']['skip_dirs'] == [(1, 0)]          # east = the stairs' way
-    assert len(e.defers) == 1 and e.defers[0].ways == [(0, 1)] and e.defers[0].stairs['id'] == 7
-    assert e.holds == [] or e.holds[-1].ids == []              # not a curtain hold
-    e.on_stairs_candidate(stairs_msg())                        # seen again: one hold
-    assert len(e.defers) == 1
+    assert [(c['kind'], c['id']) for c in e.cand_queue] == [('stairs', 7), ('curtain', 2)]
+    assert not e.queue_active and e.start_queue('junction scanned') and e.queue_active
+
+
+def test_queue_goes_to_the_nearest_spot_faces_it_and_releases_it():
+    e = QueueFake('EXPLORING')
+    e.on_stairs_candidate(stairs_msg(edge=(2.0, 0.0)))           # spot (0.8, 0.0)
+    e.on_curtain_candidate(curtain_msg(centre=(1.0, 3.5)))       # spot (1.0, 2.3), further
+    e.start_queue('nothing else to explore', final=True)       # stairs worked too
     g = maze_grid()
-    north, beyond, back = frontier((1.0, 2.5)), frontier((3.5, 0.0)), frontier((-0.3, 0.0))
-    assert e.branch_frontiers(g, (1.0, 1.0), [beyond, north, back]) == [north]
-    # north explored: done_confirm replans, then go 1.2 m in front of the first riser
-    assert e.branch_frontiers(g, (1.0, 2.5), [beyond, back]) is None
-    out = e.branch_frontiers(g, (1.0, 2.5), [beyond, back])
+    out = e.queue_goal(g, (1.0, 1.0), 0.0)
     assert len(out) == 1 and out[0].goal == (0.8, 0.0) and out[0].yaw == 0.0
+    # at the spot but facing north: turn to face the stairs first
+    assert e.queue_goal(g, (0.8, 0.05), math.pi / 2) is None
+    assert e.state == 'TURNING' and e.spins and e.spins[-1] < 0 and e.released == []
+    # facing them: released, then wait for the detector's handover
+    e.state = 'EXPLORING'
+    assert e.queue_goal(g, (0.8, 0.05), 0.0) is None
+    assert e.released == [('stairs', 7)]
+    assert e.queue_goal(g, (0.8, 0.05), 0.0) is None              # waiting
+    e.on_handover()                                               # STAIRS took over
+    out = e.queue_goal(g, (0.8, 0.05), 0.0)
+    assert len(out) == 1 and out[0].goal == pytest.approx((1.0, 2.3))
+    e.cand_queue.clear()
+    assert e.queue_goal(g, (1.0, 2.3), math.pi / 2) == [] and not e.queue_active
+
+
+def test_stairs_wait_until_nothing_else_is_left():
+    """User 2026-11-22: cross stairs only once every other way is exhausted."""
+    e = QueueFake('EXPLORING')
+    e.on_stairs_candidate(stairs_msg(edge=(2.0, 0.0)))           # nearer
+    e.on_curtain_candidate(curtain_msg(centre=(1.0, 3.5)))
+    assert e.map_pubs >= 1                                       # stairs cell walled for Nav2
+    assert e.held_stair_cells() == {(3, 0)}
+    assert e.start_queue('junction scanned')
+    g = maze_grid()
+    out = e.queue_goal(g, (1.0, 1.0), 0.0)
+    assert out[0].goal == pytest.approx((1.0, 2.3))              # the curtain, not the stairs
+    e.cand_queue = [c for c in e.cand_queue if c['kind'] == 'stairs']
+    assert e.queue_goal(g, (1.0, 2.3), 0.0) == [] and not e.queue_active
+    assert not e.start_queue('another junction scanned')        # stairs alone: not yet
+    assert e.start_queue('nothing else to explore', final=True)
+    assert e.held_stair_cells() == set()                         # open for Nav2 now
+    out = e.queue_goal(g, (1.0, 1.0), 0.0)
+    assert out[0].goal == (0.8, 0.0)
+
+
+def test_candidate_without_a_detector_id_is_not_released():
+    e = QueueFake('EXPLORING')
+    e.queue_candidate('curtain', None, (1.0, 3.5), math.pi / 2, 'scene result')
+    e.queue_candidate('curtain', None, (3.0, 0.0), 0.0, 'scene result')
+    assert len(e.cand_queue) == 2
+    e.release('curtain', None, 'in front')
     assert e.released == []
-    # there: release them to stair_detector, which hands over for the check
-    assert e.branch_frontiers(g, (0.85, 0.05), [beyond, back]) is None
-    assert e.released == [7]
-    assert e.branch_frontiers(g, (0.85, 0.05), [beyond, back]) == [beyond, back]
-    assert e.defers == []
-
-
-def test_stairs_released_at_once_without_another_way_or_junction():
-    e = StairFake('JUNCTION')
-    e.junction = look(i=1)
-    e.junction['rec']['paths'] = [p for p in e.junction['rec']['paths'] if p[0] == '+i']
-    e.on_stairs_candidate(stairs_msg(3))
-    assert e.released == [3] and e.defers == []
-    e = StairFake('EXPLORING')                                  # not in a junction look
-    e.on_stairs_candidate(stairs_msg(4))
-    assert e.released == [4] and e.defers == []

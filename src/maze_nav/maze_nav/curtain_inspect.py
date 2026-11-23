@@ -26,6 +26,9 @@ InspectPlan(...).tick(now, xy, yaw, pose_status, lie_status) -> Step:
               `stand_wait` s -> DONE with result 'STAND-UP NOT CONFIRMED' (caller holds)
   look_mode 'pose' / fallback: LOOK in Pose mode (body yaw + pitch per `looks`), else turning
             the whole robot (sim, drive:=false)
+  look_mode 'yolo' (once a curtain model is trained, curtain_yolo.py): YOLO  hold still
+            `yolo_hold` s, step.measuring = True: the caller counts the YOLO curtain boxes on
+            the candidate (standing, `yolo_distance` before the line instead of `distance`)
   DONE      zero
 The caller sends (v, w) (after its wall check); while `pose` is not None it publishes it on
 /maze/pose_yaw + /maze/pose_pitch at 10 Hz (NaN yaw when done); while `lie` is not None it
@@ -50,7 +53,9 @@ class InspectParams:
     min_turn_rate: float = 0.12
     turn_tol: float = math.radians(4)
     settle: float = 0.8            # s still before the look
-    look_mode: str = 'lie'         # 'lie' or 'pose'
+    look_mode: str = 'lie'         # 'lie', 'pose' or 'yolo'
+    yolo_hold: float = 3.0         # s standing still while YOLO frames are counted
+    yolo_distance: float = 1.0     # m before the line for a YOLO look (whole curtain in view)
     lie_wait: float = 8.0          # s for the robot to be down (LYING)
     lie_hold: float = 3.0          # s lying still while the gap is measured
     stand_wait: float = 15.0       # s for standing + Move mode + gait + auto mode (IDLE)
@@ -94,7 +99,8 @@ class InspectPlan:
         n = np.asarray(normal, float)[:2]
         self.n = n / max(np.linalg.norm(n), 1e-9)
         self.heading = math.atan2(self.n[1], self.n[0])
-        self.target = self.c - self.p.distance * self.n
+        d = self.p.yolo_distance if self.p.look_mode == 'yolo' else self.p.distance
+        self.target = self.c - d * self.n
         self.t0 = now
         self.phase, self.since = 'GOTO', now
         self.looks = self.p.look_list()
@@ -144,11 +150,18 @@ class InspectPlan:
         if self.phase == 'SETTLE':
             if now - self.since < p.settle:
                 return Step(phase='SETTLE')
+            if p.look_mode == 'yolo':
+                self.go('YOLO', now)
+                return Step(phase='YOLO', measuring=True)
             lie_ok = p.look_mode == 'lie' and lie_status is not None and \
                 not str(lie_status).startswith('UNAVAILABLE')
             self.go('LIE_DOWN' if lie_ok else 'LOOK', now)
             self.pose_mode = None if pose_status is not None and \
                 not str(pose_status).startswith('UNAVAILABLE') else False
+        if self.phase == 'YOLO':
+            if now - self.since < p.yolo_hold:
+                return Step(phase='YOLO', measuring=True)
+            return self.done(f'YOLO look ({p.yolo_hold:.0f} s)')
         if self.phase in ('LIE_DOWN', 'LYING', 'STAND_UP'):
             return self.lie(now, lie_status)
         if self.phase == 'LOOK':

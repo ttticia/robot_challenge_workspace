@@ -29,7 +29,13 @@ Loop (period `replan_period`):
   1. read /map (slam_toolbox) and the robot pose (TF map -> base_link)
   2. exit check: was in corridors, has moved >= min_displacement, and a disk of seen-free
      floor >= exit_open_radius lies within exit_near_radius of it (and away from the
-     start) for `dwell` s -> DONE
+     start) for `dwell` s -> DONE. With the maze size known (`maze_cols` x `maze_rows`
+     cells of `cell_size` m, start cell (0, 0) in its corner) the robot stays inside
+     instead: no frontier goals outside the grid; once nothing inside is left to explore,
+     an outer side open on the final map (and on >= `exit_confirm` replans) is the exit;
+     the robot drives to the cell inside it, faces out and stands still (TO_EXIT ->
+     AT_EXIT; /maze/launch_cell, JSON: the drone launches from there). The open-floor check
+     then only ends the run if the robot got outside the grid anyway
   3. frontier = free cell next to unknown; pick the nearest along free space, keep the
      current one unless another is clearly closer (no flip-flopping)
   4. send it to Nav2 /navigate_to_pose; a reached goal is blacklisted. A failed one is only
@@ -63,17 +69,29 @@ turns planned about base_link "fitted" and then hit (RPP "collision ahead").
 Sim 2026-11-16: an 80 deg short-way turn at a cell edge swung the rear corner into the wall. Walls within ~0.5 m
 beside the robot that the lidar never saw from further away aren't on the map, so this only
 covers walls it has seen.
-Stairs (stair_detector.py): while EXPLORING, TURNING or LOOKING, stair_detector's /stairs/status
+Stairs (stair_detector.py): while EXPLORING, TURNING or FACING_QR, stair_detector's /stairs/status
 HANDOVER means stairs are close ahead. The explorer cancels the Nav2 goal (or turn), sends a
 zero Twist and goes to STAIRS; only then does stair_detector drive (face the stairs, square up,
 stop in front), so it and Nav2 never both command nav_cmd_vel. Its AT_STAIRS -> AT_STAIRS here:
-hold still until /maze/start (switch gait for the stairs first), then explore on. Its ABORTED
-or IDLE, or `stairs_timeout` s in STAIRS -> back to EXPLORING. stairs_topic:='' = ignore it.
-Possible stairs seen in a junction look (user 2026-11-21): stair_detector holds them
-(/stairs/candidate) instead of checking them after the look; the junction's other ways are
-explored first (curtain_branch.Deferral with `stairs`, like a curtain there), then the robot
-goes `stairs_approach` m in front of the first riser, facing it, and releases them
-(/maze/stairs_release): stair_detector hands over for the check. No other way: released now.
+lined up, cmd_vel_bridge walks over them in AI mode and leaves AI mode by itself
+(/maze/ai_status DONE, user 2026-11-21) -> explore on; NOT LINED UP or a walk that didn't
+finish: hold still until /maze/start. Its ABORTED or IDLE, or `stairs_timeout` s in STAIRS ->
+back to EXPLORING. stairs_topic:='' = ignore it.
+Candidate queue (user 2026-11-21): possible stairs and possible curtains seen in a junction
+or dead-end look are held by their detector (/stairs/candidate, /curtain/candidate) and
+queued here. Once a junction scan is done (or nothing else is left to explore, before
+NO_EXIT) the explorer works the queue, nearest first along free space: drive to the spot
+`stairs_approach` / `curtain_check_approach` m in front of it, face it (TURNING), release it
+(/maze/stairs_release, /maze/curtain_release), and wait `candidate_wait` s for the detector's
+HANDOVER (stair check / lie-down inspection); then the next. Queue empty: explore on.
+Stairs last (user 2026-11-22): queued stairs (stair_detector holds stairs seen while exploring
+too, `hold_while_exploring`) are worked only when nothing else is left to explore (the final
+queue pass); until then the cell up from their first riser is drawn as wall on the
+explorer's map and /maze/map, so neither a frontier goal nor a Nav2 path goes up them.
+Curtains beside another way (user 2026-11-22): curtain_detector holds curtains seen while
+exploring too; one in front of a cell with another open way (no junction look there: one
+solid wall, the curtain, one open way, the way in) is held back until that way is explored
+(defer_side_curtains), then checked.
 Curtains (curtain_detector.py, `curtain_topic` / `curtains_topic`; '' = ignore): confirmed
 curtains (/curtain/curtains, map frame) are cleared on the explorer's copy of /map (a wall with a
 low gap is passable), so frontiers behind one count. A goal within `curtain_goal_radius` of a
@@ -81,8 +99,9 @@ curtain not yet walked through from this side is sent to the spot `curtain_appro
 front of its middle instead, facing it. curtain_detector's HANDOVER: the explorer cancels Nav2, stops and goes to CURTAIN;
 curtain_detector inspects (a possible curtain: lie down, measure the gap) or walks the robot
 through (a confirmed one). Order (user 2026-11-20):
-  - Inspection HANDOVER ("HANDOVER: possible curtain ...") while EXPLORING, TURNING,
-    LOOKING, FACING_QR or JUNCTION, junction request pending or not: the lie-down check
+  - Inspection HANDOVER ("HANDOVER: possible curtain ...", now only for a released queued
+    candidate) while EXPLORING, TURNING, FACING_QR or JUNCTION, junction request pending or
+    not: the lie-down check
     comes first. A JUNCTION look (or its follow-up) is paused and resumed after it, a
     pending junction request is held. Not a curtain: the wall stays, the look goes on (the
     way then ends in a dead end there and is scanned like one).
@@ -114,42 +133,48 @@ Its PASSED, IDLE or ABORTED, or `curtain_timeout` s -> EXPLORING. Its STUCK (sen
 covered) -> AT_CURTAIN: hold still until /maze/start. On PASSED, and on /maze/start from
 AT_CURTAIN, the local costmap is cleared: fabric the robot pushed or dragged was marked right
 around it (wall_scan's dropped curtain bins read +inf, which never clear a cell).
-Look-around (`look_topic`, from poster_detector): a QR room with no survivor poster confirmed
-yet (QR codes only appear in rooms with survivors). While EXPLORING within `look_radius` of the
-requested point, the explorer cancels the goal and sweeps left, right and back (LOOKING), each
-way as far as `look_angle` or until the body would touch a wall (like the start scan), so
-the camera sees the room; then EXPLORING again. Requests never reached expire after
-`look_timeout` s (poster_detector then reports that room's survivor from the QR alone).
 Unreadable QR code (`qr_unread_topic`, from qr_scanner: located in the image but not read,
 e.g. too far round, blurred or at a steep angle): while EXPLORING, the explorer cancels the
-goal and turns to face it (FACING_QR; cut short where the body would touch a wall, like
-LOOKING), then holds still while qr_scanner runs its slow, thorough decode on every frame.
+goal and turns to face it (FACING_QR; cut short where the body would touch a wall), then
+holds still while qr_scanner runs its slow, thorough decode on every frame.
 It goes back to EXPLORING when the code is read (`qr_read_topic`), when it hasn't been seen
 for `face_lost` s, or after `face_timeout` s (that spot is then ignored for `face_cooldown`
 s, so the robot can't get stuck on it). Re-aims up to `face_max_turns` times if it drifts.
-Stairs (HANDOVER) interrupt it like LOOKING.
+Stairs (HANDOVER) interrupt it.
 Junction (`junction_topic`, from scene_trigger: a new cell with 2+ open ways on besides the
-way in, robot near its centre): while EXPLORING, the explorer cancels the goal and faces
-each way, left-most first, holding `junction_hold` s at each but the last (JUNCTION; each
-turn cut short where the body would touch a wall). Then (`junction_follow`, the user's spec
-2026-11-19) it traces each way on the map (scene_cells.trace_way, up to
-`junction_trace_cells` cells along corridors and bends): every way that ends in a dead end,
-nearest first, it drives to the cell before the dead end (Nav2, cell centre), squares up
-to the walls facing into it (turns on the spot until within `junction_align_tol`) and holds
-`junction_dead_end_hold` s, then scans its left and right side walls like a DEAD_END
-(Pose-mode body yaw with `pose_looks`, else spins; `dead_end_side_hold` s each, perception
-on); then it drives one cell into the rightmost way (seen from the
-way in) that doesn't end in a dead end, and explores on. A way whose end isn't mapped yet
-counts as not a dead end. Status stays JUNCTION throughout. Requests older than
-`junction_timeout` s or more than `junction_radius` m from the cell centre are dropped.
+way in, robot near its centre; user 2026-11-21): while EXPLORING, the explorer cancels the
+goal and, without leaving the junction cell, scans each adjacent cell not visited yet,
+left-most first (JUNCTION): turn on the spot to face it (cut short where the body would
+touch a wall), move sideways (`junction_centre`: linear.y, `centre_speed`) onto the line
+through the junction cell's centre along the robot's heading, then hold `junction_hold` s
+with perception on and one /scene/capture (kind junction). Possible stairs / curtains seen
+are queued by their detectors; an object room scanned this way is marked explored (no goal
+into it, no room look-in later). Then (`junction_follow`): queued candidates -> work the
+queue (see Candidate queue); none -> trace each way on the map (scene_cells.trace_way, up to
+`junction_trace_cells` cells), blacklist the ones ending in a dead end, and drive one cell
+into the nearest way to an unexplored cell, then explore on. A possible curtain queued on
+one of the junction's ways while another unexplored way is open (user 2026-11-22: a
+corridor beside a curtain most likely leads to a room) is taken out of the queue: that
+curtain way is not taken, only frontiers down the other ways are goals (curtain_branch
+branch_mask) until none are left for `done_confirm` replans, then the curtain goes back into
+the queue and is checked (lie-down inspection, crossing). Status stays JUNCTION
+throughout. Requests older than `junction_timeout` s or more than `junction_radius` m from
+the cell centre are dropped.
 Dead end (`dead_end_topic`: scene_trigger's /scene/trigger, kind dead_end, fired from the
-cell before it while facing it): the dead-end cell's centre is blacklisted so no goal goes
-into it; while EXPLORING the explorer also cancels the goal and holds still `dead_end_hold`
+cell before it while facing it): the dead-end cell is held out of goals (not blacklisted)
+until scene understanding answers for it (user 2026-11-22, `scene_result_topic`): room ->
+blacklisted; stairs / curtain -> the candidate queue, checked after the junctions; anything
+else -> open again. No answer `scene_result_timeout` s after its last view: an object in it
+on the map -> blacklisted, not a dead end any more -> open, else /scene/retry (room_scene
+resends its views; `scene_max_attempts` tries); the last unanswered -> blacklisted. Without
+room_scene (no capture topic) it is blacklisted at once.
+While EXPLORING the explorer also cancels the goal and holds still `dead_end_hold`
 s (DEAD_END) so scene understanding gets a steady view, then, still in the cell before it,
 turns the camera to the middle of the dead end's left wall, then its right wall (the
 record's side_walls; at most `dead_end_look_angle` off the dead end's heading; cut short
-where the body would touch a wall), holding `dead_end_side_hold` s at each so the poster
-and QR detectors see the side walls, then explores on. During JUNCTION it holds
+where the body would touch a wall), holding `dead_end_side_hold` s at each so the QR
+detector sees the side walls (candidates seen there are queued, user 2026-11-21), then
+explores on. During JUNCTION it holds
 `dead_end_hold` s at that way and scans the side walls the same way before the next way.
 Stairs interrupt both; curtains don't (see Curtains).
 Pose-mode looks (`pose_looks`, user's call 2026-11-19): the dead-end side-wall looks don't
@@ -181,7 +206,7 @@ ros2 launch) ends the run as STOPPED the same way: rclpy's own signal handler is
 the context is still valid for the cancel and the final status.
 
 Status on /maze/status (std_msgs/String, latched): STARTING, PAUSED, CREEPING, SCANNING, EXPLORING, TURNING,
-LOOKING, FACING_QR, JUNCTION, DEAD_END, STAIRS, AT_STAIRS, CURTAIN, AT_CURTAIN, EXITED, NO_EXIT, STOPPED. Goals on /maze/goal (PoseStamped) for RViz. `go`
+FACING_QR, JUNCTION, DEAD_END, STAIRS, AT_STAIRS, CURTAIN, AT_CURTAIN, TO_EXIT, AT_EXIT, EXITED, NO_EXIT, STOPPED. Goals on /maze/goal (PoseStamped) for RViz. `go`
 parameter false = plan and publish goals but never send them to Nav2 (dry run on the robot).
 """
 import array
@@ -217,11 +242,12 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from maze_nav.curtain_branch import (CurtainHold, Deferral, branch_mask, in_mask,
                                     needs_crossing, way_towards)
 from maze_nav.curtains import clear_curtains, curtains_from_json
-from maze_nav.scene_understanding.scene_cells import (DIRECTIONS, CellGrid, block_boxes,
-                                                      block_cells, cell_objects, grow_box,
-                                                      in_boxes, object_box, opening,
-                                                      side_heading, side_walls, trace_way)
-from maze_nav.core import (FREE_MAX, ExitDetector, Frontier, Grid, choose_frontier,
+from maze_nav.scene_cells import (DIRECTIONS, CellGrid, block_boxes, block_cells,
+                                             boundary_sides, cell_objects, exit_cell,
+                                             fit_grid, grow_box, in_boxes, object_box, opening,
+                                             side_heading, side_walls, trace_way)
+from touble_shooting.live_params import attach as attach_live_params
+from maze_nav.core import (FREE_MAX, OCCUPIED_MIN, ExitDetector, Frontier, Grid, choose_frontier,
                            clearance_map, find_frontiers, geodesic_distance,
                            footprint_hits, free_distance_ahead, heading_towards, max_turn,
                            plan_creep_turn,
@@ -230,6 +256,7 @@ from maze_nav.core import (FREE_MAX, ExitDetector, Frontier, Grid, choose_fronti
 START_CMD = 'ros2 topic pub --once /maze/start std_msgs/msg/Empty'
 
 CURTAIN_STATES = ('CURTAIN', 'AT_CURTAIN')
+END_STATES = ('EXITED', 'NO_EXIT', 'STOPPED', 'AT_EXIT')
 LATCHED = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
@@ -254,6 +281,34 @@ def dead_end_scene(steps, cell, centre, kind='dead_end'):
                       'cell_centre': [round(float(v), 3) for v in centre], 'kind': kind,
                       'view': s.get('view', 'centre'), 'last': k == len(steps) - 1}
     return steps
+
+
+# The scoring server's scene_type vocabulary (challenge booklet, section F): each is a room.
+ROOM_SCENE_TYPES = ('kitchen', 'market', 'workshop', 'clinic', 'cleaning_room', 'room')
+
+
+def scene_verdict(result):
+    """room_scene's /scene/result -> 'room', 'stairs', 'curtain', 'empty', or None (not
+    analysed: no VLM, or scene_type unknown with nothing found). scene_type names it first
+    (a room type from ROOM_SCENE_TYPES, stairs, a curtain); else hazards mentioning stairs /
+    a curtain; else any object = a room (user 2026-11-22: a room is a cell with an object)."""
+    if result.get('vlm') in (None, '', 'none'):
+        return None
+    st = str(result.get('scene_type') or '').strip().lower().replace(' ', '_')
+    for kind, words in (('room', ROOM_SCENE_TYPES), ('stairs', ('stair',)),
+                        ('curtain', ('curtain',))):
+        if any(w in st for w in words):
+            return kind
+    hazards = ' '.join(str(h) for h in result.get('hazards') or []).lower()
+    if 'stair' in hazards:
+        return 'stairs'
+    if 'curtain' in hazards:
+        return 'curtain'
+    if result.get('objects'):
+        return 'room'
+    if st in ('', 'unknown'):
+        return None
+    return 'empty'
 
 
 def path_field(grid, xy, robot_radius=0.25):
@@ -354,7 +409,7 @@ class Explorer(Node):
         p('creep_distance', 0.10)      # m straight ahead after start, onto the map and
         #                                off the back wall so the scan turns clear it; 0 = off
         p('creep_speed', 0.05)         # m/s
-        p('start_scan', True)          # after the creep: scan_angle left, 2x right, left again
+        p('start_scan', False)         # after the creep: scan_angle left, 2x right, left again
         # rad; 30 deg (user 2026-11-20: physical turns 30 left, 60 right, 30 left); less on a
         # side where the body would hit a wall
         p('scan_angle', math.pi / 6)
@@ -382,24 +437,23 @@ class Explorer(Node):
         # ...restarted once stair_detector reaches APPROACHING, with this many s: checking and
         # aligning used 34 of the 60 s in the 2026-11-21 sim and the approach was cut off.
         p('stairs_approach_timeout', 60.0)
-        # Look-around requests from poster_detector: a QR room (QR codes only appear in rooms
-        # with survivors) where no poster has been confirmed yet. '' = ignore them.
-        p('look_topic', '/perception/look_request')
-        p('look_radius', 1.5)          # m: look around once the robot is this close
-        p('look_angle', math.pi)       # rad each way (less where the body would hit a wall)
-        p('look_timeout', 120.0)       # s: drop a request the robot never got close to
         # Back of the start cell (user 2026-11-20): no frontier goal, junction look or
         # junction follow-up into the start cell or behind the start pose, up to
         # start_back_depth m back and start_back_width m either side of its line. 0 = off.
         p('start_back_depth', 1.5)
         p('start_back_width', 0.6)
-        # Possible stairs at a junction (user 2026-11-21): stair_detector holds them
-        # (/stairs/candidate); the junction's other ways are explored first (like a curtain
-        # there), then the robot goes stairs_approach m in front of the first riser, facing it,
-        # and releases them (/maze/stairs_release) for the stair check. '' = off.
+        # Candidate queue (user 2026-11-21): possible stairs / curtains seen in a junction or
+        # dead-end look are held by their detector (/stairs/candidate, /curtain/candidate) and
+        # queued here. Once a junction scan is done (or nothing else is left to explore) the
+        # robot goes to the nearest, *_approach m in front of it, faces it and releases it
+        # (/maze/stairs_release, /maze/curtain_release) for the check; then the next. '' = off.
         p('stairs_candidate_topic', '/stairs/candidate')
         p('stairs_release_topic', '/maze/stairs_release')
         p('stairs_approach', 1.2)
+        p('curtain_candidate_topic', '/curtain/candidate')
+        p('curtain_release_topic', '/maze/curtain_release')
+        p('curtain_check_approach', 1.2)
+        p('candidate_wait', 15.0)      # s after a release for the detector to take over
         # Occupied cells (user 2026-11-21): rooms may hold objects (footprint >= 0.3 x 0.3 m);
         # the robot doesn't enter a cell with one. A free-standing blob of map walls inside a
         # cell (all of it more than object_border m from its edges, not joined to any wall:
@@ -408,7 +462,41 @@ class Explorer(Node):
         # explorer's map and /maze/map (Nav2), so no goal or path goes into it. Cells: the
         # scene_trigger grid (cell_size m, cell (0, 0) on the map origin, along its x axis).
         p('block_objects', True)
-        p('cell_size', 1.0)
+        p('cell_size', 1.02)
+        # Maze size (user 2026-11-22): maze_cols cells along the start heading (+i) by
+        # maze_rows to its left (+j), start cell (0, 0) in the corner. The robot never leaves
+        # it: no frontier goal outside it; once everything inside is explored, an outer side
+        # open on the final map (and on >= exit_confirm replans) is the exit, and the robot parks in the cell inside
+        # the exit, facing out, standing (AT_EXIT: the drone's launch cell, /maze/launch_cell).
+        # Within launch_tolerance m of the cell centre, else up to launch_retries goals.
+        # The open-floor exit check only ends the run if the robot is still more than
+        # exit_cell_margin m outside the grid. 0 = size unknown: old exit behaviour.
+        p('maze_cols', 5)
+        p('maze_rows', 3)
+        # The two arenas are mirrored (booklet D, F): the maze lies to the left of the start
+        # heading (+j) or to its right; set it for the arena you run in. auto = both until the
+        # robot stands in a cell off the start row: EXPERIMENTAL, it decided the wrong side in
+        # the sim (2026-11-22: frontiers outside the real maze are allowed until it decides).
+        p('maze_side', 'left')
+        p('exit_cell_margin', 0.15)
+        p('exit_confirm', 3)
+        p('launch_tolerance', 0.25)
+        p('launch_retries', 3)
+        # Nav2 ignores the goal heading (yaw_goal_tolerance 6.28): turn to face the exit
+        # ourselves, up to 2 turns, until within this.
+        p('launch_yaw_tolerance', math.radians(10))
+        # Grid from the walls (user 2026-11-22): the start pose only roughly lines the grid
+        # up with the real cells (5 deg off = 0.4 m at the far end of 5 cells). Every
+        # grid_fit_period s the grid is refitted to the wall pixels near the maze
+        # (scene_cells.fit_grid): at most grid_fit_max_yaw / grid_fit_max_shift from the
+        # start-pose grid, only with >= grid_fit_min_points pixels lining up to a score of
+        # >= grid_fit_min_score (0..2). Published on /maze/grid for scene_trigger.
+        p('grid_fit', True)
+        p('grid_fit_period', 5.0)
+        p('grid_fit_max_yaw', math.radians(8.0))
+        p('grid_fit_max_shift', 0.35)
+        p('grid_fit_min_points', 150)
+        p('grid_fit_min_score', 0.6)
         p('object_border', 0.12)
         p('object_min_extent', 0.2)
         p('object_min_pixels', 4)
@@ -455,7 +543,14 @@ class Explorer(Node):
         # scene_trigger: junctions (face each way, left to right) and dead ends (stop, never
         # go in). '' = ignore.
         p('junction_topic', '/scene/junction')
-        p('junction_hold', 0.5)        # s facing each way but the last
+        p('junction_hold', 1.0)        # s facing (scanning) each adjacent unexplored cell
+        # Junction centring (user 2026-11-21): after turning to face a way, move sideways onto
+        # the junction cell's centre line along it (linear.y on nav_cmd_vel), then scan.
+        p('junction_centre', True)
+        p('centre_speed', 0.06)        # m/s sideways (cmd_vel_bridge max_lateral 0.10)
+        p('centre_tol', 0.03)          # m off the centre line = centred
+        p('centre_max', 0.35)          # m: never strafe further than this
+        p('centre_timeout', 10.0)      # s per way
         p('junction_timeout', 3.0)     # s: drop a junction request not started by then
         p('junction_radius', 0.35)     # m from the cell centre to still do the look
         p('false_success_dist', 0.5)   # m: a "reached" goal this far from the robot = failed
@@ -467,7 +562,7 @@ class Explorer(Node):
         # (2026-11-19: /maze/start sent while odom was ~1 s late -> Nav2 TF errors). 0 = off.
         p('start_steady', 3.0)
         p('start_gap', 0.5)
-        p('junction_follow', True)     # after the look: visit dead ends, else go rightmost
+        p('junction_follow', True)     # after the scan: queued candidates, else the nearest way
         p('junction_dead_end_hold', 3.0)   # s facing into a dead end from the cell before
         p('junction_trace_cells', 10)  # cells followed along each way looking for its end
         p('junction_align_tol', math.radians(3))   # rad: squared up to the walls within
@@ -512,6 +607,19 @@ class Explorer(Node):
         p('camera_frame', 'camera_link')   # its pitch in odom goes into /scene/capture
         # One message per dead-end view (end of its hold) for room_scene; '' = off.
         p('scene_capture_topic', '/scene/capture')
+        # Dead ends wait for scene understanding (user 2026-11-22): a dead end seen in the cell
+        # in front is held out of goals, not blacklisted, until room_scene's /scene/result
+        # for it: room (object) -> blacklisted; stairs / curtain -> candidate queue (checked
+        # after the junctions); anything else -> open again. No answer scene_result_timeout s
+        # after its last capture -> re-check on the map (object in it -> blacklisted; not a
+        # dead end any more -> open), else /scene/retry once (scene_max_attempts tries in
+        # all); the last try unanswered -> blacklisted. Never captured within
+        # scene_look_grace s -> blacklisted. '' (result topic) = blacklist at once (old way).
+        p('scene_result_topic', '/scene/result')
+        p('scene_retry_topic', '/scene/retry')
+        p('scene_result_timeout', 15.0)
+        p('scene_max_attempts', 2)
+        p('scene_look_grace', 30.0)
         p('map_dir', os.path.expanduser('~/challenge_ws/maps'))
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self.cfg = {n: g(n) for n in ('go', 'start_delay', 'wait_for_start', 'robot_radius', 'goal_clearance',
@@ -523,10 +631,12 @@ class Explorer(Node):
                                       'pre_turn', 'pre_turn_min_angle', 'pre_turn_max_creep',
                                       'creep_margin', 'goal_max_offset', 'goal_grace',
                                       'nav_down_timeout', 'stairs_timeout', 'stairs_approach_timeout',
-                                      'open_space_no_looks', 'look_radius',
-                                      'look_angle', 'look_timeout', 'face_timeout', 'face_lost',
+                                      'open_space_no_looks', 'face_timeout', 'face_lost',
                                       'face_min_angle', 'face_max_turns', 'face_cooldown',
                                       'junction_hold', 'junction_timeout', 'junction_radius',
+                                      'junction_centre', 'centre_speed', 'centre_tol',
+                                      'centre_max', 'centre_timeout',
+                                      'curtain_check_approach', 'candidate_wait',
                                       'false_success_dist', 'scan_stale', 'start_steady',
                                       'start_gap',
                                       'junction_follow', 'junction_dead_end_hold',
@@ -538,13 +648,20 @@ class Explorer(Node):
                                       'start_back_depth', 'start_back_width',
                                       'stairs_approach',
                                       'block_objects', 'cell_size', 'object_border',
+                                      'maze_cols', 'maze_rows', 'maze_side', 'exit_cell_margin',
+                                      'exit_confirm', 'launch_tolerance', 'launch_retries',
+                                      'launch_yaw_tolerance', 'grid_fit', 'grid_fit_period',
+                                      'grid_fit_max_yaw', 'grid_fit_max_shift',
+                                      'grid_fit_min_points', 'grid_fit_min_score',
                                       'object_min_extent', 'object_min_pixels', 'object_confirm',
                                       'object_keepout', 'object_keepout_margin',
                                       'room_looks', 'room_look_radius', 'room_look_hold',
                                       'room_look_max', 'room_stair_radius',
                                       'pose_turn_time', 'pose_wait', 'scan_hold',
                                       'pose_max_pitch', 'tilt_comp', 'tilt_threshold',
-                                      'tilt_window', 'camera_frame')}
+                                      'tilt_window', 'camera_frame',
+                                      'scene_result_timeout', 'scene_max_attempts',
+                                      'scene_look_grace')}
         self.exit = ExitDetector(open_radius=g('exit_open_radius'),
                                  near_radius=g('exit_near_radius'),
                                  min_displacement=g('exit_min_displacement'),
@@ -567,6 +684,8 @@ class Explorer(Node):
         self.perceive = None
         self.goal_pub = self.create_publisher(PoseStamped, '/maze/goal', LATCHED)
         self.hold_pub = self.create_publisher(String, '/maze/curtain_hold', LATCHED)
+        self.launch_pub = self.create_publisher(String, '/maze/launch_cell', LATCHED)
+        self.grid_pub = self.create_publisher(String, '/maze/grid', LATCHED)
         self.curtain_map_pub = self.create_publisher(OccupancyGrid, '/maze/map', LATCHED)
         self.keepout_pub, self.keepout_cells = None, None
         if g('keepout_mask_topic') and g('keepout_info_topic'):
@@ -583,6 +702,12 @@ class Explorer(Node):
         self.cmd_pub = self.create_publisher(Twist, 'nav_cmd_vel', 10)
         self.scene_capture_pub = (self.create_publisher(String, g('scene_capture_topic'), 10)
                                   if g('scene_capture_topic') else None)
+        self.scene_results = bool(g('scene_result_topic')) and self.scene_capture_pub is not None
+        self.scene_retry_pub = None
+        if self.scene_results:
+            self.create_subscription(String, g('scene_result_topic'), self.on_scene_result, 10)
+            if g('scene_retry_topic'):
+                self.scene_retry_pub = self.create_publisher(String, g('scene_retry_topic'), 10)
         self.create_subscription(OccupancyGrid, '/map', self.on_map, LATCHED)
         # Volatile on purpose: a start sent before this run is never replayed.
         self.create_subscription(Empty, '/maze/start', self.on_start, 10)
@@ -595,8 +720,13 @@ class Explorer(Node):
             self.create_subscription(String, g('stairs_candidate_topic'),
                                      self.on_stairs_candidate, 10)
             self.create_subscription(PoseStamped, '/stairs/pose', self.on_stair_pose, LATCHED)
-        if g('look_topic'):
-            self.create_subscription(PointStamped, g('look_topic'), self.on_look_request, 10)
+        self.curtain_release_pub = self.create_publisher(
+            String, g('curtain_release_topic'), 10) if g('curtain_release_topic') else None
+        if g('curtain_candidate_topic') and g('curtain_topic'):
+            self.create_subscription(String, g('curtain_candidate_topic'),
+                                     self.on_curtain_candidate, 10)
+        self.ai_done_at = -1e9       # monotonic time cmd_vel_bridge last said AI mode DONE
+        self.create_subscription(String, '/maze/ai_status', self.on_ai_status, LATCHED)
         if g('qr_unread_topic'):
             self.create_subscription(PointStamped, g('qr_unread_topic'), self.on_qr_unread, 10)
             if g('qr_read_topic'):
@@ -619,6 +749,7 @@ class Explorer(Node):
         self.create_timer(0.1, self.scene_tick)   # junction holds are 0.5 s: faster than step
         self.create_timer(0.1, self.creep_tick)   # faster than cmd_vel_bridge's idle_timeout
         self.create_timer(0.2, self.perceive_tick)
+        self.create_timer(1.0, self.scene_timeout_tick)
         self.create_timer(5.0, self.check_map_subscribers)
         self.pose = None             # running pose look {'yaw', 'hold', 'sent', 'since'}
         self.pose_live = False       # a pose target was sent and not released (NaN) yet
@@ -668,12 +799,21 @@ class Explorer(Node):
         self.creep_from = None       # (x, y) in map where the creep started
         self.start_pose = None       # ((x, y), yaw) in map at /maze/start: back_to_start()
         self.cells = CellGrid(float(self.cfg['cell_size']))
+        self.cells0 = CellGrid(self.cells.size)   # from the start pose: fit_cells' limits
+        self.maze_sign = {'left': 1, 'right': -1}.get(str(self.cfg['maze_side']).lower())
+        self.grid_fit_at = -1e9
         self.object_seen = {}        # cell -> maps in a row with an object in it
         self.blocked_cells = {}      # cell -> (extent, (x, y)): objects, never entered
         self.paint_cells = set()     # blocked cells drawn as wall (not the one the robot is in)
         self.object_boxes = {}       # blocked cell -> (x0, y0, x1, y1) map box of its object
         self.objects_map = None      # /map message the objects were last looked for on
         self.dead_end_cells = set()  # checked dead ends (self.cells): never a goal into them
+        # dead ends waiting for scene understanding: cell -> {'centre', 'heading', 'attempt',
+        # 'since', 'captured'} (monotonic times); no goal into them meanwhile
+        self.scene_pending = {}
+        self.exit_side = None        # (cell inside, d out): confirmed exit on the grid's edge
+        self.exit_open = {}          # outer side -> maps in a row it read open
+        self.launch = None           # TO_EXIT: the launch cell goal (go_to_exit)
         self.room_looks = {}         # object cell -> (x, y) of the object: look in from outside
         self.rooms_done = set()      # object cells looked into (or given up)
         self.room_looks_started, self.room_look_at = 0, -1e9
@@ -686,8 +826,14 @@ class Explorer(Node):
         self.stairs_since = None     # monotonic time STAIRS (or its approach) began
         self.stairs_approaching = False   # stair_detector reached APPROACHING this STAIRS
         self.resume_requested = False   # /maze/start while AT_STAIRS
-        self.looks = []              # pending look-around requests: (PointStamped, received)
-        self.look_turns = None       # LOOKING: turns still to make
+        self.at_stairs_since = None  # monotonic time AT_STAIRS began
+        self.cand_queue = []         # candidates to check: {'kind', 'id', 'target', 'heading'}
+        self.queue_active = False    # working the queue (after a junction scan / at the end)
+        self.queue_final = False     # nothing else to explore: stairs are worked too
+        self.queue_wait = None       # (candidate, monotonic time) released, detector's turn
+        self.visited = set()         # self.cells cells the robot has stood in
+        self.scanned_cells = set()   # cells viewed from a junction scan (scene understanding)
+        self.explored_cells = set()  # object rooms seen in a junction scan: no goal into them
         self.unread = None           # newest /qr/unread: (PointStamped in odom, monotonic time)
         self.qr_read_at = -1e9       # monotonic time of the newest /qr/read
         self.face = None             # FACING_QR: {'since', 'turns'}
@@ -709,7 +855,30 @@ class Explorer(Node):
         self.branch_cache = None     # (map msg id, curtain id, mask)
         self.spot_wait = None        # (curtain id, monotonic time) waiting in front of one
         self.map_sub_ok = False      # /maze/map has a subscriber (startup guard)
+        self.attach_live_params()
         self.set_state('STARTING', 'waiting for /map, TF map->base_link and Nav2')
+
+    def attach_live_params(self):
+        """`ros2 param set /maze_explorer <name> <value>` while running (touble_shooting).
+        cfg entries apply at once; the few copied at startup get setters below."""
+        c = self.cfg
+
+        def box(_):
+            self.box = (c['footprint_back'], c['footprint_front'], c['footprint_half_width'])
+
+        def pivot(_):
+            self.pivot = (float(c['pivot_x']), float(c['pivot_y']))
+
+        def exit_attr(attr):
+            return lambda v: setattr(self.exit, attr, float(v))
+        setters = {'footprint_back': box, 'footprint_front': box, 'footprint_half_width': box,
+                   'pivot_x': pivot, 'pivot_y': pivot,
+                   'exit_open_radius': exit_attr('open_radius'),
+                   'exit_near_radius': exit_attr('near_radius'),
+                   'exit_min_displacement': exit_attr('min_displacement'),
+                   'exit_dwell': exit_attr('dwell')}
+        # cell_size: the object / dead-end cell grid is built once; map_dir: files open
+        attach_live_params(self, cfgs=[c], setters=setters, locked=('cell_size', 'map_dir'))
 
     # ------------------------------------------------------------------ helpers
     def set_state(self, state, why=''):
@@ -746,15 +915,13 @@ class Explorer(Node):
         """stair_detector's /stairs/status (see the module doc)."""
         stairs = msg.data.split(':', 1)[0].strip()
         if stairs == 'HANDOVER' and \
-                self.state in ('EXPLORING', 'TURNING', 'LOOKING', 'FACING_QR', 'JUNCTION',
-                               'DEAD_END') \
+                self.state in ('EXPLORING', 'TURNING', 'FACING_QR', 'JUNCTION', 'DEAD_END') \
                 and self.cfg['go']:
             if self.spin_handle is not None:          # a turn, scan or look-around
                 self.spin_handle.cancel_goal_async()
                 self.spin_handle = None
             self.end_pose('stairs ahead')
-            self.look_turns = None                    # a look-around ends here
-            self.face = None                          # so does facing a QR code
+            self.face = None                          # facing a QR code ends here
             self.junction = None                      # and a junction / dead-end look
             self.cancel_junction_goal()
             if self.goal_handle is not None:
@@ -763,6 +930,7 @@ class Explorer(Node):
             self.stop_robot()
             self.stairs_since = time.monotonic()
             self.stairs_approaching = False
+            self.on_handover()
             self.set_state('STAIRS', 'stairs ahead: Nav2 stopped, stair_detector lines the '
                            'robot up')
         elif self.state == 'STAIRS':
@@ -771,8 +939,11 @@ class Explorer(Node):
                 self.stairs_since = time.monotonic()
             if stairs == 'AT_STAIRS':
                 self.resume_requested = False
-                self.set_state('AT_STAIRS', f'{msg.data.split(":", 1)[-1].strip()}; holding '
-                               f'still - switch gait, then: {START_CMD}')
+                self.at_stairs_since = time.monotonic()
+                why = msg.data.split(':', 1)[-1].strip()
+                self.set_state('AT_STAIRS', f'{why}; ' + (
+                    f'line it up by hand, then: {START_CMD}' if 'NOT LINED UP' in why else
+                    'cmd_vel_bridge walks over them in AI mode, then exploring on by itself'))
             elif stairs in ('IDLE', 'ABORTED'):
                 self.begin_after_stairs(f'stair_detector {msg.data}')
 
@@ -785,7 +956,7 @@ class Explorer(Node):
             rec = self.junction_req[0]               # held through the crossing's start
             return self.preempt_curtain(f'junction at cell {rec.get("cell")}')
         if inspect and self.cfg['go'] and \
-                self.state in ('EXPLORING', 'TURNING', 'LOOKING', 'FACING_QR', 'JUNCTION'):
+                self.state in ('EXPLORING', 'TURNING', 'FACING_QR', 'JUNCTION'):
             self.take_for_curtain(True, 'possible curtain ahead: Nav2 stopped, curtain_detector '
                                   'inspects it first' + (' (junction look paused)'
                                                          if self.state == 'JUNCTION' else ''))
@@ -794,7 +965,7 @@ class Explorer(Node):
             first = 'a junction request' if self.junction_pending() else self.state
             self.get_logger().info(f'curtain ahead, but {first} comes first: curtain later')
         elif cur == 'HANDOVER' and not inspect and self.cfg['go'] and \
-                self.state in ('EXPLORING', 'TURNING', 'LOOKING', 'FACING_QR'):
+                self.state in ('EXPLORING', 'TURNING', 'FACING_QR'):
             self.take_for_curtain(False, 'curtain ahead: Nav2 stopped, curtain_detector walks '
                                   'the robot through')
         elif self.state == 'CURTAIN':
@@ -817,7 +988,7 @@ class Explorer(Node):
             self.spin_handle.cancel_goal_async()
             self.spin_handle = None
         self.end_pose('curtain ahead')
-        self.look_turns, self.face = None, None
+        self.face = None
         if inspect and self.state == 'JUNCTION' and self.junction is not None:
             self.pause_junction()
         self.junction = None
@@ -828,6 +999,7 @@ class Explorer(Node):
         self.goal_handle, self.current, self.goal_result = None, None, None
         self.stop_robot()
         self.inspecting = inspect
+        self.on_handover()
         if inspect and self.junction_pending():
             self.junction_req[0]['held'] = True     # after the inspection
         self.curtain_since = time.monotonic()
@@ -864,7 +1036,8 @@ class Explorer(Node):
         hold = CurtainHold(
             hold_new=self.state in CURTAIN_STATES and self.inspecting and
             (self.paused_junction is not None or self.junction_pending()),
-            ids=[d.curtain_id for d in self.defers if not d.released and d.stairs is None])
+            ids=[d.curtain_id for d in self.defers
+                 if not d.released and d.curtain_id is not None])
         if self.hold is None or hold.to_json() != self.hold.to_json():
             self.hold = hold
             self.hold_pub.publish(String(data=hold.to_json()))
@@ -919,61 +1092,238 @@ class Explorer(Node):
             f'way(s) {others} fully first, then crossing it')
         self.publish_hold()
 
-    def release_stairs(self, sid, why):
-        if self.stairs_release_pub is not None:
-            self.stairs_release_pub.publish(String(data=json.dumps({'id': int(sid)})))
-        self.get_logger().info(f'stairs {sid}: released for the stair check ({why})')
+    def to_map(self, xy, heading, frame):
+        """(x, y), heading from a fixed frame into map (latest TF), or None."""
+        if frame == 'map':
+            return (float(xy[0]), float(xy[1])), float(heading)
+        try:
+            tf = self.tf.lookup_transform('map', frame, Time())
+        except TransformException:
+            return None
+        t, q = tf.transform.translation, tf.transform.rotation
+        th = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        return ((t.x + math.cos(th) * xy[0] - math.sin(th) * xy[1],
+                 t.y + math.sin(th) * xy[0] + math.cos(th) * xy[1]), float(heading) + th)
+
+    def deferred_candidates(self):
+        """Candidates held back until their junction's other ways are explored."""
+        return [c for d in self.defers for c in (d.candidates or [])]
+
+    def queue_candidate(self, kind, cid, target, heading, what):
+        if cid is not None and any(c['kind'] == kind and c['id'] == cid
+                                   for c in self.cand_queue + self.deferred_candidates()):
+            return
+        self.cand_queue.append({'kind': kind, 'id': cid, 'target': target,
+                                'heading': heading})
+        self.get_logger().info(
+            f'possible {kind} {cid} at ({target[0]:.2f}, {target[1]:.2f}) ({what}): queued; '
+            + ('kept out of Nav2 and checked only once nothing else is left to explore'
+               if kind == 'stairs' else 'checked after the junction scan, nearest first')
+            + f' ({len(self.cand_queue)} queued)')
+        if kind == 'stairs':
+            self.publish_curtain_map()              # its cell drawn as wall for Nav2
 
     def on_stairs_candidate(self, msg):
-        """stair_detector holds possible stairs seen at a junction: explore the junction's
-        other ways first, then go to them and release them (user 2026-11-21)."""
+        """stair_detector holds possible stairs seen in a junction / dead-end look: queue
+        them (user 2026-11-21)."""
         try:
             d = json.loads(msg.data)
             sid, frame = int(d['id']), str(d.get('frame', 'odom'))
-            ex, ey = float(d['edge'][0]), float(d['edge'][1])
-            hd = float(d['heading'])
+            edge, hd = (float(d['edge'][0]), float(d['edge'][1])), float(d['heading'])
         except (ValueError, KeyError, TypeError, IndexError) as e:
             self.get_logger().warn(f'bad /stairs/candidate ({e}): {msg.data[:160]}')
             return
-        for old in self.defers:
-            if old.stairs is not None and old.stairs['id'] == sid:
-                return                               # already held
-        edge, heading = (ex, ey), hd
-        if frame != 'map':
-            try:
-                tf = self.tf.lookup_transform('map', frame, Time())
-            except TransformException:
-                return self.release_stairs(sid, f'no TF map -> {frame}')
-            t, q = tf.transform.translation, tf.transform.rotation
-            th = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
-            edge = (t.x + math.cos(th) * ex - math.sin(th) * ey,
-                    t.y + math.sin(th) * ex + math.cos(th) * ey)
-            heading = hd + th
-        j = self.junction if self.state == 'JUNCTION' else self.paused_junction
-        rec = j.get('rec') if j is not None else None
-        if not rec or rec.get('cells') is None or not rec.get('paths'):
-            return self.release_stairs(sid, 'not at a junction')
-        cells, cell = rec['cells'], rec['cell']
-        dirs = [DIRECTIONS[n] for n, _ in rec['paths'] if n in DIRECTIONS]
-        sway = way_towards(cells, cell, dirs, edge)
-        others = [w for w in dirs if w != sway and
-                  not self.back_to_start(cells.centre((cell[0] + w[0], cell[1] + w[1])))]
-        rec['skip_dirs'] = list(rec.get('skip_dirs') or []) + [sway]
-        if not others:
-            return self.release_stairs(sid, f'junction {list(cell)} has no other way')
-        self.defers.append(Deferral(None, tuple(cell), cells, others, stairs={
-            'id': sid, 'edge': edge, 'heading': heading, 'done': False}))
-        self.get_logger().info(
-            f'possible stairs {sid} at junction {list(cell)} (way {sway}): exploring its other '
-            f'way(s) {others} fully first, then checking them')
+        m = self.to_map(edge, hd, frame)
+        if m is None:
+            return self.release('stairs', sid, f'no TF map -> {frame}; checking now')
+        self.queue_candidate('stairs', sid, m[0], m[1], d.get('what', 'stairs'))
+
+    def on_curtain_candidate(self, msg):
+        """curtain_detector holds a possible curtain seen in a look: queue it."""
+        try:
+            d = json.loads(msg.data)
+            cid, frame = int(d['id']), str(d.get('frame', 'odom'))
+            centre = (float(d['centre'][0]), float(d['centre'][1]))
+            hd = math.atan2(float(d['normal'][1]), float(d['normal'][0]))
+        except (ValueError, KeyError, TypeError, IndexError) as e:
+            self.get_logger().warn(f'bad /curtain/candidate ({e}): {msg.data[:160]}')
+            return
+        m = self.to_map(centre, hd, frame)
+        if m is None:
+            return self.release('curtain', cid, f'no TF map -> {frame}; inspecting now')
+        self.queue_candidate('curtain', cid, m[0], m[1], d.get('what', 'curtain'))
+        if self.state != 'JUNCTION' and self.paused_junction is None:
+            self.defer_side_curtains()               # a junction look decides its own
+
+    def defer_side_curtains(self, half_width=0.35):
+        """User 2026-11-22: a possible curtain in front of a cell that has another way on
+        (e.g. one solid wall, the curtain, one open way and the way in; no junction look
+        there, the curtain reads as a wall) is noted but held back: that cell's other open
+        ways are explored fully first (Deferral with candidates; branch_frontiers), then it
+        goes back into the queue. Each candidate is held back once at most ('side_done')."""
+        grid = self.grid_now()
+        if grid is None:
+            return
+        cells = self.cells
+        pose = self.robot_pose()
+        for c in [c for c in self.cand_queue
+                  if c['kind'] == 'curtain' and not c.get('side_done')]:
+            h, (tx, ty) = c['heading'], c['target']
+            cell = cells.cell((tx - 0.5 * cells.size * math.cos(h),
+                               ty - 0.5 * cells.size * math.sin(h)))
+            cx, cy = cells.centre(cell)
+            cdir = min(DIRECTIONS.values(), key=lambda d: abs(wrap(cells.heading(d) - h)))
+            rdir = None                              # the way towards the robot: the way in
+            if pose is not None and math.hypot(pose[0][0] - cx, pose[0][1] - cy) > \
+                    0.6 * cells.size:
+                b = math.atan2(pose[0][1] - cy, pose[0][0] - cx)
+                rdir = min(DIRECTIONS.values(), key=lambda d: abs(wrap(cells.heading(d) - b)))
+            others = []
+            for d in DIRECTIONS.values():
+                nxt = (cell[0] + d[0], cell[1] + d[1])
+                centre = cells.centre(nxt)
+                if d in (cdir, rdir) or nxt in self.visited or self.back_to_start(centre) or \
+                        nxt in self.explored_cells | set(self.blocked_cells) or \
+                        self.no_go_cell(nxt):
+                    continue
+                if opening(grid, cells, cell, d, half_width=half_width) == 'open':
+                    others.append(d)
+            if not others:
+                continue
+            c['side_done'] = True
+            self.cand_queue.remove(c)
+            self.defers.append(Deferral(None, tuple(cell), cells, others, candidates=[c]))
+            self.branch_cache = None
+            self.get_logger().info(
+                f'possible curtain {c["id"]} in front of cell {list(cell)} (way {cdir}): '
+                f'noted; exploring that cell\'s other way(s) {others} fully first (likely a '
+                'room), then checking it')
+
+    def release(self, kind, cid, why):
+        if cid is None:                      # not held by a detector (e.g. from /scene/result)
+            self.get_logger().info(f'{kind} candidate: in front of it ({why})')
+            return
+        pub = self.stairs_release_pub if kind == 'stairs' else self.curtain_release_pub
+        if pub is not None:
+            pub.publish(String(data=json.dumps({'id': int(cid)})))
+        self.get_logger().info(f'{kind} {cid}: released for the check ({why})')
+
+    def on_ai_status(self, msg):
+        if msg.data.startswith('DONE'):
+            self.ai_done_at = time.monotonic()
+
+    def workable(self):
+        """Queued candidates to check now: stairs only once nothing else is left to explore
+        (user 2026-11-22: cross stairs only when every other way is exhausted)."""
+        return [c for c in self.cand_queue if self.queue_final or c['kind'] != 'stairs']
+
+    def held_stair_cells(self):
+        """Cells of queued stairs not being worked yet (the cell up from the first riser):
+        drawn as wall on the explorer's map and /maze/map, so Nav2 never plans up them."""
+        if self.queue_final:
+            return set()
+        half = self.cells.size / 2
+        out = {self.cells.cell((c['target'][0] + half * math.cos(c['heading']),
+                                c['target'][1] + half * math.sin(c['heading'])))
+               for c in self.cand_queue if c['kind'] == 'stairs'}
+        if out:
+            pose = self.robot_pose()                # never wall the robot in
+            if pose is not None:
+                out.discard(self.cells.cell(pose[0]))
+        return out
+
+    def start_queue(self, why, final=False):
+        """Work the candidate queue from now on (nearest first), if there is one. Possible
+        curtains with another way on beside them are held back first (defer_side_curtains)."""
+        if self.cand_queue and not self.queue_active:
+            self.defer_side_curtains()
+        if final and not self.queue_final and any(c['kind'] == 'stairs'
+                                                  for c in self.cand_queue):
+            self.queue_final = True
+            self.publish_curtain_map()              # the held stairs open for Nav2 now
+        self.queue_final = self.queue_final or final
+        if not self.workable() or self.queue_active:
+            return bool(self.workable())
+        self.queue_active = True
+        self.get_logger().info(f'{why}: checking {len(self.workable())} queued candidate(s), '
+                               'nearest first')
+        return True
+
+    def candidate_spot(self, c):
+        a = self.cfg['stairs_approach' if c['kind'] == 'stairs' else 'curtain_check_approach']
+        h = c['heading']
+        return (c['target'][0] - a * math.cos(h), c['target'][1] - a * math.sin(h))
+
+    def queue_goal(self, grid, xy, yaw):
+        """Queue active: the goal to the nearest candidate's spot ([Frontier]), None = wait
+        (released, facing it, or no path field), [] = queue done."""
+        now = time.monotonic()
+        if self.queue_wait is not None:
+            c, t = self.queue_wait
+            if now - t < self.cfg['candidate_wait']:
+                return None
+            self.get_logger().warn(f'{c["kind"]} {c["id"]}: no check {self.cfg["candidate_wait"]:.0f}'
+                                   ' s after the release; next candidate')
+            self.queue_wait = None
+        if not self.workable():
+            self.queue_active = False
+            if self.queue_final:
+                self.queue_final = False
+                self.publish_curtain_map()          # held stair cells (none left) redrawn
+            self.get_logger().info('candidate queue done: exploring on' + (
+                f' ({len(self.cand_queue)} stairs held until nothing else is left)'
+                if self.cand_queue else ''))
+            return []
+        field = path_field(grid, xy, self.cfg['robot_radius'])
+
+        def dist(c):
+            sx, sy = self.candidate_spot(c)
+            if field is not None:
+                g = grid.cell((sx, sy))
+                if grid.contains(g) and math.isfinite(field[g[1], g[0]]):
+                    return float(field[g[1], g[0]])
+            return math.hypot(sx - xy[0], sy - xy[1]) + 100.0      # no path: last
+        c = min(self.workable(), key=dist)
+        spot = self.candidate_spot(c)
+        if any(math.hypot(spot[0] - f[0], spot[1] - f[1]) < 0.4 for f in self.failed):
+            self.cand_queue.remove(c)
+            self.release(c['kind'], c['id'], 'the spot in front can\'t be reached; checking '
+                         'from here if it is in range')
+            self.queue_wait = (c, now)
+            return None
+        if math.hypot(spot[0] - xy[0], spot[1] - xy[1]) > 0.35:
+            return [Frontier(goal=spot, yaw=c['heading'], path_length=0.0, size=1,
+                             centroid=spot)]
+        want = wrap(c['heading'] - yaw)
+        if abs(want) > math.radians(10) and c.get('turned', 0) < 2 and \
+                self.spin.server_is_ready():
+            c['turned'] = c.get('turned', 0) + 1
+            sign = 1 if want > 0 else -1
+            ok = max_turn(grid, xy, yaw, self.box, sign, abs(want), self.cfg['turn_margin'],
+                          pivot=self.pivot)
+            if ok > math.radians(5):
+                self.halt_for_look()
+                self.set_state('TURNING', f'facing {c["kind"]} {c["id"]} to check it')
+                self.send_spin(sign * ok, f'face {c["kind"]} {c["id"]}')
+                return None
+        self.halt_for_look()
+        self.cand_queue.remove(c)
+        a = self.cfg['stairs_approach' if c['kind'] == 'stairs' else 'curtain_check_approach']
+        self.release(c['kind'], c['id'], f'{a:.1f} m in front, facing it')
+        self.queue_wait = (c, now)
+        return None
+
+    def on_handover(self):
+        """A detector took over (STAIRS / CURTAIN): the released candidate is in its hands."""
+        self.queue_wait = None
 
     def branch_frontiers(self, grid, xy, frontiers):
         """With a deferred curtain: only frontiers down its junction's other ways; none left
         (done_confirm replans) -> release it and go to the spot in front of it. Returns the
         frontiers to choose from, or None to wait this replan."""
         def gone(d):
-            if d.stairs is not None:
-                return d.stairs['done']
+            if d.candidates is not None:             # possible curtains: until released
+                return False
             c = self.curtain_by_id(d.curtain_id)
             return c is None or bool(c.passed)
         before = len(self.defers)
@@ -984,8 +1334,10 @@ class Explorer(Node):
         if not self.defers:
             return frontiers
         d = self.defers[-1]
-        cur = self.curtain_by_id(d.curtain_id) if d.stairs is None else None
-        name = f'curtain {d.curtain_id}' if d.stairs is None else f'stairs {d.stairs["id"]}'
+        cand = d.candidates is not None
+        cur = None if cand else self.curtain_by_id(d.curtain_id)
+        name = (f'possible curtain(s) {[c["id"] for c in d.candidates]}' if cand
+                else f'curtain {d.curtain_id}')
         if not d.released:
             key = (id(self.map), name)
             if self.branch_cache is None or self.branch_cache[0] != key:
@@ -1004,12 +1356,20 @@ class Explorer(Node):
                                        f'{self.cfg["done_confirm"]}); checking again')
                 return None
             d.released = True
+            if cand:                                 # back into the queue: lie-down check
+                for c in d.candidates:
+                    c['side_done'] = True
+                self.defers.remove(d)
+                self.branch_cache = None
+                self.cand_queue.extend(d.candidates)
+                self.get_logger().info(f'{name}: junction {list(d.junction_cell)}\'s other '
+                                       'ways explored; going back to check it')
+                self.start_queue(f'{name} at junction {list(d.junction_cell)}')
+                return None
             self.get_logger().info(f'{name}: junction {list(d.junction_cell)}\'s other ways '
                                    'explored; going back to '
-                                   + ('cross it' if d.stairs is None else 'check them'))
+                                   + 'cross it')
             self.publish_hold()
-        if d.stairs is not None:
-            return self.stairs_spot(d, xy, frontiers)
         side = cur.side_of(xy)
         spot = cur.centre - side * cur.n * self.cfg['curtain_approach']
         if any(math.hypot(spot[0] - g[0], spot[1] - g[1]) < 0.4 for g in self.failed):
@@ -1030,24 +1390,6 @@ class Explorer(Node):
         heading = math.atan2(side * cur.n[1], side * cur.n[0])
         return [Frontier(goal=(float(far[0]), float(far[1])), yaw=heading, path_length=0.0,
                          size=1, centroid=(float(far[0]), float(far[1])))]
-
-    def stairs_spot(self, d, xy, frontiers):
-        """Released held stairs: go stairs_approach m in front of the first riser, facing up
-        the stairs, then release them to stair_detector (its check takes over from there)."""
-        st = d.stairs
-        ux, uy = math.cos(st['heading']), math.sin(st['heading'])
-        a = self.cfg['stairs_approach']
-        spot = (st['edge'][0] - a * ux, st['edge'][1] - a * uy)
-        if any(math.hypot(spot[0] - g[0], spot[1] - g[1]) < 0.4 for g in self.failed):
-            st['done'] = True
-            self.release_stairs(st['id'], 'the spot in front can\'t be reached; checking '
-                                'from where the robot is')
-            return frontiers
-        if math.hypot(spot[0] - xy[0], spot[1] - xy[1]) < 0.35:
-            st['done'] = True
-            self.release_stairs(st['id'], f'{a:.1f} m in front of them')
-            return None                              # stair_detector hands over next tick
-        return [Frontier(goal=spot, yaw=st['heading'], path_length=0.0, size=1, centroid=spot)]
 
     def clear_local_costmap(self, why, global_too=False):
         """Fabric pushed or dragged through a curtain is marked around the robot; nothing
@@ -1097,7 +1439,7 @@ class Explorer(Node):
         if self.map is None:
             return None
         cs = self.curtains_in_map()
-        if not cs and not self.paint_cells:
+        if not cs and not self.paint_cells and not self.held_stair_cells():
             return self.map
         g = self.block_objects(clear_curtains(Grid.from_msg(self.map), cs))
         out = OccupancyGrid()
@@ -1122,6 +1464,9 @@ class Explorer(Node):
 
     def block_objects(self, grid):
         """grid with the painted objects drawn as wall: their boxes, or whole cells."""
+        stairs = self.held_stair_cells()
+        if stairs:
+            grid = block_cells(grid, self.cells, stairs)
         if self.footprint_keepout():
             return block_boxes(grid, self.painted_boxes())
         return block_cells(grid, self.cells, self.paint_cells)
@@ -1233,6 +1578,8 @@ class Explorer(Node):
     # ------------------------------------------------------------ room look-in
     def queue_room_look(self, cell, obj_xy):
         """A newly confirmed object cell: look into it from outside later (maybe_room_look)."""
+        if cell in self.scanned_cells:
+            return self.mark_explored(cell, 'object confirmed after a junction scan of it')
         if not self.cfg['room_looks'] or cell in self.rooms_done or cell in self.room_looks:
             return
         if cell in self.dead_end_cells:
@@ -1334,7 +1681,18 @@ class Explorer(Node):
 
     def keep_out_of_dead_ends(self):
         """Checked dead ends are never entered (user 2026-11-21): a confirmed curtain on
-        one's edge makes it a way on again (drop it); a running goal into one is cancelled."""
+        one's edge makes it a way on again (drop it); a running goal into one is cancelled.
+        Dead ends still waiting for scene understanding (or queued as a scene candidate):
+        a running goal into one is cancelled too, but not blacklisted (it may open again)."""
+        cg = self.current.goal if self.current is not None else None
+        if cg is not None and self.goal_handle is not None and \
+                self.cells.cell(cg) not in self.dead_end_cells and \
+                self.no_go_cell(self.cells.cell(cg)):
+            self.get_logger().warn(f'goal ({cg[0]:.2f}, {cg[1]:.2f}) is in a dead end waiting '
+                                   'for scene understanding: cancelled')
+            self.goal_handle.cancel_goal_async()
+            self.goal_handle, self.current, self.goal_result = None, None, None
+            return
         if not self.dead_end_cells:
             return
         for c in self.curtains_in_map():
@@ -1476,7 +1834,7 @@ class Explorer(Node):
 
     # ------------------------------------------------------------------ main loop
     def step(self):
-        if self.state in ('EXITED', 'NO_EXIT', 'STOPPED'):
+        if self.state in END_STATES:
             return
         pose = self.robot_pose()
         if self.map is None or pose is None:
@@ -1515,6 +1873,10 @@ class Explorer(Node):
             if time.monotonic() - self.started > self.cfg['max_runtime']:
                 return self.finish('STOPPED', f'max_runtime {self.cfg["max_runtime"]:.0f} s')
             return                                  # creep_tick drives, then moves on
+        if self.state == 'TO_EXIT':                 # driving to the drone's launch cell
+            if time.monotonic() - self.started > self.cfg['max_runtime']:
+                return self.finish('STOPPED', f'max_runtime {self.cfg["max_runtime"]:.0f} s')
+            return self.launch_tick(pose)
         if self.state in ('CURTAIN', 'AT_CURTAIN'):   # curtain_detector drives / holding still
             if time.monotonic() - self.started > self.cfg['max_runtime']:
                 return self.finish('STOPPED', f'max_runtime {self.cfg["max_runtime"]:.0f} s')
@@ -1539,6 +1901,10 @@ class Explorer(Node):
             elif self.state == 'AT_STAIRS' and self.resume_requested:
                 self.resume_requested = False
                 self.begin_after_stairs('resumed at the stairs')
+            elif self.state == 'AT_STAIRS' and self.at_stairs_since is not None and \
+                    self.ai_done_at > self.at_stairs_since:
+                self.begin_after_stairs('over the stairs (AI mode done, auto mode sent): '
+                                        'exploring on')
             return
         if self.state == 'TURNING':
             if time.monotonic() - self.started > self.cfg['max_runtime']:
@@ -1546,16 +1912,6 @@ class Explorer(Node):
             if self.spin_busy or self.turn_creep is not None:
                 return                              # spinning, or creep_tick creeping
             self.set_state('EXPLORING', 'turned; going on')   # replan from the new heading
-            return
-        if self.state == 'LOOKING':
-            if time.monotonic() - self.started > self.cfg['max_runtime']:
-                return self.finish('STOPPED', f'max_runtime {self.cfg["max_runtime"]:.0f} s')
-            if self.spin_busy:
-                return
-            if self.look_turns:
-                self.send_spin(self.look_turns.pop(0), 'look around')
-                return
-            self.set_state('EXPLORING', 'looked around; going on')   # replan from here
             return
         if self.state == 'FACING_QR':
             if time.monotonic() - self.started > self.cfg['max_runtime']:
@@ -1596,15 +1952,17 @@ class Explorer(Node):
                 self.stop_robot()
                 return
         xy, yaw = pose
+        self.visited.add(self.cells.cell(xy))
         self.update_objects(xy)
         self.keep_out_of_dead_ends()
         grid = self.grid_now()
+        self.fit_cells(grid)
+        self.decide_side(xy)
+        self.update_exit(grid)
         if time.monotonic() - self.started > self.cfg['max_runtime']:
             return self.finish('STOPPED', f'max_runtime {self.cfg["max_runtime"]:.0f} s')
 
         if self.maybe_face(grid, xy, yaw):
-            return
-        if self.maybe_look(grid, xy, yaw):
             return
 
         # Goal bookkeeping
@@ -1646,6 +2004,20 @@ class Explorer(Node):
 
         if not self.nav_active:
             return                                  # no goals into a dead Nav2
+        if self.queue_active:
+            q = self.queue_goal(grid, xy, yaw)
+            if q is None:
+                return                              # facing / released: the detector's turn
+            if q:
+                nxt = q[0]
+                if self.current is not None and self.goal_handle is not None and math.hypot(
+                        nxt.goal[0] - self.current.goal[0],
+                        nxt.goal[1] - self.current.goal[1]) < 0.4:
+                    return                          # driving there
+                if self.pre_turn(grid, xy, yaw, nxt):
+                    return
+                self.send(nxt, 1)
+                return
         frontiers = self.find(grid, xy, self.blacklist + self.failed)
         # Smac (Humble) doesn't check the goal is inside the rolling global costmap either.
         reach = self.in_reach(frontiers, xy)
@@ -1676,6 +2048,11 @@ class Explorer(Node):
                 return
             if self.failed:
                 return self.recover_or_finish(grid, xy, 'only failed frontiers left')
+            if self.start_queue('nothing else to explore', final=True):
+                self.empty_replans = 0
+                return
+            if self.go_to_exit('maze explored'):
+                return
             # Everything mapped: stop now, even mid-goal (finish cancels it).
             self.finish('NO_EXIT', 'all frontiers mapped, no open space found')
             self.stop_robot()
@@ -1749,52 +2126,6 @@ class Explorer(Node):
             self.goal_handle.cancel_goal_async()
         self.goal_handle, self.current, self.goal_result = None, None, None
         self.stop_robot()
-
-    def on_look_request(self, msg):
-        """poster_detector: a QR room with no poster yet; look around there once."""
-        self.looks.append((msg, time.monotonic()))
-        self.get_logger().info(f'look-around requested at {msg.header.frame_id} '
-                               f'({msg.point.x:.2f}, {msg.point.y:.2f})')
-
-    def maybe_look(self, grid, xy, yaw):
-        """
-        EXPLORING: near a requested point, stop and sweep left and right (as far as
-        look_angle or until the body would touch a wall, like the start scan) so the camera
-        sees the whole room. Returns True if a look-around started.
-        """
-        now = time.monotonic()
-        self.looks = [(m, t) for m, t in self.looks if now - t < self.cfg['look_timeout']]
-        if not self.looks or not self.cfg['go'] or self.state != 'EXPLORING' or \
-                self.spin_busy or self.turn_creep is not None or \
-                not self.spin.server_is_ready():
-            return False
-        for i, (msg, _) in enumerate(self.looks):
-            try:   # requests are in odom; the map <- odom correction moves with SLAM
-                tf = self.tf.lookup_transform('map', msg.header.frame_id, Time())
-            except TransformException:
-                continue
-            t, q = tf.transform.translation, tf.transform.rotation
-            th = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
-            px = t.x + math.cos(th) * msg.point.x - math.sin(th) * msg.point.y
-            py = t.y + math.sin(th) * msg.point.x + math.cos(th) * msg.point.y
-            if math.hypot(px - xy[0], py - xy[1]) > self.cfg['look_radius']:
-                continue
-            del self.looks[i]
-            a, m = abs(self.cfg['look_angle']), self.cfg['turn_margin']
-            left = max_turn(grid, xy, yaw, self.box, +1, a, m, pivot=self.pivot)
-            right = max_turn(grid, xy, yaw, self.box, -1, a, m, pivot=self.pivot)
-            turns = [t for t in (left, -(left + right), right) if abs(t) > math.radians(5)]
-            if not turns:
-                self.get_logger().warn('look-around skipped: walls too close to turn')
-                return False
-            self.halt_for_look()
-            self.look_turns = turns
-            self.set_state('LOOKING', f'QR room at ({px:.2f}, {py:.2f}) with no survivor '
-                           f'poster yet: {math.degrees(left):.0f} deg left, '
-                           f'{math.degrees(left + right):.0f} right, {math.degrees(right):.0f} '
-                           'left')
-            return True
-        return False
 
     def on_qr_unread(self, msg):
         """qr_scanner: a QR code in view that it can't read (position in odom)."""
@@ -1975,19 +2306,31 @@ class Explorer(Node):
         except (ValueError, KeyError, TypeError, IndexError, AttributeError) as e:
             self.get_logger().warn(f'bad /scene/trigger message ({e}): {msg.data[:200]}')
             return
-        self.blacklist.append(centre)               # never send a goal into it
-        self.dead_end_cells.add(self.cells.cell(centre))   # nor anywhere else in it
         where = f'dead end at cell {rec.get("cell")} ({centre[0]:.2f}, {centre[1]:.2f})'
-        if self.cells.cell(centre) in self.rooms_done:
-            self.get_logger().info(f'{where}: a room already looked into; blacklisted')
+        if rec.get('manual'):
+            # touble_shooting/trigger_scene.py: the look only, from EXPLORING only (a look
+            # ends in EXPLORING: from PAUSED it would start the run), cell not blacklisted.
+            if self.state != 'EXPLORING' or not self.cfg['go']:
+                self.get_logger().warn(f'manual {where}: ignored, only while EXPLORING with '
+                                       f'go (now {self.state}, go {self.cfg["go"]})')
+                return
+            self.get_logger().warn(f'manual {where}: dead-end look (cell not blacklisted)')
+        cell = self.cells.cell(centre)
+        manual = bool(rec.get('manual'))
+        if not manual and cell in self.rooms_done:
+            self.blacklist_dead_end(cell, centre, f'{where}: a room already looked into')
             return
-        if not self.cfg['go']:
-            self.get_logger().info(f'{where}: blacklisted')
+        if not manual and not self.cfg['go']:
+            self.blacklist_dead_end(cell, centre, f'{where}: no look (go:=false)')
             return
         if self.in_open_space():
+            if not manual:
+                self.blacklist_dead_end(cell, centre, f'{where}: no look')
             self.get_logger().info(f'{where}: open space here ({self.exit.open_nearby:.2f} m '
                                    'of free floor), probably outside the maze; no look')
             return
+        if not manual:
+            self.hold_dead_end(cell, centre, facing, where)
         if not walls and not self.side_walls_warned:
             self.side_walls_warned = True
             self.get_logger().warn('/scene/trigger has no side_walls (old scene_trigger?): '
@@ -2008,13 +2351,153 @@ class Explorer(Node):
                            'not going in')
         elif self.state == 'JUNCTION' and self.junction is not None and \
                 self.junction.get('rec') is not None and self.cfg['junction_follow']:
-            self.get_logger().info(f'{where}: blacklisted (junction: checked after the look)')
+            self.get_logger().info(f'{where}: junction scan views it')
         elif self.state in ('JUNCTION', 'DEAD_END') and self.junction is not None:
             self.junction['dead_end'] = steps       # hold at this way, then scan its sides
-            self.get_logger().info(f'{where}: blacklisted; holding at this way, then '
-                                   'scanning its side walls')
+            self.get_logger().info(f'{where}: holding at this way, then scanning its side '
+                                   'walls')
         else:
-            self.get_logger().info(f'{where}: blacklisted ({self.state})')
+            self.get_logger().info(f'{where}: no look now ({self.state})')
+
+    # ------------------------------------------------------------ dead ends vs scene results
+    def launch_cell(self):
+        return self.exit_side[0] if self.exit_side is not None else None
+
+    def blacklist_dead_end(self, cell, centre, why):
+        """Never a goal into this dead end again."""
+        self.scene_pending.pop(cell, None)
+        if cell == self.launch_cell():
+            self.get_logger().info(f'{why}; the launch cell: not blacklisted')
+            return
+        if centre not in self.blacklist:
+            self.blacklist.append(centre)           # never send a goal into it
+        self.dead_end_cells.add(cell)               # nor anywhere else in it
+        self.get_logger().info(f'{why}: blacklisted')
+
+    def hold_dead_end(self, cell, centre, heading, why, captured=False):
+        """A dead end in the cell in front: no goal into it until scene understanding has
+        answered for it (on_scene_result / scene_timeout_tick). captured: its view went out
+        already (junction scan), the result timeout runs from now. Without scene results
+        (room_scene off or no capture topic): blacklisted at once."""
+        if cell in self.dead_end_cells or cell in self.scene_pending or \
+                cell == self.launch_cell() or self.scene_candidate(cell):
+            return
+        if not self.scene_results:
+            return self.blacklist_dead_end(cell, centre, f'{why} (no scene understanding)')
+        now = time.monotonic()
+        self.scene_pending[cell] = {'centre': (float(centre[0]), float(centre[1])),
+                                    'heading': heading, 'attempt': 1,
+                                    'since': now, 'captured': now if captured else None}
+        self.get_logger().info(f'{why}: held (no goals into it) until scene understanding '
+                               'answers; not blacklisted yet')
+
+    def scene_candidate(self, cell):
+        """A queued stairs / curtain candidate from scene understanding is in cell."""
+        return any(c.get('cell') == cell
+                   for c in self.cand_queue + self.deferred_candidates())
+
+    def no_go_cell(self, cell):
+        """No goal into cell: a blacklisted dead end, one waiting for scene understanding,
+        or a scene candidate still queued (checked after the junctions)."""
+        return cell in self.dead_end_cells or cell in self.scene_pending or \
+            self.scene_candidate(cell)
+
+    def on_scene_result(self, msg):
+        """room_scene's /scene/result for a held dead end: room -> blacklist; stairs /
+        curtain -> candidate queue; anything else -> open. 'not analysed' (vlm none,
+        scene_type unknown) is no answer: scene_timeout_tick decides."""
+        try:
+            r = json.loads(msg.data)
+            cell = (int(r['cell'][0]), int(r['cell'][1]))
+        except (ValueError, KeyError, TypeError, IndexError) as e:
+            self.get_logger().warn(f'bad /scene/result ({e}): {msg.data[:200]}')
+            return
+        p = self.scene_pending.get(cell)
+        if p is None:
+            return
+        verdict = scene_verdict(r)
+        where = f'dead end {list(cell)}'
+        if verdict is None:
+            self.get_logger().info(f'{where}: scene result (attempt {r.get("attempt", 1)}) '
+                                   f'not analysed (vlm {r.get("vlm")!r}, scene_type '
+                                   f'{r.get("scene_type")!r}); waiting')
+            return
+        if verdict == 'room':
+            return self.blacklist_dead_end(cell, p['centre'], f'{where}: scene understanding '
+                                           f'says room (objects {r.get("objects") or []})')
+        self.scene_pending.pop(cell, None)
+        if verdict in ('stairs', 'curtain'):
+            h = p['heading']
+            if h is None:
+                pose = self.robot_pose()
+                h = math.atan2(p['centre'][1] - pose[0][1], p['centre'][0] - pose[0][0]) \
+                    if pose is not None else 0.0
+            half = self.cells.size / 2
+            target = (p['centre'][0] - half * math.cos(h), p['centre'][1] - half * math.sin(h))
+            self.queue_candidate(verdict, None, target, h, f'scene understanding, cell '
+                                 f'{list(cell)}')
+            self.cand_queue[-1]['cell'] = cell     # no goals into it until it is checked
+            return
+        self.get_logger().info(f'{where}: scene understanding says '
+                               f'{r.get("scene_type")!r}, no room / stairs / curtain: open '
+                               '(not blacklisted)')
+
+    def scene_timeout_tick(self):
+        """1 Hz: held dead ends with no answer in time. Never captured within
+        scene_look_grace s -> blacklisted. scene_result_timeout s after the last capture
+        (or retry): object in the cell -> blacklisted (room); not a dead end on the map any
+        more -> open; else retry (up to scene_max_attempts tries); the last unanswered ->
+        blacklisted."""
+        if not self.scene_pending:
+            return
+        now = time.monotonic()
+        for cell, p in list(self.scene_pending.items()):
+            where = f'dead end {list(cell)}'
+            if p['captured'] is None:
+                if now - p['since'] >= self.cfg['scene_look_grace']:
+                    self.blacklist_dead_end(cell, p['centre'], f'{where}: never captured for '
+                                            'scene understanding')
+                continue
+            if now - p['captured'] < self.cfg['scene_result_timeout']:
+                continue
+            waited = f'no scene result {self.cfg["scene_result_timeout"]:.0f} s after ' \
+                     f'attempt {p["attempt"]}'
+            if cell in self.blocked_cells:
+                self.blacklist_dead_end(cell, p['centre'], f'{where}: {waited}; an object in '
+                                        'it on the map (room)')
+                continue
+            if self.still_dead_end(cell, p['heading']) is False:
+                self.scene_pending.pop(cell, None)
+                self.get_logger().info(f'{where}: {waited}; not a dead end on the map any '
+                                       'more: open (not blacklisted)')
+                continue
+            if p['attempt'] >= self.cfg['scene_max_attempts'] or self.scene_retry_pub is None:
+                self.blacklist_dead_end(cell, p['centre'], f'{where}: {waited} (last try)')
+                continue
+            p['attempt'] += 1
+            p['captured'] = now
+            self.scene_retry_pub.publish(String(data=json.dumps(
+                {'cell': [int(cell[0]), int(cell[1])], 'attempt': p['attempt']})))
+            self.get_logger().info(f'{where}: {waited}; still a dead end, no object on the '
+                                   f'map: asking scene understanding again (attempt '
+                                   f'{p["attempt"]})')
+
+    def still_dead_end(self, cell, heading):
+        """True / False: cell's three sides other than the way in (heading: from the cell
+        before into it) are walls / one is open on the map now. None: can't tell."""
+        grid = self.grid_now()
+        if grid is None:
+            return None
+        if heading is None:
+            back = None
+        else:
+            back = min(DIRECTIONS.values(), key=lambda d: abs(wrap(
+                self.cells.heading(d) - (heading + math.pi))))
+        sides = [opening(grid, self.cells, cell, d) for d in DIRECTIONS.values() if d != back]
+        if any(s == 'open' for s in sides) and (back is not None or
+                                               sum(s == 'open' for s in sides) > 1):
+            return False
+        return True
 
     @staticmethod
     def new_look(steps):
@@ -2073,29 +2556,56 @@ class Explorer(Node):
             ways = [w for w in ways if w[0] not in back]
             if not ways:
                 return
+        # Only adjacent cells not stood in yet (user 2026-11-21: scan each adjacent
+        # unexplored cell).
+        size = rec['cells'].size if rec.get('cells') is not None else self.cells.size
+
+        def nb(h):
+            return (c[0] + size * math.cos(h), c[1] + size * math.sin(h))
+        seen = [n for n, h in ways if self.cells.cell(nb(h)) in self.visited]
+        if seen:
+            self.get_logger().info(f'junction at {rec.get("cell")}: way(s) '
+                                   f'{", ".join(map(str, seen))} lead to cells already '
+                                   'visited: not scanned')
+            ways = [w for w in ways if w[0] not in seen]
+            if not ways:
+                return
         self.halt_for_look()
-        self.junction = self.new_look([
-            {'name': f'junction way {n}', 'heading': h, 'short': k == 0,
-             'hold': self.cfg['junction_hold'] if k < len(ways) - 1 else 0.0}
-            for k, (n, h) in enumerate(ways)])
+        steps = []
+        for k, (n, h) in enumerate(ways):
+            cell = self.cells.cell(nb(h))
+            steps.append({
+                'name': f'junction way {n}', 'heading': h, 'short': k == 0,
+                'hold': self.cfg['junction_hold'], 'scan': True, 'cell': cell,
+                'centre': c if self.cfg['junction_centre'] else None,
+                'scene': {'cell': [int(cell[0]), int(cell[1])],
+                          'cell_centre': [round(float(v), 3) for v in nb(h)],
+                          # one view per cell: each is its cell's last (room_scene sends it
+                          # to the VLM at once, not after its 20 s room_timeout)
+                          'kind': 'junction', 'view': str(n), 'last': True}})
+        self.junction = self.new_look(steps)
         self.junction['rec'] = rec                  # look_tick follows it up afterwards
-        self.set_state('JUNCTION', f'cell {rec.get("cell")}: {len(ways)} ways on ('
+        self.set_state('JUNCTION', f'cell {rec.get("cell")}: {len(ways)} adjacent unexplored '
+                       'cell(s) ('
                        + ', '.join(f'{n} {math.degrees(wrap(h - yaw)):+.0f} deg'
-                                   for n, h in ways) + '); facing each, left to right')
+                                   for n, h in ways) + '); facing each left to right, '
+                       'centring sideways, scanning; not leaving the cell until done')
 
     def at_dead_end(self):
-        """True while the robot is looking at a dead end (user 2026-11-19: check for QR codes
-        and survivors only there): DEAD_END (scene_trigger's /scene/trigger: hold, then the
-        side walls); in a JUNCTION look, a step named 'dead end ...' or the hold facing one;
-        in the junction follow-up, squaring up to / holding at a dead-end way (group
-        'dead end ...'). FACING_QR and LOOKING too, so a code or survivor seen there is
-        followed up."""
-        if self.state in ('DEAD_END', 'FACING_QR', 'LOOKING'):
+        """True while the robot is looking at a dead end or scanning a junction way (user
+        2026-11-19 / 11-21: QR checks only there): DEAD_END (scene_trigger's /scene/trigger:
+        hold, then the side walls); in a JUNCTION look, holding at a way ('scan'), a step
+        named 'dead end ...' or the hold facing one; in a follow-up, squaring up to /
+        holding at a room or dead end. FACING_QR too, so a code seen there is followed up."""
+        if self.state in ('DEAD_END', 'FACING_QR'):
             return True
         j = self.junction
         if self.state != 'JUNCTION' or not j:
             return False
         if j.get('dead_end'):
+            return True
+        st, k = j.get('steps') or [], j.get('i', 0)
+        if 0 < k <= len(st) and st[k - 1].get('scan') and j.get('hold_until') is not None:
             return True
         if 'todo' in j:
             act = j['todo'][0] if j['todo'] else None
@@ -2128,9 +2638,12 @@ class Explorer(Node):
         if self.spin_busy:
             return
         if j['turned'] and j['hold_until'] is None:          # a turn (or none) just ended
+            st = j['steps'][j['i'] - 1]
+            if st.get('centre') is not None and not st.get('centred') and \
+                    not self.centre_tick(st, now):
+                return                                       # moving sideways
             # a pose look held inside the pose already (the body swings back after it)
-            j['hold_until'] = now + (0.0 if j.pop('posed', False)
-                                     else j['steps'][j['i'] - 1]['hold'])
+            j['hold_until'] = now + (0.0 if j.pop('posed', False) else st['hold'])
         if j['dead_end'] is not None:        # facing a dead end: its hold + side walls next
             j['steps'][j['i']:j['i']] = j['dead_end']
             j['dead_end'] = None
@@ -2139,6 +2652,8 @@ class Explorer(Node):
         if j['hold_until'] is not None and 0 < j['i'] <= len(j['steps']):
             held = j['steps'][j['i'] - 1]
             self.capture_view(held.get('scene'), held['hold'])   # posed: sent in pose_tick
+            if held.get('scan'):
+                self.note_scanned(held['cell'])
         j['turned'], j['hold_until'] = False, None
         if j['i'] >= len(j['steps']):
             self.release_pose()
@@ -2189,6 +2704,80 @@ class Explorer(Node):
                                    f'deg turn to {math.degrees(sign * ok):+.0f}')
         self.send_spin(sign * ok, step['name'])
 
+    def centre_tick(self, st, now):
+        """Junction centring (user 2026-11-21): move sideways (linear.y, feet keep the
+        heading) onto the line through the junction cell's centre along the robot's heading.
+        True once centred, given up, or blocked by a mapped wall."""
+        pose = self.robot_pose()
+        if pose is None or self.map is None:
+            return False
+        (x, y), yaw = pose
+        cx, cy = st['centre']
+        lat = -(x - cx) * math.sin(yaw) + (y - cy) * math.cos(yaw)   # + = left of the line
+        tol, sf = self.cfg['centre_tol'], st.get('strafe')
+        if sf is None:
+            if abs(lat) <= tol:
+                st['centred'] = True
+                return True
+            # Only along the cell's axis: moving sideways towards the centre line then moves
+            # away from the nearer side wall, which the lidar can't see this close (sim
+            # 2026-11-22: a turn cut short 40 deg, the sideways move ran into a wall).
+            off = abs(wrap(yaw - st['heading'])) if 'heading' in st else 0.0
+            if off > math.radians(10):
+                self.get_logger().warn(f'{st["name"]}: {math.degrees(off):.0f} deg off the '
+                                       'way after the turn: not moving sideways; scanning '
+                                       'from here')
+                st['centred'] = True
+                return True
+            move = max(-self.cfg['centre_max'], min(self.cfg['centre_max'], -lat))
+            grid = self.grid_now()
+            for f in (0.5, 1.0):
+                pt = (x - f * move * math.sin(yaw), y + f * move * math.cos(yaw))
+                if footprint_hits(grid, pt, yaw, self.box, 0.01):
+                    self.get_logger().warn(f'{st["name"]}: {abs(move) * 100:.0f} cm sideways '
+                                           'would touch a mapped wall; scanning from here')
+                    st['centred'] = True
+                    return True
+            st['strafe'] = {'since': now, 'from': lat, 'best': abs(lat), 'best_at': now}
+            self.get_logger().info(f'{st["name"]}: {abs(lat) * 100:.0f} cm off the cell\'s '
+                                   f'centre line; moving {"right" if lat > 0 else "left"}')
+            return False
+        if abs(lat) < sf['best'] - 0.01:
+            sf['best'], sf['best_at'] = abs(lat), now
+        stuck = now - sf['best_at'] > 2.0                    # against something unmapped
+        if abs(lat) <= tol or lat * sf['from'] < 0 or stuck or \
+                now - sf['since'] > self.cfg['centre_timeout']:
+            self.stop_robot()
+            st['centred'] = True
+            self.get_logger().info(f'{st["name"]}: centred ({lat * 100:+.0f} cm)'
+                                   if abs(lat) <= max(tol, 0.05) else
+                                   f'{st["name"]}: still {lat * 100:+.0f} cm off after '
+                                   f'{now - sf["since"]:.0f} s; scanning from here')
+            return True
+        v = max(-self.cfg['centre_speed'], min(self.cfg['centre_speed'], -1.5 * lat))
+        if abs(v) < 0.03:
+            v = math.copysign(0.03, v)
+        cmd = Twist()
+        cmd.linear.y = float(v)
+        self.cmd_pub.publish(cmd)
+        return False
+
+    def note_scanned(self, cell):
+        """A junction scan looked into cell: an object room there needs no look-in later."""
+        self.scanned_cells.add(cell)
+        if cell in self.blocked_cells:
+            self.mark_explored(cell, 'object seen in the junction scan')
+
+    def mark_explored(self, cell, why):
+        """Object room viewed (scene understanding triggered): explored, no goal into it, no
+        room look-in (user 2026-11-21)."""
+        if cell in self.explored_cells:
+            return
+        self.explored_cells.add(cell)
+        self.rooms_done.add(cell)
+        self.room_looks.pop(cell, None)
+        self.get_logger().info(f'cell {list(cell)}: room marked explored ({why})')
+
     def capture_view(self, scene, hold):
         """End of a dead-end view's hold (still facing it): one /scene/capture for
         room_scene, which takes the camera frame stamped inside [hold_start, stamp]. Once per
@@ -2196,6 +2785,10 @@ class Explorer(Node):
         if not scene or scene.get('sent') or self.scene_capture_pub is None:
             return
         scene['sent'] = True
+        held = self.scene_pending.get((int(scene['cell'][0]), int(scene['cell'][1])))
+        if held is not None:                 # its result timeout runs from the last view
+            held['captured'] = time.monotonic()
+            scene['attempt'] = held['attempt']
         pose = self.robot_pose()
         now = self.ros_ns()
         tilt = self.body_tilt()
@@ -2419,89 +3012,115 @@ class Explorer(Node):
 
     # ------------------------------------------------------------ after a junction look
     def plan_after_junction(self, rec):
-        """After facing each way at a junction: trace every way on the map (scene_cells.
-        trace_way). Each that ends in a dead end (nearest first): drive to the cell before
-        it, square up to the walls facing into it, hold junction_dead_end_hold s, then scan
-        its left and right side walls (Pose-mode body yaw, or spins without it). Then drive
-        one cell into the rightmost way that doesn't end in a dead end (rightmost seen from
-        the way in), and explore on. Returns the list of actions for after_junction_tick."""
+        """After scanning every adjacent unexplored cell from the junction cell (user
+        2026-11-21): candidates queued (stairs / curtains, from this scan or earlier dead
+        ends) -> check them, nearest first (start_queue; step() drives), and explore on
+        from there. None -> drive one cell into the nearest way that leads to an unexplored
+        cell and isn't a dead end, and explore on. Each way is traced on the map
+        (scene_cells.trace_way): one that ends in a dead end is blacklisted, not visited.
+        Possible curtains queued on one of the junction's ways (user 2026-11-22): while
+        another way is open, they're held back (a Deferral with candidates) and that way is
+        explored fully first (it most likely leads to a room); then they're checked.
+        Returns the list of actions for after_junction_tick."""
         cells, cell = rec.get('cells'), rec['cell']
-        if cells is None:
-            self.get_logger().warn('/scene/junction has no grid (old scene_trigger?): no '
-                                   'dead-end check, exploring on')
-            return []
-        grid = self.grid_now()
+        for st in (self.junction or {}).get('steps') or []:
+            if st.get('scan') and st['cell'] in self.blocked_cells:
+                self.mark_explored(st['cell'], 'object seen in the junction scan')
+        grid = self.grid_now() if cells is not None else None
         if grid is None:
+            if self.start_queue(f'junction {list(cell)} scanned'):
+                return []
+            if cells is None:
+                self.get_logger().warn('/scene/junction has no grid (old scene_trigger?): '
+                                       'exploring on')
             return []
         hw = rec['half_width']
+        curtains = self.curtains_at_junction(cells, cell)
+        cdirs = {d for _, d in curtains} | {d for _, d in self.curtains_at_junction(
+            cells, cell, cands=self.deferred_candidates())}   # held back while exploring
 
         def openings(c, d):
             return opening(grid, cells, c, d, half_width=hw)
 
-        came = (cell[0] - rec['from_cell'][0], cell[1] - rec['from_cell'][1])
-        entry = cells.heading(came) if came in DIRECTIONS.values() else None
-        traces = []
+        pose = self.robot_pose()
+        xy, yaw = pose if pose is not None else (cells.centre(cell), 0.0)
+        ways = []
         for name, heading in rec['paths']:
             d = DIRECTIONS.get(name)
             if d is None:
                 continue
-            t = trace_way(openings, cell, d, int(self.cfg['junction_trace_cells']))
-            traces.append((name, d, heading, t))
-            self.get_logger().info(
-                f'junction {list(cell)} way {name}: {t["kind"].replace("_", " ")} '
-                f'{"at" if t["kind"] == "dead_end" else "after"} cell {list(t["cell"])} '
-                f'({t["length"]} cells)')
-        back = [x for x in traces
-                if self.back_to_start(cells.centre((cell[0] + x[1][0], cell[1] + x[1][1])))
-                or (x[3]['kind'] == 'dead_end' and self.back_to_start(cells.centre(x[3]['cell'])))]
-        for name, *_ in back:
-            self.get_logger().info(f'junction {list(cell)} way {name}: back to the start cell; '
-                                   'not followed')
-        traces = [x for x in traces if x not in back]
-        for x in [x for x in traces if x[1] in (rec.get('skip_dirs') or [])]:
-            self.get_logger().info(f'junction {list(cell)} way {x[0]}: a held curtain; '
-                                   'crossed after the other ways')
-            traces.remove(x)
-        todo = []
-        dead = sorted((x for x in traces if x[3]['kind'] == 'dead_end'),
-                      key=lambda x: x[3]['length'])
-        for name, d, heading, t in dead:
-            before, into = t['before'], t['dir']
-            self.blacklist.append(cells.centre(t['cell']))     # never a goal into it
-            self.dead_end_cells.add(self.cells.cell(cells.centre(t['cell'])))   # nor in it
-            group = f'dead end {list(t["cell"])}'
-            face = cells.heading(into)
-            hold = {'do': 'hold', 's': float(self.cfg['junction_dead_end_hold']),
-                    'group': group, 'name': f'{group}: facing in', 'view': 'centre'}
-            # then its side walls, left first (Pose mode if available, else spins),
-            # like a DEAD_END from /scene/trigger (user 2026-11-20: no Pose looks here)
-            look = {'do': 'look', 'group': group, 'name': f'{group}: side walls',
-                    'steps': [{'name': f'{group} {k} wall', 'point': xy, 'facing': face,
-                               'view': k, 'hold': self.cfg['dead_end_side_hold'],
-                               'short': True}
-                              for k, xy in side_walls(cells, t['cell'], into).items()]}
-            dead_end_scene([hold] + look['steps'], t['cell'], cells.centre(t['cell']))
-            todo += [
-                {'do': 'goto', 'xy': cells.centre(before), 'yaw': face, 'group': group,
-                 'name': f'way {name}: to cell {list(before)}, before dead end '
-                         f'{list(t["cell"])}'},
-                {'do': 'align', 'heading': face, 'group': group, 'tries': 0,
-                 'name': f'{group}: squaring up facing in'},
-                hold, look]
-        rest = [x for x in traces if x[3]['kind'] != 'dead_end']
-        if rest:
-            ref = entry if entry is not None else rest[0][2]
-            name, d, heading, t = min(rest, key=lambda x: wrap(x[2] - ref))   # most to the right
             nxt = (cell[0] + d[0], cell[1] + d[1])
-            todo.append({'do': 'goto', 'xy': cells.centre(nxt), 'yaw': heading,
-                         'group': 'rightmost', 'name': f'rightmost way {name}: to cell '
-                                                       f'{list(nxt)}'})
-        self.get_logger().info(
-            f'junction {list(cell)}: '
-            + (f'{len(dead)} way(s) end in a dead end, visiting first; ' if dead else
-               'no dead end; ')
-            + (f'then the rightmost way {name}' if rest else 'no other way: exploring on'))
-        return todo
+            centre = cells.centre(nxt)
+            t = trace_way(openings, cell, d, int(self.cfg['junction_trace_cells']))
+            why = None
+            if self.back_to_start(centre):
+                why = 'back to the start cell'
+            elif d in (rec.get('skip_dirs') or []):
+                why = 'a held curtain'
+            elif d in cdirs:
+                why = 'a possible curtain (checked after the other ways)'
+            elif self.cells.cell(centre) in self.visited:
+                why = 'visited already'
+            elif self.cells.cell(centre) in self.explored_cells | set(self.blocked_cells):
+                why = 'an object room'
+            elif t['kind'] == 'dead_end':
+                # Not blacklisted here (user 2026-11-22): the adjacent one was just viewed
+                # by this scan, so it waits for scene understanding; one further down is
+                # viewed when the robot faces it from the cell before (/scene/trigger).
+                dc = self.cells.cell(cells.centre(t['cell']))
+                if tuple(t['cell']) == nxt and dc in self.scanned_cells:
+                    self.hold_dead_end(dc, cells.centre(t['cell']), heading,
+                                       f'junction {list(cell)} way {name}: dead end '
+                                       f'{list(t["cell"])}', captured=True)
+                why = f'a dead end at cell {list(t["cell"])}'
+            if why:
+                self.get_logger().info(f'junction {list(cell)} way {name}: {why}; not taken')
+                continue
+            dist = math.hypot(centre[0] - xy[0], centre[1] - xy[1])
+            ways.append((dist, abs(wrap(heading - yaw)), name, nxt, centre, heading, d))
+        for c, _ in curtains:                        # this junction decides: not again
+            c['side_done'] = True
+        if curtains and ways:
+            held = [c for c, _ in curtains]
+            for c in held:
+                self.cand_queue.remove(c)
+            others = [w[6] for w in ways]
+            self.defers.append(Deferral(None, tuple(cell), cells, others, candidates=held))
+            self.branch_cache = None
+            self.get_logger().info(
+                f'junction {list(cell)}: possible curtain(s) {[c["id"] for c in held]} on '
+                f'way(s) {sorted(cdirs)}; exploring the other way(s) {others} fully first '
+                '(likely a room), then checking them')
+        if self.start_queue(f'junction {list(cell)} scanned'):
+            return []
+        if not ways:
+            self.get_logger().info(f'junction {list(cell)}: no unexplored way to take; '
+                                   'exploring on')
+            return []
+        _, _, name, nxt, centre, heading, _ = min(ways)
+        self.get_logger().info(f'junction {list(cell)}: leaving by the nearest unexplored way '
+                               f'{name} (cell {list(nxt)})')
+        return [{'do': 'goto', 'xy': centre, 'yaw': heading, 'group': 'leave',
+                 'name': f'nearest unexplored way {name}: to cell {list(nxt)}'}]
+
+    def curtains_at_junction(self, cells, cell, reach=1.6, max_off=math.radians(35),
+                             cands=None):
+        """Possible curtains (default: queued, not held back before) on one of junction
+        `cell`'s ways: within `reach` cells of its centre and within `max_off` of a way's
+        heading. [(candidate, (di, dj))]."""
+        cx, cy = cells.centre(cell)
+        out = []
+        for c in (self.cand_queue if cands is None else cands):
+            if c['kind'] != 'curtain' or cands is None and c.get('side_done'):
+                continue
+            tx, ty = c['target']
+            if math.hypot(tx - cx, ty - cy) > reach * cells.size:
+                continue
+            b = math.atan2(ty - cy, tx - cx)
+            d = min(DIRECTIONS.values(), key=lambda d: abs(wrap(cells.heading(d) - b)))
+            if abs(wrap(cells.heading(d) - b)) <= max_off:
+                out.append((c, d))
+        return out
 
     def after_junction_tick(self, j, now):
         """Run the junction follow-up's first action: goto (Nav2), align (spin), hold, look
@@ -2665,8 +3284,10 @@ class Explorer(Node):
         # The lidar never saw behind the start pose: that patch reads as a frontier, but it
         # is the start cell's back wall (run 2026-11-20 01:28: goal (-0.73, 0.44), +67 deg).
         return [f for f in fs if not self.back_to_start(f.goal)
+                and self.in_grid(f.goal)
                 and not self.in_object(f.goal)
-                and self.cells.cell(f.goal) not in self.dead_end_cells]
+                and not self.no_go_cell(self.cells.cell(f.goal))
+                and self.cells.cell(f.goal) not in self.explored_cells]
 
     def in_reach(self, frontiers, xy):
         off = self.cfg['goal_max_offset']
@@ -2676,11 +3297,20 @@ class Explorer(Node):
     def recover_or_finish(self, grid, xy, why):
         """Goals keep failing: retry while open frontiers remain, else NO_EXIT."""
         open_ = self.in_reach(self.find(grid, xy, self.blacklist), xy)
+        if (not open_ or self.recoveries >= self.cfg['max_recoveries']) and \
+                self.start_queue(f'{why}; nothing else to explore', final=True):
+            self.failed, self.failures, self.empty_replans = [], 0, 0
+            return
         if not open_:
+            if self.go_to_exit(f'{why}; nothing else reachable to explore'):
+                return
             self.finish('NO_EXIT', f'{why}; no open frontier left')
             self.stop_robot()
             return
         if self.recoveries >= self.cfg['max_recoveries']:
+            if self.go_to_exit(f'{why}; {len(open_)} frontiers unreachable after '
+                               f'{self.recoveries} recoveries'):
+                return
             self.finish('NO_EXIT', f'{why}; {len(open_)} frontiers still open but unreachable '
                         f'after {self.recoveries} recoveries')
             self.stop_robot()
@@ -2775,6 +3405,8 @@ class Explorer(Node):
         self.set_state('CREEPING', f'{free * 100:.0f} cm straight ahead, no steering')
 
     def creep_tick(self):
+        if self.state == 'TO_EXIT' and self.launch is not None and self.launch['creep']:
+            return self.launch_creep_tick()
         tc = self.turn_creep
         if tc is not None and self.state != 'TURNING':
             self.turn_creep = None                  # taken over (STAIRS) or finished
@@ -2823,8 +3455,8 @@ class Explorer(Node):
 
     def on_spin_accepted(self, future):
         handle = future.result()
-        if self.state not in ('SCANNING', 'TURNING', 'LOOKING', 'FACING_QR',
-                              'JUNCTION', 'DEAD_END'):   # stopped meanwhile
+        if self.state not in ('SCANNING', 'TURNING', 'FACING_QR',
+                              'JUNCTION', 'DEAD_END', 'TO_EXIT'):   # stopped meanwhile
             if handle.accepted:
                 handle.cancel_goal_async()
             self.spin_busy = False
@@ -2907,14 +3539,351 @@ class Explorer(Node):
         return f > 0 and self.exit.open_nearby >= f * self.exit.open_radius
 
     def out_of_maze(self, pose):
-        """ExitDetector on the current map; finishes EXITED (and returns True) once out."""
+        """ExitDetector on the current map; finishes EXITED (and returns True) once out.
+        With the maze size known, only once the robot itself is more than exit_cell_margin m
+        outside the grid (a fallback: it is meant to stay in): in the launch cell next to
+        the exit the open floor outside is within reach too."""
         xy = pose[0]
         if not self.exit.update(self.grid_now(), xy, time.monotonic()):
+            return False
+        if self.grid_known() and self.in_grid(xy, self.cfg['exit_cell_margin']):
             return False
         self.finish('EXITED', f'open space around ({xy[0]:.2f}, {xy[1]:.2f}), '
                     f'{self.exit.open_nearby:.2f} m of open floor next to it'
                     + (f' (ended {self.state})' if self.state != 'EXPLORING' else ''))
         return True
+
+    # ------------------------------------------------------------------ exit / launch cell
+    def grid_known(self):
+        return self.cfg['maze_cols'] > 0 and self.cfg['maze_rows'] > 0
+
+    def extents(self):
+        """j0 of the maze grid: [0] to the left, [1 - rows] to the right, both while the
+        side isn't known yet (maze_side auto)."""
+        right = 1 - self.cfg['maze_rows']
+        return [0] if self.maze_sign == 1 else [right] if self.maze_sign == -1 else [0, right]
+
+    def in_grid(self, xy, margin=0.0):
+        """xy inside the maze_cols x maze_rows grid (+ margin m); True with the size unknown."""
+        return any(exit_cell(self.cells, xy, self.cfg['maze_cols'], self.cfg['maze_rows'],
+                             margin, j0) is None for j0 in self.extents())
+
+    def maze_sides(self):
+        """Every outer side of the grid that could be the exit (both candidate grids while
+        the side is unknown). Not the start cell's: the start area is never the final cell
+        (booklet), and its walls are the ones the robot never maps (too close at the start;
+        beams passing just over them free the floor beyond: sim 2026-11-22, every run)."""
+        out = []
+        for j0 in self.extents():
+            out += [s_ for s_ in boundary_sides(self.cfg['maze_cols'], self.cfg['maze_rows'],
+                                                j0) if s_ not in out and s_[0] != (0, 0)]
+        return out
+
+    def decide_side(self, xy):
+        """maze_side auto: the first cell off the start row the robot stands well inside
+        (>= 0.2 m from its edges) shows which side of the start the maze lies on."""
+        if self.maze_sign is not None or not self.grid_known():
+            return
+        cell = self.cells.cell(xy)
+        if cell[1] == 0 or abs(cell[1]) >= self.cfg['maze_rows'] or \
+                not 0 <= cell[0] < self.cfg['maze_cols'] or \
+                self.cells.depth_inside(xy, cell) < 0.2:
+            return
+        self.maze_sign = 1 if cell[1] > 0 else -1
+        self.get_logger().info(f'maze lies to the {"left" if cell[1] > 0 else "right"} of '
+                               f'the start (robot in cell {list(cell)})')
+
+    def fit_cells(self, grid):
+        """Refit the cell grid to the walls on the map (every grid_fit_period s); changes
+        self.cells in place, so everything holding it follows. Cell indices stay the same
+        (at most grid_fit_max_shift m and grid_fit_max_yaw from the start-pose grid)."""
+        cfg = self.cfg
+        now = time.monotonic()
+        if not (cfg['grid_fit'] and self.grid_known()) or grid is None or \
+                now - self.grid_fit_at < cfg['grid_fit_period']:
+            return
+        self.grid_fit_at = now
+        rows, cols_ = np.nonzero(grid.data >= OCCUPIED_MIN)
+        if len(rows) < cfg['grid_fit_min_points']:
+            return
+        xy = np.c_[grid.origin[0] + (cols_ + 0.5) * grid.resolution,
+                   grid.origin[1] + (rows + 0.5) * grid.resolution]
+        c0, s0 = math.cos(self.cells.yaw), math.sin(self.cells.yaw)
+        d = xy - np.asarray(self.cells.origin)
+        u = (c0 * d[:, 0] + s0 * d[:, 1]) / self.cells.size
+        v = (-s0 * d[:, 0] + c0 * d[:, 1]) / self.cells.size
+        m = 0.4 / self.cells.size                   # walls on the outline + a little
+        j_lo, j_hi = min(self.extents()), max(self.extents()) + cfg['maze_rows'] - 1
+        near = (u >= -0.5 - m) & (u <= cfg['maze_cols'] - 0.5 + m) & \
+            (v >= j_lo - 0.5 - m) & (v <= j_hi + 0.5 + m)
+        if near.sum() < cfg['grid_fit_min_points']:
+            return
+        res = fit_grid(xy[near], self.cells0, max_yaw=cfg['grid_fit_max_yaw'])
+        if res is None or res[1] < cfg['grid_fit_min_score']:
+            return
+        fit, score = res
+        shift = math.hypot(fit.origin[0] - self.cells0.origin[0],
+                           fit.origin[1] - self.cells0.origin[1])
+        if shift > cfg['grid_fit_max_shift']:
+            return
+        moved = math.hypot(fit.origin[0] - self.cells.origin[0],
+                           fit.origin[1] - self.cells.origin[1])
+        turned = abs(wrap(fit.yaw - self.cells.yaw))
+        if moved < 0.015 and turned < math.radians(0.3):
+            return
+        self.cells.origin, self.cells.yaw = fit.origin, fit.yaw
+        self.get_logger().info(
+            f'grid fitted to the walls ({int(near.sum())} px, score {score:.2f}): yaw '
+            f'{math.degrees(fit.yaw):+.1f} deg, cell (0, 0) at ({fit.origin[0]:+.2f}, '
+            f'{fit.origin[1]:+.2f}); moved {moved * 100:.0f} cm, turned '
+            f'{math.degrees(turned):.1f} deg')
+        self.grid_pub.publish(String(data=json.dumps(
+            {'size': self.cells.size, 'origin': [round(v_, 4) for v_ in fit.origin],
+             'yaw': round(fit.yaw, 5), 'score': round(score, 3), 'frame': 'map'})))
+        if self.launch is not None and self.exit_side is not None:   # follow it
+            cell, dd = self.exit_side
+            self.launch['xy'], self.launch['yaw'] = (self.cells.centre(cell),
+                                                     self.cells.heading(dd))
+
+    def update_exit(self, grid):
+        """Count, every replan, which outer sides of the grid read open (side_open). The exit
+        is only chosen once the maze is explored (choose_exit): early on, the start cell's
+        walls are too close for the lidar's wall band, and beams passing just over them mark
+        the floor beyond free, so its sides read open (sim 2026-11-22: every run took cell
+        [0, 0]'s side as the exit after 3 replans)."""
+        if self.exit_side is not None or not self.grid_known() or grid is None:
+            return
+        for side in self.maze_sides():
+            if self.side_open(grid, side):
+                self.exit_open[side] = self.exit_open.get(side, 0) + 1
+
+    def choose_exit(self, grid):
+        """Maze explored: the exit is an outer side open on the final map that also read
+        open on >= exit_confirm replans (the most often open if several). None = no exit."""
+        if self.exit_side is not None:
+            return self.exit_side
+        if not self.grid_known() or grid is None:
+            return None
+        cands = [side for side in self.maze_sides()
+                 if self.exit_open.get(side, 0) >= self.cfg['exit_confirm']
+                 and self.side_open(grid, side)]
+        if not cands:
+            self.get_logger().warn('no open outer side on the map: no exit found')
+            return None
+        side = max(cands, key=lambda c: self.exit_open[c])
+        if len(cands) > 1:
+            self.get_logger().warn('several outer sides open: ' + ', '.join(
+                f'{list(c)} -> {list(d)} ({self.exit_open[(c, d)]}x)' for c, d in cands)
+                + '; taking the most often open')
+        self.exit_side = side
+        self.publish_launch('found')
+        cell, d = side
+        self.get_logger().info(f'exit: cell {list(cell)} is open towards {list(d)} '
+                               f'({self.exit_open[side]} replans); launch cell {list(cell)}')
+        return side
+
+    def side_open(self, grid, side, shifts=(0.0, 0.12, -0.12)):
+        """The outer side reads open, with free floor seen past it, at its middle or slid
+        0.12 m along it (what fit_cells leaves of a misplaced start). Not further: the
+        0.35 m strip would reach past the cell's corner, where an unmapped wall stretch
+        reads open (sim 2026-11-22: 0.3 m slides found the start cell's)."""
+        cell, d = side
+        c, s = math.cos(self.cells.yaw), math.sin(self.cells.yaw)
+        along = (c * -d[1] - s * d[0], s * -d[1] + c * d[0])   # map direction along the side
+        for k in shifts:
+            cells = dataclasses.replace(self.cells, origin=(self.cells.origin[0] + k * along[0],
+                                                            self.cells.origin[1] + k * along[1]))
+            if opening(grid, cells, cell, d) == 'open' and self.seen_beyond(grid, side, cells):
+                return True
+        return False
+
+    def seen_beyond(self, grid, side, cells=None, depth=0.45, spread=0.2):
+        """Free floor seen `depth` m past the side (2 of 3 points `spread` m apart). A grid
+        a few degrees off the real cells (hand-placed start) puts its outer line inside the
+        maze, where the strip reads open; past it is then the real wall or unseen space."""
+        cells = cells or self.cells
+        cell, d = side
+        n = 0
+        for s in (-spread, 0.0, spread):
+            u = cell[0] + d[0] * (0.5 + depth / cells.size) + d[1] * s / cells.size
+            v = cell[1] + d[1] * (0.5 + depth / cells.size) + d[0] * s / cells.size
+            c = grid.cell(cells.world((u, v)))
+            n += bool(grid.contains(c) and 0 <= grid.data[c[1], c[0]] <= FREE_MAX)
+        return n >= 2
+
+    def publish_launch(self, state, xy=None):
+        """/maze/launch_cell (latched JSON): 'found' when the exit is seen, 'at' when parked."""
+        cell, d = self.exit_side
+        cx, cy = self.cells.centre(cell)
+        msg = {'state': state, 'launch_cell': list(cell),
+               'exit_cell': [cell[0] + d[0], cell[1] + d[1]], 'exit_direction': list(d),
+               'centre': [round(cx, 3), round(cy, 3)],
+               'heading': round(self.cells.heading(d), 3), 'frame': 'map',
+               'maze_side': {1: 'left', -1: 'right'}.get(self.maze_sign, 'unknown')}
+        if xy is not None:
+            msg['robot'] = [round(xy[0], 3), round(xy[1], 3)]
+        self.launch_pub.publish(String(data=json.dumps(msg)))
+
+    def go_to_exit(self, why):
+        """Everything inside explored: drive to the launch cell (the one inside the exit),
+        facing out (TO_EXIT). False if no exit was found."""
+        if self.choose_exit(self.grid_now()) is None:
+            return False
+        cell, d = self.exit_side
+        self.launch = {'cell': cell, 'xy': self.cells.centre(cell),
+                       'yaw': self.cells.heading(d), 'tries': 0, 'handle': None,
+                       'result': None, 'sent_at': 0.0, 'turns': 0, 'centred': False,
+                       'creep': None}
+        if self.goal_handle is not None:
+            self.goal_handle.cancel_goal_async()
+            self.goal_handle = None
+        self.current, self.goal_result = None, None
+        self.set_state('TO_EXIT', f'{why}: to launch cell {list(cell)}, facing the exit')
+        self.send_launch_goal()
+        return True
+
+    def send_launch_goal(self):
+        L = self.launch
+        L['tries'] += 1
+        L['result'], L['handle'], L['sent_at'] = None, None, time.monotonic()
+        msg = PoseStamped()
+        msg.header.frame_id = 'map'
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.position.x, msg.pose.position.y = L['xy']
+        msg.pose.orientation.z = math.sin(L['yaw'] / 2)
+        msg.pose.orientation.w = math.cos(L['yaw'] / 2)
+        self.goal_pub.publish(msg)
+        self.get_logger().info(f'launch cell {list(L["cell"])}: goal ({L["xy"][0]:.2f}, '
+                               f'{L["xy"][1]:.2f}) facing {math.degrees(L["yaw"]):.0f} deg '
+                               f'(try {L["tries"]})')
+        if not self.cfg['go']:
+            return
+        future = self.nav.send_goal_async(NavigateToPose.Goal(pose=msg))
+        future.add_done_callback(lambda fut, L=L: self.on_launch_accepted(fut, L))
+
+    def on_launch_accepted(self, future, L):
+        handle = future.result()
+        if L is not self.launch or self.state != 'TO_EXIT':
+            if handle.accepted:
+                handle.cancel_goal_async()
+            return
+        if not handle.accepted:
+            L['result'] = GoalStatus.STATUS_ABORTED
+            return
+        L['handle'] = handle
+        handle.get_result_async().add_done_callback(
+            lambda fut, h=handle, L=L: self.on_launch_result(fut, h, L))
+
+    def on_launch_result(self, future, handle, L):
+        if L is self.launch and L['handle'] is handle:
+            L['result'] = future.result().status
+
+    def launch_tick(self, pose):
+        """TO_EXIT: park once the goal is reached within launch_tolerance; else try again,
+        up to launch_retries goals; then park anyway if inside the launch cell, else STOPPED."""
+        xy, yaw = pose
+        L = self.launch
+        if not self.cfg['go']:
+            return self.park(xy, yaw, 'go:=false, not driven')
+        if self.spin_busy or L['creep']:
+            return                                  # turning / creeping to the centre
+        if L['result'] is None:
+            if time.monotonic() - L['sent_at'] <= self.cfg['goal_max_time']:
+                return
+            self.get_logger().warn(f'launch cell goal still running after '
+                                   f'{self.cfg["goal_max_time"]:.0f} s; cancelling')
+            if L['handle'] is not None:
+                L['handle'].cancel_goal_async()
+            L['result'] = GoalStatus.STATUS_ABORTED
+        off = math.hypot(xy[0] - L['xy'][0], xy[1] - L['xy'][1])
+        if L['result'] == GoalStatus.STATUS_SUCCEEDED and off <= self.cfg['launch_tolerance']:
+            if not L['centred']:
+                L['centred'] = True
+                if self.creep_to_centre(xy, yaw):
+                    return
+            if L['turns'] < 2 and self.face_exit(xy, yaw):
+                return
+            return self.park(xy, yaw)
+        if L['tries'] < self.cfg['launch_retries']:
+            self.get_logger().warn(f'launch cell goal ended (status {L["result"]}) {off:.2f} m '
+                                   'from the cell centre; sending it again')
+            return self.send_launch_goal()
+        if self.cells.cell(xy) == L['cell']:
+            return self.park(xy, yaw, f'{off:.2f} m off centre after {L["tries"]} goals')
+        self.finish('STOPPED', f'could not reach launch cell {list(L["cell"])} after '
+                    f'{L["tries"]} goals ({off:.2f} m from its centre)')
+        self.stop_robot()
+
+    def creep_to_centre(self, xy, yaw):
+        """Nav2 stops up to xy_goal_tolerance (0.2 m) short of the cell centre, where a turn
+        on the spot hits the walls (sim 2026-11-22: blocked both ways 0.2 m off). Creep
+        straight ahead (no steering, never back) to the point on the heading nearest the
+        centre, as far as the footprint stays creep_margin m clear. False = nothing to do."""
+        L = self.launch
+        c, s = math.cos(yaw), math.sin(yaw)
+        d = (L['xy'][0] - xy[0]) * c + (L['xy'][1] - xy[1]) * s
+        grid = self.grid_now()
+        if grid is not None and d > 0:
+            d = free_distance_ahead(grid, xy, yaw, self.box, d, self.cfg['creep_margin'])
+        if d < 0.03:
+            return False
+        L['creep'] = {'from': xy, 'target': d,
+                      'until': time.monotonic() + d / self.cfg['creep_speed'] + 3.0}
+        self.get_logger().info(f'launch cell: creeping {d * 100:.0f} cm ahead to the centre')
+        return True
+
+    def launch_creep_tick(self):
+        """10 Hz while creeping to the launch cell's centre (creep_tick's timer)."""
+        cr = self.launch['creep']
+        pose = self.robot_pose()
+        moved = 0.0 if pose is None else math.hypot(pose[0][0] - cr['from'][0],
+                                                    pose[0][1] - cr['from'][1])
+        if moved < cr['target'] and time.monotonic() <= cr['until']:
+            msg = Twist()
+            msg.linear.x = float(self.cfg['creep_speed'])
+            self.cmd_pub.publish(msg)
+            return
+        self.stop_robot()
+        self.launch['creep'] = None
+        self.get_logger().info(f'launch cell: crept {moved * 100:.0f} cm')
+
+    def face_exit(self, xy, yaw):
+        """Turn on the spot to face the exit if more than launch_yaw_tolerance off: the short
+        way if the footprint clears the walls, else the long way. False = facing it already,
+        or no clear turn either way (park as it is)."""
+        L = self.launch
+        want = wrap(L['yaw'] - yaw)
+        if abs(want) <= self.cfg['launch_yaw_tolerance']:
+            return False
+        L['turns'] += 1
+        sign = 1.0 if want > 0 else -1.0
+        other = 2 * math.pi - abs(want)
+        grid, margin = self.grid_now(), self.cfg['turn_margin']
+        if grid is None or max_turn(grid, xy, yaw, self.box, sign, abs(want), margin,
+                                    pivot=self.pivot) >= abs(want) - 1e-6:
+            self.send_spin(want, 'launch cell: face the exit')
+            return True
+        if max_turn(grid, xy, yaw, self.box, -sign, other, margin,
+                    pivot=self.pivot) >= other - 1e-6:
+            self.send_spin(-sign * other, 'launch cell: face the exit (the long way)')
+            return True
+        self.get_logger().warn(f'launch cell: {math.degrees(want):+.0f} deg turn to face the '
+                               'exit blocked by walls both ways; parking as it is')
+        return False
+
+    def park(self, xy, yaw, note=None):
+        """Hold still, standing, in the launch cell: the end of the run (AT_EXIT)."""
+        L = self.launch
+        L['handle'] = None
+        off = math.hypot(xy[0] - L['xy'][0], xy[1] - L['xy'][1])
+        turn = math.degrees(abs(wrap(yaw - L['yaw'])))
+        self.stop_robot()
+        self.publish_launch('at', xy)
+        cell, d = self.exit_side
+        self.finish('AT_EXIT', f'in launch cell {list(cell)}: {off:.2f} m from its centre, '
+                    f'{turn:.0f} deg off facing the exit (exit cell '
+                    f'{[cell[0] + d[0], cell[1] + d[1]]}); standing still for the drone'
+                    + (f' ({note})' if note else ''))
 
     def finish(self, state, why):
         if self.state == 'CREEPING' or self.turn_creep is not None:
@@ -2927,6 +3896,9 @@ class Explorer(Node):
         if self.goal_handle is not None:
             self.goal_handle.cancel_goal_async()
             self.goal_handle = None
+        if self.launch is not None and self.launch['handle'] is not None:
+            self.launch['handle'].cancel_goal_async()
+            self.launch['handle'] = None
         self.current = None
         self.junction = None
         self.cancel_junction_goal()
@@ -2962,7 +3934,7 @@ def main():
         while not stop.is_set() and rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.05)
     finally:
-        if node.state not in ('EXITED', 'NO_EXIT', 'STOPPED') and rclpy.ok():
+        if node.state not in END_STATES and rclpy.ok():
             node.finish('STOPPED', 'shutdown')
             end = time.monotonic() + 0.3     # let the cancel requests and status go out
             while time.monotonic() < end:

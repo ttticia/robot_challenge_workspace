@@ -16,6 +16,11 @@
   "axis": "y",
   "above": 2.0
  },
+ "grid": {
+  "cols": 2,
+  "rows": 3,
+  "cell_size": 1.0
+ },
  "solids": [
   {
    "kind": "tile",

@@ -14,7 +14,7 @@ Detection is in maze_nav/stairs.py (risers in the depth image) and maze_nav/stai
      sees the floor only from ~1.4 m ahead of base_link: close up the camera decides.
 
   1. LOOKING (status IDLE): runs the detector at `rate` Hz on the newest depth frame while
-     maze_explorer is EXPLORING, TURNING, LOOKING or FACING_QR (`trigger_states`). Each hit
+     maze_explorer is EXPLORING, TURNING or FACING_QR (`trigger_states`). Each hit
      becomes a stair estimate in odom. Stairs count as found once `vote_need` of the last `vote_window`
      frames agree (StairTracker).
   2. Found within `trigger_distance` m, with the robot IN FRONT of them (within
@@ -78,7 +78,15 @@ Detection is in maze_nav/stairs.py (risers in the depth image) and maze_nav/stai
   TERRAIN (`terrain_topic`, `local_floor_topic`, `terrain_rate` Hz): /maze/terrain (JSON:
      level even / rough / obstacle / drop / unknown of the strip 0.25-1.2 m ahead, and
      on_rough for the ground under the robot) and /maze/local_floor_z (the floor under the
-     feet, odom z; nothing while lying down).
+     feet, odom z, MEASURED: lidar + depth floor maps; nothing while lying down or not seen
+     yet). /maze/floor_est (`floor_est_topic`, JSON {"z", "source"}): that floor, or between
+     measurements the last one carried along by base_link's height while standing
+     (FloorTracker; 'frozen' while lying / standing up / in a Pose look). cmd_vel_bridge's
+     posture check reads only local_floor_z, never floor_est (it is built from base_z).
+  START CALIBRATION (`start_calibration`, `calib_topic`): standing still on the start cell
+     before /maze/start, the measured standing height and the depth camera's mount pitch /
+     roll (from the start floor's slope) replace the defaults; /maze/start_calibration
+     (latched JSON) says what was measured and applied.
 
 Topics
   in : depth_topic (sensor_msgs/Image, 16UC1 mm or 32FC1 m), depth_camera_info_topic,
@@ -121,6 +129,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from maze_nav import stairs_lidar
 from maze_nav.stair_check import CheckParams, StairCheck
+from touble_shooting.live_params import attach as attach_live_params
 from maze_nav.core import Grid, cloud_xyz
 from maze_nav.stairs import (Approach, StairParams, StairTracker, WallCheck, camera_from_link,
                              detect_stairs, in_front, level_transform, mount_disagreement,
@@ -152,7 +161,7 @@ class StairDetector(Node):
         p('camera_link_frame', 'camera_link')  # camera pose from here + fixed optical rotation;
         #                                        '' = the depth image's own frame from TF
         p('status_topic', '/maze/status')      # '' = no explorer handshake (drives at once)
-        p('trigger_states', ['EXPLORING', 'TURNING', 'LOOKING', 'FACING_QR'])
+        p('trigger_states', ['EXPLORING', 'TURNING', 'FACING_QR'])
         p('cmd_topic', 'nav_cmd_vel')          # through cmd_vel_bridge
         p('drive', True)                       # false = detect and log only
         p('rate', 5.0)                         # Hz detection
@@ -216,6 +225,50 @@ class StairDetector(Node):
         p('terrain_topic', '/maze/terrain')
         p('local_floor_topic', '/maze/local_floor_z')
         p('terrain_rate', 2.0)
+        # Depth floor map (stairs_lidar.floor_under): the lidar sees the floor only from ~1.4 m
+        # ahead (~1.75 m onto a lower floor), so after a turn into a cell it never knows the
+        # floor under the feet. The depth camera sees it from ~0.6 m: every depth_floor_period
+        # s one depth frame (every depth_floor_stride-th pixel, up to depth_floor_max_range m)
+        # goes into a separate height map that only floor_under reads (/maze/local_floor_z,
+        # terrain reference, descending stairs' floor) - not the lidar map: detect_down relies
+        # on the lidar's unseen strip before a drop. Runs in every state (not only looking).
+        p('depth_floor', True)
+        p('depth_floor_period', 0.3)
+        p('depth_floor_stride', 8)
+        p('depth_floor_max_range', 2.0)
+        # Tracked floor (stairs_lidar.FloorTracker) on floor_est_topic (String JSON {"z",
+        # "source": measured / tracked / frozen}, terrain_rate Hz, not latched; nothing while
+        # unknown): the last measured floor under the feet,
+        # carried along by base_link's height change while standing (lie_status_topic /
+        # pose_status_topic: cmd_vel_bridge's commanded state), until floor_track_max_age s /
+        # floor_track_max_travel m / floor_track_max_rise m from the last measurement.
+        # /maze/local_floor_z stays measured only: cmd_vel_bridge's posture check reads it.
+        # '' = off.
+        p('floor_est_topic', '/maze/floor_est')
+        p('lie_status_topic', '/maze/lie_status')
+        p('floor_track_max_age', 60.0)
+        p('floor_track_max_travel', 2.0)
+        p('floor_track_max_rise', 0.6)
+        # Gait bob (FloorTracker): base_z sampled at 10 Hz, median over floor_track_window s;
+        # the tracked floor moves only by steps >= floor_track_step held floor_track_step_hold s.
+        p('floor_track_window', 1.0)
+        p('floor_track_step', 0.04)
+        p('floor_track_step_hold', 0.5)
+        # Start-cell calibration (stairs_lidar.StartCalibration): the start cell's floor is
+        # the maze's main floor (raised floors are only the uneven-terrain cells). Once
+        # wall_scan has measured it (/maze/floor_z) and while the robot stands still before
+        # /maze/start (explorer STARTING / PAUSED), calib_time s of: base_z - floor ->
+        # standing_height for every floor search here (default 0.35), and the start floor's
+        # slope in the depth camera -> its mount pitch / roll corrected (both maps, stair
+        # detection). Values outside calib_min/max_height or calib_max_tilt_deg are not
+        # applied. Seeds the floor tracker with the start floor. Result once, latched JSON
+        # on calib_topic. Skipped (defaults kept, logged) if the run starts first.
+        p('start_calibration', True)
+        p('calib_time', 3.0)
+        p('calib_min_height', 0.28)
+        p('calib_max_height', 0.42)
+        p('calib_max_tilt_deg', 3.0)
+        p('calib_topic', '/maze/start_calibration')
         # Possible-stairs check (user 2026-11-20, stair_check.py): candidates also from single
         # frames, lidar, far / beside stairs and the explorer's looks; checked after them.
         p('check', True)
@@ -252,11 +305,17 @@ class StairDetector(Node):
         # s after the explorer leaves a look (its held curtain inspection goes first).
         p('curtain_status_topic', '/curtain/status')   # '' = don't wait for curtains
         p('curtain_grace', 2.0)
-        # Possible stairs seen in a JUNCTION look (user 2026-11-21) are held, not checked after
-        # the look: published on /stairs/candidate ({id, frame, edge, heading}); maze_explorer
-        # explores the junction's other ways first, then comes back and releases them on
-        # /maze/stairs_release ({id}). Stairs seen again near a held one join it.
+        # Possible stairs seen in a junction or dead-end look (look_states, user 2026-11-21)
+        # are held, not checked after the look: published on /stairs/candidate ({id, frame,
+        # edge, heading}); maze_explorer queues them, and after the junction scan goes to the
+        # nearest, faces it and releases it on /maze/stairs_release ({id}). Stairs seen again
+        # near a held one join it.
         p('junction_defer', True)
+        # User 2026-11-22: stairs are crossed only once every other way is explored. Stairs
+        # seen while exploring (possible or confirmed, even right in front) are held and
+        # published on /stairs/candidate too, never handed over at once; maze_explorer keeps
+        # them out of Nav2 and releases them last. false = the old immediate handover.
+        p('hold_while_exploring', True)
         p('stairs_release_topic', '/maze/stairs_release')
         g = lambda n: self.get_parameter(n).value  # noqa: E731
 
@@ -294,6 +353,13 @@ class StairDetector(Node):
         self.clouds = []                # PointCloud2 waiting for TF
         self.floor_z = None             # odom z of the floor from the lidar map
         self.lidar_scans = 0
+        self.dmap = stairs_lidar.HeightMap(stairs_lidar.LidarParams(
+            standing_height=float(g('standing_height')))) if g('depth_floor') else None
+        self.depth_floor_cfg = {n: g(n) for n in ('depth_floor_stride', 'depth_floor_max_range')}
+        self.depth_floor_new = False    # a depth frame the floor map hasn't had yet
+        self.depth_scans = 0
+        if self.dmap is not None:
+            self.create_timer(float(g('depth_floor_period')), self.add_depth_floor)
         self.idle_lidar_period = float(g('idle_lidar_period'))
         self.last_hmap_add = -1e9       # monotonic s of the last scan added to the height map
 
@@ -358,6 +424,8 @@ class StairDetector(Node):
         self.curtain_grace = float(g('curtain_grace'))
         self.look_left_at = -1e9        # monotonic s the explorer last left a look state
         self.junction_defer = bool(g('junction_defer'))
+        self.hold_exploring = bool(g('hold_while_exploring'))
+        self.released_ests = []          # stairs maze_explorer released: never held again
         self.held = {}                  # id -> (StairEstimate, what): held until released
         self.next_held_id = 1
         self.cand_pub = self.create_publisher(String, '/stairs/candidate', 10)
@@ -371,25 +439,78 @@ class StairDetector(Node):
         self.check = None               # StairCheck while CHECKING
         self.rejected = []              # (xy odom, monotonic time): checked, not stairs
         self.create_timer(0.2, self.check_tick)
-        self.terrain_pub = self.local_floor_pub = None
+        self.terrain_pub = self.local_floor_pub = self.floor_est_pub = None
         if self.hmap is not None and g('terrain_topic'):
             self.terrain_pub = self.create_publisher(String, g('terrain_topic'), 10)
         if self.hmap is not None and g('local_floor_topic'):
             self.local_floor_pub = self.create_publisher(Float32, g('local_floor_topic'), 10)
-        self.start_floor = None         # wall_scan's /maze/floor_z (start floor)
-        self.local_floor = stairs_lidar.LocalFloor()
-        self.lie_status = None          # cmd_vel_bridge /maze/lie_status: no floor while lying
-        if self.terrain_pub is not None or self.local_floor_pub is not None:
-            self.create_timer(1.0 / float(g('terrain_rate')), self.terrain_tick)
-            self.create_subscription(Float32, '/maze/floor_z',
-                                     lambda m: setattr(self, 'start_floor', float(m.data)),
-                                     LATCHED)
-            self.create_subscription(String, '/maze/lie_status',
+        self.floor_tracker = stairs_lidar.FloorTracker(
+            max_age=float(g('floor_track_max_age')),
+            max_travel=float(g('floor_track_max_travel')),
+            max_rise=float(g('floor_track_max_rise')),
+            window=float(g('floor_track_window')), step_min=float(g('floor_track_step')),
+            step_hold=float(g('floor_track_step_hold')))
+        self.lie_status = None          # cmd_vel_bridge /maze/lie_status
+        self.floor_est = (None, -1e9)   # (tracked floor, monotonic s) from terrain_tick
+        if g('lie_status_topic'):
+            self.create_subscription(String, g('lie_status_topic'),
                                      lambda m: setattr(self, 'lie_status', m.data), LATCHED)
+        if (self.hmap is not None or self.dmap is not None) and g('floor_est_topic'):
+            self.floor_est_pub = self.create_publisher(String, g('floor_est_topic'), 10)
+            self.create_timer(0.1, self.observe_z)    # base_z samples for the bob filter
+        self.start_floor = None         # wall_scan's /maze/floor_z: terrain before floor_under
+        if self.terrain_pub is not None or self.local_floor_pub is not None or \
+                self.floor_est_pub is not None:
+            self.create_timer(1.0 / float(g('terrain_rate')), self.terrain_tick)
+        self.create_subscription(Float32, '/maze/floor_z',
+                                 lambda m: setattr(self, 'start_floor', float(m.data)), LATCHED)
+        self.calib = stairs_lidar.StartCalibration(
+            duration=float(g('calib_time')), min_height=float(g('calib_min_height')),
+            max_height=float(g('calib_max_height')),
+            max_tilt_deg=float(g('calib_max_tilt_deg'))) if g('start_calibration') else None
+        self.calib_done = self.calib is None
+        self.depth_calib_new = False    # a depth frame calib_tick hasn't looked at yet
+        self.calib_pub = self.create_publisher(String, g('calib_topic'), LATCHED) \
+            if self.calib is not None and g('calib_topic') else None
+        if self.calib is not None:
+            self.create_timer(0.2, self.calib_tick)
         self.set_state('IDLE', 'looking for stairs' + (
             f' while {self.status_topic} is {"/".join(self.trigger_states)}'
             if self.status_topic else ' (no explorer handshake: drives on its own)')
             + ('' if self.cfg['drive'] else '; drive:=false, detect only'))
+        self.attach_live_params()
+
+    def attach_live_params(self):
+        """`ros2 param set /stair_detector <name> <value>` while running (touble_shooting).
+        cfg / wall_cfg / lidar_cfg entries apply at once; StairParams and the vote trackers
+        get setters. standing_height also feeds the lidar height map: startup only."""
+        def field(obj, attr, cast=float):
+            return lambda v: setattr(getattr(self, obj), attr, cast(v))
+        setters = {
+            'min_risers': field('params', 'min_risers', int),
+            'max_range': field('params', 'max_range'),
+            'infer_bottom': field('params', 'infer_bottom', bool),
+            'vote_window': field('tracker', 'window', int),
+            'vote_need': field('tracker', 'need', int),
+            'vote_pos_tol': field('tracker', 'pos_tol'),
+            'vote_nearer_need': field('tracker', 'nearer_need', int),
+            'vote_yaw_tol_deg': lambda v: (setattr(self.tracker, 'yaw_tol', math.radians(v)),
+                                           setattr(self.lidar_tracker, 'yaw_tol',
+                                                   math.radians(v))),
+            'lidar_vote_window': field('lidar_tracker', 'window', int),
+            'lidar_vote_need': field('lidar_tracker', 'need', int),
+            'lidar_vote_pos_tol': field('lidar_tracker', 'pos_tol'),
+            'floor_track_max_age': field('floor_tracker', 'max_age'),
+            'floor_track_max_travel': field('floor_tracker', 'max_travel'),
+            'floor_track_max_rise': field('floor_tracker', 'max_rise'),
+            'floor_track_window': field('floor_tracker', 'window'),
+            'floor_track_step': field('floor_tracker', 'step_min'),
+            'floor_track_step_hold': field('floor_tracker', 'step_hold'),
+        }
+        attach_live_params(self, cfgs=[self.cfg, self.wall_cfg, self.lidar_cfg,
+                                       self.depth_floor_cfg],
+                           setters=setters,
+                           locked=('drive', 'lidar_topic', 'map_frame'))
 
     # ------------------------------------------------------------------ inputs
     def set_state(self, state, why=''):
@@ -427,7 +548,80 @@ class StairDetector(Node):
         self.k = (msg.k[0], msg.k[4], msg.k[2], msg.k[5])
 
     def on_depth(self, msg):
-        self.depth, self.depth_new = msg, True
+        self.depth, self.depth_new, self.depth_floor_new = msg, True, True
+        self.depth_calib_new = True
+
+    # ------------------------------------------------------------------ start calibration
+    def calib_tick(self):
+        """5 Hz until done: StartCalibration samples while standing still on the start floor
+        before the run starts (see the start_calibration parameter)."""
+        if self.calib_done or self.start_floor is None:
+            return
+        if self.status_topic and self.explorer not in (None, 'STARTING', 'PAUSED'):
+            self.calib_done = True
+            self.get_logger().warn(f'start calibration skipped: maze_explorer already '
+                                   f'{self.explorer} (standing height '
+                                   f'{self.params.standing_height:.3f} m and the camera mount '
+                                   'from TF kept)')
+            return
+        pose = self.pose(with_z=True)
+        if pose is None:
+            return
+        xy, yaw, _, z = pose
+        h = z - self.start_floor
+        if not self.standing() or not (self.calib.min_height <= h <= self.calib.max_height):
+            self.calib.reset()              # not up yet (or lying / posing): wait
+            return
+        now = time.monotonic()
+        self.calib.add_pose(now, (xy[0], xy[1], z), yaw, self.start_floor)
+        if self.depth_calib_new and self.k is not None and self.depth is not None:
+            self.depth_calib_new = False
+            msg = self.depth
+            depth = self.image_array(msg)
+            cam = self.camera(msg.header.frame_id)
+            fpose = self.pose(Time.from_msg(msg.header.stamp), with_z=True)
+            if depth is not None and cam is not None and fpose is not None:
+                fxy, fyaw, f_r, fz = fpose
+                base = (fxy[0], fxy[1], fz)
+                pts = stairs_lidar.depth_floor_points(depth, self.k, f_r, *cam, base, stride=4)
+                t = stairs_lidar.floor_tilt_from_depth(pts, base, fyaw, self.start_floor)
+                if t is not None:
+                    self.calib.add_tilt(t[0], t[1])
+        if self.calib.ready(now):
+            self.finish_calibration(now, (xy[0], xy[1], z))
+
+    def finish_calibration(self, now, base):
+        r = self.calib.result()
+        self.calib_done = True
+        done = []
+        h = r['standing_height']
+        if h is not None:
+            for prm in (self.params, getattr(self.hmap, 'p', None),
+                        getattr(self.dmap, 'p', None)):
+                if prm is not None:
+                    prm.standing_height = h
+            done.append(f'standing height {h:.3f} m (default 0.35)')
+        if r['pitch_deg'] is not None and self.cam is not None:
+            self.cam = (stairs_lidar.tilt_fix(*r['slopes']) @ self.cam[0], self.cam[1])
+            if self.dmap is not None:       # its frames so far used the uncorrected mount
+                self.dmap.top[:] = 0.0
+                self.dmap.cnt[:] = 0.0
+            done.append(f'camera mount corrected by {r["pitch_deg"]:+.2f} deg pitch / '
+                        f'{r["roll_deg"]:+.2f} deg roll')
+        self.floor_tracker.update(now, base, measured=self.start_floor, standing=True)
+        msg = (f'start calibration on floor {self.start_floor:.3f}: '
+               + ('; '.join(done) if done else 'nothing applied')
+               + (f' ({"; ".join(r["why"])})' if r['why'] else ''))
+        (self.get_logger().info if done else self.get_logger().warn)(msg)
+        if self.calib_pub is not None:
+            self.calib_pub.publish(String(data=json.dumps({
+                'floor_z': round(self.start_floor, 4),
+                'standing_height': None if h is None else round(h, 4),
+                'measured_height': r.get('measured_height'),
+                'camera_pitch_deg': None if r['pitch_deg'] is None else round(r['pitch_deg'], 3),
+                'camera_roll_deg': None if r['roll_deg'] is None else round(r['roll_deg'], 3),
+                'samples': len(self.calib.heights), 'depth_frames': len(self.calib.tilts),
+                'notes': r['why']})))
 
     def on_pose_status(self, msg):
         self.pose_status = msg.data
@@ -489,7 +683,8 @@ class StairDetector(Node):
         d = abs(est.distance(np.asarray(xy, float)))
         if d > self.check_cfg['check_distance']:
             return
-        if self.status_topic and self.look_states and self.explorer not in self.look_states:
+        if self.status_topic and self.look_states and self.explorer not in self.look_states \
+                and not (self.hold_exploring and self.junction_defer):
             self.get_logger().info(f'possible stairs {d:.2f} m away ({what}) while '
                                    f'{self.explorer}: checked only from a junction or dead-end '
                                    'look', throttle_duration_sec=10.0)
@@ -519,24 +714,32 @@ class StairDetector(Node):
             self.candidate = (est, now, what)
 
     def hold_candidate(self, est, xy, d, what):
-        """Possible stairs at a junction: hold them for maze_explorer (True = held)."""
-        if not (self.junction_defer and self.status_topic):
+        """Possible stairs in a junction / dead-end look: hold them for maze_explorer
+        (True = held)."""
+        if not (self.junction_defer and self.status_topic) or self.is_released(est, xy):
             return False
         pt = np.asarray(est.edge_point(np.asarray(xy, float)), float)
         sid = self.held_id(est, xy)
         if sid is not None:
             self.held[sid] = (est, what)              # seen again: same hold
             return True
-        if self.explorer != 'JUNCTION':
+        if self.explorer not in self.look_states and not self.hold_exploring:
             return False
         sid, self.next_held_id = self.next_held_id, self.next_held_id + 1
         self.held[sid] = (est, what)
         self.cand_pub.publish(String(data=json.dumps({
             'id': sid, 'frame': self.odom_frame, 'edge': [float(pt[0]), float(pt[1])],
             'heading': float(est.heading), 'distance': round(float(d), 2), 'what': what})))
-        self.get_logger().info(f'possible stairs {d:.2f} m away ({what}) at a junction: held '
-                               f'(id {sid}) until its other ways are explored')
+        self.get_logger().info(f'possible stairs {d:.2f} m away ({what}) while '
+                               f'{self.explorer}: held (id {sid}) until maze_explorer '
+                               'releases them')
         return True
+
+    def is_released(self, est, xy):
+        """est is stairs maze_explorer already released (it wants them checked / crossed)."""
+        pt = np.asarray(est.edge_point(np.asarray(xy, float)), float)
+        return any(np.linalg.norm(np.asarray(old.edge_point(np.asarray(xy, float))) - pt) <
+                   self.check_cfg['check_forget_radius'] for old in self.released_ests)
 
     def held_id(self, est, xy):
         """Id of the held stairs est is (first riser within check_forget_radius), or None."""
@@ -557,7 +760,8 @@ class StairDetector(Node):
         if sid not in self.held:
             return
         est, what = self.held.pop(sid)
-        self.candidate = (est, time.monotonic(), f'{what}, held at a junction')
+        self.released_ests.append(est)
+        self.candidate = (est, time.monotonic(), f'{what}, held from a look')
         self.cooldown_until = 0.0
         self.get_logger().info(f'held stairs {sid} released: checking them')
 
@@ -797,6 +1001,47 @@ class StairDetector(Node):
             self.last_hmap_add = now
         self.clouds[:] = keep
 
+    def add_depth_floor(self):
+        """depth_floor_period s: the newest depth frame into the depth floor map (any state;
+        TF at the frame's stamp, else the latest)."""
+        if not self.depth_floor_new or self.k is None or self.depth is None:
+            return
+        msg, self.depth_floor_new = self.depth, False
+        depth = self.image_array(msg)
+        cam = self.camera(msg.header.frame_id)
+        pose = self.pose(Time.from_msg(msg.header.stamp), with_z=True)
+        if depth is None or cam is None or pose is None:
+            return
+        xy, yaw, r_ob, z = pose
+        base = (xy[0], xy[1], z)
+        c = self.depth_floor_cfg
+        pts = stairs_lidar.depth_floor_points(depth, self.k, r_ob, *cam, base,
+                                              stride=max(1, int(c['depth_floor_stride'])),
+                                              max_depth=float(c['depth_floor_max_range']))
+        if len(pts):
+            self.dmap.add(pts, base, yaw)
+            self.depth_scans += 1
+
+    def floor_under(self, a):
+        """Floor under the feet (odom z) from the lidar map and the depth floor map, or None."""
+        maps = [m for m in (self.hmap, self.dmap) if m is not None]
+        return maps[0].floor_under(a, also=maps[1:]) if maps else None
+
+    def observe_z(self):
+        """10 Hz: base_z into FloorTracker's bob filter (latest TF, never blocks)."""
+        pose = self.pose(with_z=True)
+        if pose is not None:
+            self.floor_tracker.observe(time.monotonic(), pose[3])
+
+    def standing(self):
+        """Known standing for FloorTracker, from cmd_vel_bridge's COMMANDED state (never from a
+        floor estimate): not lying down / lying / standing up / failed to stand, and no Pose
+        look moving the body. Nothing heard (no bridge, test rigs): standing."""
+        lie = (self.lie_status or '').split(':', 1)[0].strip()
+        pose = (self.pose_status or '').split(':', 1)[0].strip()
+        return lie not in ('LYING_DOWN', 'LYING', 'STANDING_UP', 'ERROR') and \
+            pose not in ('ENTERING', 'POSING', 'LEAVING')
+
     def process_lidar(self):
         """Lidar-only stairs from the height map into lidar_tracker, then decide()."""
         if not self.looking() or self.lidar_scans == 0:
@@ -815,7 +1060,11 @@ class StairDetector(Node):
             # The floor under the feet, not floor_z (the lowest layer around: on a raised
             # plate that is the lab floor past the walls, and the robot's own floor would not
             # be "the floor" the drop starts from).
-            ests += [e for e in stairs_lidar.detect_down(self.hmap, a, self.hmap.floor_under(a))
+            under = self.floor_under(a)
+            if under is None and self.floor_est[0] is not None and \
+                    time.monotonic() - self.floor_est[1] < 1.5:
+                under = self.floor_est[0]       # terrain_tick's tracked floor (FloorTracker)
+            ests += [e for e in stairs_lidar.detect_down(self.hmap, a, under)
                      if not self.is_handled(e)]
         xy = (a[0], a[1])
         near = min(ests, key=lambda e: e.distance(np.asarray(xy))) if ests else None
@@ -826,28 +1075,32 @@ class StairDetector(Node):
         self.decide(now, xy, math.atan2(r[1, 0], r[0, 0]), found, why, None)
 
     def terrain_tick(self):
-        """terrain_rate Hz: /maze/local_floor_z (floor under the feet, stairs_lidar.LocalFloor:
-        seen by the lidar, else base_link z - the standing height; nothing while lying down:
-        listeners keep the last) and /maze/terrain (JSON: level of the strip ahead, max_step /
-        low / spread m, on_rough under the robot, floor: seen / body / around)."""
-        if self.lidar_scans == 0:
+        """terrain_rate Hz: /maze/local_floor_z (floor under the feet; nothing while lying or
+        not seen yet: listeners keep the last) and /maze/terrain (JSON: level of the strip
+        ahead, max_step / low / spread m, on_rough under the robot, floor used)."""
+        if self.lidar_scans == 0 and self.depth_scans == 0:
             return
         try:
             r, a = matrix_of(self.tf.lookup_transform(self.odom_frame, self.base_frame, Time()))
         except TransformException:
             return
-        st = (self.lie_status or 'IDLE').split(':', 1)[0].strip()
-        lying = st not in ('IDLE', 'UNAVAILABLE')     # ERROR: not standing after a lie
-        if lying:
-            return                      # listeners keep the floor from before lying down
-        local, src = self.local_floor.update(a[2], self.hmap.floor_under(a), self.start_floor)
-        if local is not None and self.local_floor_pub is not None:
-            self.local_floor_pub.publish(Float32(data=float(local)))
-        if self.terrain_pub is None:
+        under = self.floor_under(a)
+        if under is not None and self.local_floor_pub is not None:
+            self.local_floor_pub.publish(Float32(data=float(under)))
+        est, est_src = self.floor_tracker.update(time.monotonic(), a, under, self.standing())
+        self.floor_est = (est, time.monotonic())
+        if self.floor_est_pub is not None and est is not None:
+            self.floor_est_pub.publish(String(data=json.dumps(
+                {'z': round(float(est), 4), 'source': est_src})))
+        if self.terrain_pub is None or self.hmap is None:
             return
-        ref = local
-        if ref is None:                 # no start floor yet either: lowest layer around
-            ref, src = self.floor_z, 'around'
+        # Until the floor under it was seen (depth map: ~0.6 m ahead; lidar: ~1.4-1.75 m)
+        # there is no floor under it: the tracked floor (FloorTracker), then wall_scan's
+        # start floor, then the lowest layer around (floor_z) as a last resort.
+        ref, src = (under, 'under') if under is not None else (est, est_src)
+        if ref is None:
+            ref, src = (self.start_floor, 'start') if self.start_floor is not None else \
+                (self.floor_z, 'around')
         t = stairs_lidar.terrain(self.hmap, a, math.atan2(r[1, 0], r[0, 0]), ref)
         t = {k: (round(v, 3) if isinstance(v, float) else v) for k, v in t.items()}
         t['floor'] = src if ref is not None else None
@@ -905,6 +1158,12 @@ class StairDetector(Node):
                     + (f'{off:.2f} m off their centre line' if off is not None else
                        'its line misses the risers in view')
                     + '): not taking over until it is in front', throttle_duration_sec=3.0)
+                return
+            if self.hold_exploring and self.hold_candidate(
+                    found, xy, dist, f'confirmed, {found.risers} risers'):
+                self.get_logger().info(f'stairs {dist:.2f} m ahead: held for maze_explorer '
+                                       '(crossed only once every other way is explored)',
+                                       throttle_duration_sec=5.0)
                 return
             if not self.cfg['drive']:
                 self.announce(found, dist)

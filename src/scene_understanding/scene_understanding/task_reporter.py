@@ -11,7 +11,7 @@
        {"type": "qr", "text", "cell", "cell_centre"}   (cell None when not at a dead end)
 Survivors: not reported (poster_detector was removed 2026-11-19; nothing detects them).
 
-    ros2 run maze_nav task_reporter
+    ros2 run scene_understanding task_reporter
 """
 import json
 import time

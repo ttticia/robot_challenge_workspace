@@ -100,6 +100,32 @@ def test_gap_at_line_measures_the_hem_lying_down():
         assert cov >= 0.5
 
 
+def test_gap_at_line_with_the_start_plate_as_floor():
+    """The curtain cell 10 cm below the start plate (maze_curtains): handed the plate's
+    height (0.10, wall_scan's start floor) the gap is still measured from the floor at the
+    line; without the local floor it found no floor there at all."""
+    from maze_nav.curtains import gap_at_line
+    for gap in (0.12, 0.15):
+        pts = lying_points(corridor(curtain_box(x=0.7, gap=gap)))
+        g, cov, _ = gap_at_line(pts, (0.7, -0.45), (0.7, 0.45), (1.0, 0.0), 0.10)
+        assert g is not None and abs(g - gap) < 0.03, (gap, g)
+        assert cov >= 0.5
+        g_old, _, _ = gap_at_line(pts, (0.7, -0.45), (0.7, 0.45), (1.0, 0.0), 0.10,
+                                  local_floor=False)
+        assert g_old is None or abs(g_old - gap) > 0.05
+
+
+def test_floor_at_line_standing_and_lying():
+    """floor_at_line finds the floor at the line from either height, within +-15 cm of the
+    reference; nothing to find -> None."""
+    from maze_nav.curtains import floor_at_line
+    boxes = corridor(curtain_box(x=1.2, gap=0.12))
+    for pts in (raycast(boxes, origin=(0.0, 0.0, LIDAR_H)), lying_points(boxes)):
+        f = floor_at_line(pts, (1.2, -0.45), (1.2, 0.45), (1.0, 0.0), 0.10)
+        assert f is not None and abs(f) < 0.02, f
+    assert floor_at_line(np.zeros((0, 3)), (1.2, -0.45), (1.2, 0.45), (1.0, 0.0), 0.0) is None
+
+
 def test_gap_at_line_sees_no_gap_under_a_wall():
     from maze_nav.curtains import gap_at_line
     pts = lying_points(corridor((0.7, -0.45, 0.0, 0.72, 0.45, 0.45)))

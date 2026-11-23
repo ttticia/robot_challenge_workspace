@@ -14,9 +14,10 @@ import pytest
 
 from maze_nav import stairs_lidar as L
 from maze_nav.cmd_vel_bridge import terrain_cap
-from maze_nav.scene_understanding.scene_cells import (CellGrid, block_boxes, cell_objects,
+from maze_nav.scene_cells import (CellGrid, block_boxes, cell_objects,
                                                       grow_box, in_boxes, object_box)
-from stair_scene import R_BASE_LIDAR, STANDING, T_BASE_LIDAR, lidar_scan
+from stair_scene import (K, R_BASE_CAM, R_BASE_LIDAR, STANDING, T_BASE_CAM, T_BASE_LIDAR,
+                         lidar_scan, render)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -131,49 +132,55 @@ def test_presentation_mazes_no_false_stairs(name, path, yaw):
 PLATE = 0.10                      # start floor (wall_scan) in both mazes
 
 
-def test_local_floor_follows_the_lower_curtain_cell():
+def walk_with_depth(boxes, path, yaw, step=0.1):
+    """walk() plus the depth camera's floor map (stair_detector's depth_floor): yields
+    (base, lidar HeightMap, depth HeightMap) at each step."""
+    dm = L.HeightMap()
+    for k, (base, hm) in enumerate(walk(boxes, path, yaw, step)):
+        depth, r_ob = render(boxes, base, yaw, seed=k)
+        dm.add(L.depth_floor_points(depth, K, r_ob, R_BASE_CAM, T_BASE_CAM, base), base, yaw)
+        yield base, hm, dm
+
+
+CURTAIN_WALK = ((1.0, -0.3), (1.0, 1.0))   # slats -> mid curtain cell, facing the curtain
+
+
+def test_lidar_alone_never_sees_the_floor_under_the_feet():
+    """The lidar's nearest floor is ~1.75 m ahead looking down onto a floor 10-16 cm lower
+    (lowest ray ~22 deg down), and this walk starts 1.3 m before mid-cell against a wall:
+    with the lidar alone the floor under the feet is never known in the curtain cell (the
+    cells within 0.5 m there are the side wall's top). This is why depth_floor exists."""
+    boxes = boxes_of(load('maze_curtains.json'))
+    seen = [(base[1], hm.floor_under(base))
+            for base, hm in walk(boxes, CURTAIN_WALK, math.pi / 2)]
+    assert all(u is None for y, u in seen if y >= 0.6)
+
+
+def test_floor_under_follows_the_lower_curtain_cell():
     """maze_curtains: the start plate is 10 cm above the curtain cell's lab floor. Walking
     from the slats into the curtain cell to where the curtain is inspected (mid-cell), the
-    floor under the feet is the lab floor (~0.0), not the start floor (0.10): the gap
-    measured lying down and the lying height would be 10 cm off with the start floor.
-    From the plate the lidar never sees that floor (first seen ~1.8 m ahead), so it comes
-    from the standing height (LocalFloor 'body'), learned on the start floor."""
+    floor under the feet is the lab floor (~0.0), not the start floor (0.10): the lying
+    height (cmd_vel_bridge) and the terrain reference would be 10 cm off with the start
+    floor. Known from the depth camera's floor map, which sees the floor from ~0.6 m ahead;
+    nothing under the robot at the first step."""
     boxes = boxes_of(load('maze_curtains.json'))
-    lf = L.LocalFloor()
-    lf.update(PLATE + STANDING, None, start_floor=PLATE)    # standing at the start
-    out = []
-    for base, hm in walk(boxes, ((1.0, -0.3), (1.0, 1.0)), math.pi / 2):
-        out.append((base[1],) + lf.update(base[2], hm.floor_under(base), PLATE))
-    y, floor, src = out[-1]
-    assert floor == pytest.approx(0.0, abs=0.02) and src in ('body', 'seen')
-    # On the slats the body rides 6 cm higher: the floor follows (what the feet are on).
-    assert out[0][1] == pytest.approx(PLATE + 0.06, abs=0.02)
-
-
-def test_local_floor_rules():
-    lf = L.LocalFloor()
-    assert lf.update(0.45) == (None, None)                       # nothing known yet
-    assert lf.update(0.45, None, start_floor=0.10)[0] == pytest.approx(0.10)
-    assert lf.update(0.35)[0] == pytest.approx(0.0)              # stepped down 10 cm
-    assert lf.update(0.20, lying=True) == (None, None)           # lying: nothing
-    assert lf.stand_h == pytest.approx(0.35)                     # ... and not learned
-    f, src = lf.update(0.30, seen=0.0)                            # lidar: base 0.30 over it
-    assert src == 'seen' and f == 0.0 and lf.stand_h < 0.35
-    lf2 = L.LocalFloor()
-    lf2.update(0.12, None, start_floor=0.0)                       # lying at the start
-    assert lf2.stand_h is None
+    seen = [(base[1], hm.floor_under(base, also=(dm,)))
+            for base, hm, dm in walk_with_depth(boxes, CURTAIN_WALK, math.pi / 2)]
+    assert seen[0][1] is None                                 # at the start of the walk
+    on_floor = [u for y, u in seen if y >= 0.9 and u is not None]
+    assert on_floor
+    assert np.median(on_floor) == pytest.approx(0.0, abs=0.03)
+    on_slats = [u for y, u in seen if -0.1 <= y <= 0.3 and u is not None]
+    assert on_slats and min(on_slats) > 0.08                  # the plate / slat tops there
 
 
 def test_floor_under_is_none_lying_down():
-    """Seen floor under the feet after a 2 m walk on a plate; lying down (base 0.2 m lower)
-    it is out of the window: None."""
-    boxes = [((-3.0, -3.0, 0.0), (3.0, 3.0, PLATE))]
-    for base, hm in walk(boxes, ((0.0, -2.0), (0.0, 0.0)), math.pi / 2):
+    boxes = boxes_of(load('maze_curtains.json'))
+    for base, hm, dm in walk_with_depth(boxes, CURTAIN_WALK, math.pi / 2):
         pass
-    assert hm.floor_under(base) == pytest.approx(PLATE, abs=0.02)
-    assert hm.floor_under(base) is not None
+    assert hm.floor_under(base, also=(dm,)) is not None
     lying = (base[0], base[1], base[2] - 0.20)
-    assert hm.floor_under(lying) is None
+    assert hm.floor_under(lying, also=(dm,)) is None
 
 
 # ---------------------------------------------------------------- terrain
