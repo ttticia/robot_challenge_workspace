@@ -29,19 +29,22 @@ from datetime import datetime
 import json
 import math
 import os
+import signal
 import threading
 import time
 
 import cv2
 import rclpy
 from rclpy.executors import ExternalShutdownException
+from rclpy.signals import SignalHandlerOptions
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformException, TransformListener
 from std_msgs.msg import Bool, String
 
 from scene_understanding.image_subscriber import ImageSubscriber
 from scene_understanding.scene_prompt import (
-    build_prompt, extract_scene_result, validate_group_id,
+    build_prompt, CELL_SIZE, cell_centre, extract_scene_result,
+    mission_reports, REPORT_CELLS, report_position, validate_group_id,
 )
 
 from scene_understanding.vlm_client import (
@@ -189,22 +192,71 @@ class JunctionTrigger(ImageSubscriber):
         self.declare_parameter('vlm_max_height', MAX_HEIGHT)
 
         self.declare_parameter('junction_scan_enabled', False)
-        self.declare_parameter('junction_scan_angle_deg', 30.0)
+        # turn: turn the whole robot slowly on twist_mux (left, back, right,
+        # back), correcting after the late odometry settles;
+        # spin: the same with Nav2 Spin (overshoots: odometry ~1.2 s late);
+        # pose: yaw only the body in Lite3 Pose mode (at most ~17 deg).
+        self.declare_parameter('junction_scan_method', 'turn')
+        self.declare_parameter('junction_scan_angle_deg', 20.0)
+        self.declare_parameter('junction_turn_topic', '/nav_cmd_vel')
+        self.declare_parameter('junction_turn_rate', 0.4)
+        self.declare_parameter('junction_turn_settle_sec', 1.5)
+        # Never move the robot while challenge_ws's maze_explorer drives it: a
+        # publisher on this topic blocks the scan (center frame only). '' = off.
+        self.declare_parameter('junction_scan_block_topic', '/maze/status')
         self.declare_parameter('junction_spin_action', '/spin')
+        self.declare_parameter('junction_pose_yaw_deg', 16.0)
+        self.declare_parameter('junction_pose_max_yaw_deg', 16.0)
+        self.declare_parameter('junction_pose_axis_limit', 1.0)
+        self.declare_parameter('junction_pose_settle_sec', 2.0)
+        self.declare_parameter('junction_pose_manual', True)
         self.map_frame = self.declare_parameter('map_frame', 'map').value
         self.odom_frame = self.declare_parameter('odom_frame', 'odom').value
         self.base_frame = self.declare_parameter('base_frame', 'base_link').value
+        # Reported pos: 'ahead' = the cell the robot faces (a room looked into
+        # from the cell before it), 'robot' = the cell it stands in.
+        self.report_cell = str(self.declare_parameter('report_cell', 'ahead').value)
+        self.cell_size = float(self.declare_parameter('cell_size', CELL_SIZE).value)
+        if self.report_cell not in REPORT_CELLS:
+            raise ValueError(f'report_cell must be one of {REPORT_CELLS}')
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.scan = None
         if self.get_parameter('junction_scan_enabled').value:
-            from scene_understanding.junction_scan import JunctionScan
+            method = str(self.get_parameter('junction_scan_method').value).strip().lower()
+            if method == 'turn':
+                from scene_understanding.timed_turn import TimedTurnScan
 
-            self.scan = JunctionScan(
-                self,
-                self.get_parameter('junction_spin_action').value,
-                self.get_parameter('junction_scan_angle_deg').value,
-            )
+                self.scan = TimedTurnScan(
+                    self,
+                    float(self.get_parameter('junction_scan_angle_deg').value),
+                    cmd_topic=self.get_parameter('junction_turn_topic').value,
+                    turn_rate=float(self.get_parameter('junction_turn_rate').value),
+                    settle_sec=float(self.get_parameter('junction_turn_settle_sec').value),
+                )
+            elif method == 'pose':
+                from scene_understanding.pose_scan import PoseScan
+
+                self.scan = PoseScan(
+                    self,
+                    float(self.get_parameter('junction_pose_yaw_deg').value),
+                    max_yaw_deg=float(self.get_parameter('junction_pose_max_yaw_deg').value),
+                    axis_limit=float(self.get_parameter('junction_pose_axis_limit').value),
+                    settle_sec=float(self.get_parameter('junction_pose_settle_sec').value),
+                    manual=bool(self.get_parameter('junction_pose_manual').value),
+                )
+            elif method == 'spin':
+                from scene_understanding.junction_scan import JunctionScan
+
+                self.scan = JunctionScan(
+                    self,
+                    self.get_parameter('junction_spin_action').value,
+                    self.get_parameter('junction_scan_angle_deg').value,
+                )
+            else:
+                raise ValueError(
+                    f'junction_scan_method must be turn, spin or pose, got "{method}"')
+            self.get_logger().info(f'Junction three-view scan: {method}')
 
         # ============================================================
         # Output / saving parameters
@@ -492,13 +544,33 @@ class JunctionTrigger(ImageSubscriber):
             except TransformException as odom_error:
                 return None, f'Map TF: {map_error}; odom TF: {odom_error}'
         translation = transform.transform.translation
+        q = transform.transform.rotation
         transform_stamp = transform.header.stamp
         return {
             'frame_id': transform.header.frame_id,
             'stamp': {'sec': transform_stamp.sec, 'nanosec': transform_stamp.nanosec},
             'x': translation.x,
             'y': translation.y,
+            'yaw_deg': round(math.degrees(math.atan2(
+                2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))), 1),
         }, None
+
+    def _scan_blocked(self):
+        """Return why the scan must not move the robot now, or None."""
+        topic = self.get_parameter('junction_scan_block_topic').value
+        if topic and self.count_publishers(topic) > 0:
+            return (f'{topic} has a publisher (challenge_ws maze_explorer running): '
+                    'scan skipped, the explorer drives the robot')
+        return None
+
+    def _report_pos(self, position):
+        """Robot position (TF) -> (pos to report, robot cell centre)."""
+        if position is None:
+            return None, None
+        x, y = position['x'], position['y']
+        pos = report_position(x, y, math.radians(position['yaw_deg']),
+                              self.report_cell, self.cell_size)
+        return pos, cell_centre(x, y, self.cell_size)
 
     def _run_vlm(
         self,
@@ -529,6 +601,12 @@ class JunctionTrigger(ImageSubscriber):
             'response': None,
             'error': None,
         }
+        # Position at the trigger (the scan and the VLM take ~10 s).
+        record['robot_position'], record['robot_position_error'] = self._robot_position()
+        record['pos'], record['robot_cell_centre'] = self._report_pos(
+            record['robot_position'])
+        record['report_cell'] = self.report_cell
+        record['reports'] = []
 
         three_view = False
         scan_error = None
@@ -536,17 +614,22 @@ class JunctionTrigger(ImageSubscriber):
             if self.scan is not None:
                 started = time.monotonic()
                 composite = None
+                blocked = self._scan_blocked()
                 try:
-                    composite = self.scan.capture(frame)
+                    if blocked is None:
+                        composite = self.scan.capture(frame)
                 except Exception as exc:
                     scan_error = exc
                 finally:
                     record['scan_latency_sec'] = round(time.monotonic() - started, 2)
                 if composite is None:
                     record['view_layout'] = ['center']
-                    if scan_error is None:
+                    if blocked is not None:
+                        record['scan_warning'] = f'{blocked}; used center frame'
+                        self.get_logger().warning(record['scan_warning'])
+                    elif scan_error is None:
                         record['scan_warning'] = (
-                            f'Nav2 Spin action {self.scan.action_name} unavailable; used center frame'
+                            f'{self.scan.unavailable_reason}; used center frame'
                         )
                         self.get_logger().warning(record['scan_warning'])
                 else:
@@ -555,6 +638,8 @@ class JunctionTrigger(ImageSubscriber):
                     record['view_layout'] = ['left', 'center', 'right']
                     angle_deg = round(math.degrees(self.scan.angle), 6)
                     record['view_yaw_offsets_deg'].update(left=angle_deg, right=-angle_deg)
+                    # Measured from TF (Spin overshoot / furthest body yaw); None without TF.
+                    record['view_yaw_measured_deg'] = dict(self.scan.view_offsets_deg)
 
             # ========================================================
             # STEP 1: SAVE TRIGGERED IMAGE FIRST
@@ -632,7 +717,16 @@ class JunctionTrigger(ImageSubscriber):
 
                 if result['ok']:
                     response = result['response']
-                    record['scene'] = extract_scene_result(response)
+                    scene = extract_scene_result(response)
+                    # Every result carries the reported cell position.
+                    scene['pos'] = record['pos']
+                    scene['robot_position'] = record['robot_position']
+                    for match in scene.get('mission_matches') or []:
+                        if isinstance(match, dict):
+                            match['pos'] = record['pos']
+                    record['reports'] = scene['reports'] = mission_reports(
+                        scene, record['pos'])
+                    record['scene'] = scene
                     # The parsed scene already contains the model output.
                     record['response'] = (
                         {key: value for key, value in response.items() if key != 'result'}
@@ -651,7 +745,6 @@ class JunctionTrigger(ImageSubscriber):
 
         finally:
             record['total_latency_sec'] = round(time.monotonic() - triggered_at, 2)
-            record['robot_position'], record['robot_position_error'] = self._robot_position()
 
             # ========================================================
             # STEP 4: ALWAYS SAVE results.jsonl
@@ -733,21 +826,23 @@ class JunctionTrigger(ImageSubscriber):
 
 
 def main(args=None):
+    # Own SIGINT/SIGTERM handling instead of rclpy's: the context must stay up
+    # after Ctrl+C so a running pose look can still leave Pose mode.
+    stop = threading.Event()
     rclpy.init(
-        args=args
+        args=args,
+        signal_handler_options=SignalHandlerOptions.NO,
     )
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.set())
 
     node = None
 
     try:
         node = JunctionTrigger()
 
-        rclpy.spin(
-            node
-        )
-
-    except KeyboardInterrupt:
-        pass
+        while not stop.is_set() and rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.05)
 
     except ExternalShutdownException:
         pass
@@ -761,6 +856,9 @@ def main(args=None):
 
     finally:
         if node is not None:
+            abort = getattr(node.scan, 'abort', None)
+            if abort is not None:
+                abort()
             node.destroy_node()
 
         rclpy.try_shutdown()

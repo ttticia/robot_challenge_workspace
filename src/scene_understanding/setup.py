@@ -28,6 +28,7 @@ setup(
             'image_folder_publisher = '
             'scene_understanding.image_folder_publisher:main',
             'junction_trigger = scene_understanding.junction_trigger:main',
+            'room_scene = scene_understanding.room_scene:main',
             'vlm_test = scene_understanding.vlm_client:main',
             'vlm_api_test = scene_understanding.vlm_api_client:main',
         ],

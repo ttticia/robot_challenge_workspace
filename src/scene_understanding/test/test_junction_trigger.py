@@ -51,3 +51,31 @@ def test_false_never_triggers():
 def test_invalid_mode():
     with pytest.raises(ValueError):
         TriggerLogic('sometimes')
+
+
+def test_reported_pos_ahead_or_robot_cell():
+    from scene_understanding.junction_trigger import JunctionTrigger
+    node = JunctionTrigger.__new__(JunctionTrigger)
+    node.cell_size = 1.02
+    pose = {'x': 0.98, 'y': 0.05, 'yaw_deg': 91.0}
+    node.report_cell = 'ahead'
+    assert node._report_pos(pose) == ([1.02, 1.02], [1.02, 0.0])
+    node.report_cell = 'robot'
+    assert node._report_pos(pose) == ([1.02, 0.0], [1.02, 0.0])
+    assert node._report_pos(None) == (None, None)
+
+
+def test_scan_blocked_while_maze_explorer_runs():
+    from types import SimpleNamespace
+    from scene_understanding.junction_trigger import JunctionTrigger
+    node = JunctionTrigger.__new__(JunctionTrigger)
+    topic = {'value': '/maze/status'}
+    publishers = {'/maze/status': 1}
+    node.get_parameter = lambda name: SimpleNamespace(value=topic['value'])
+    node.count_publishers = lambda t: publishers.get(t, 0)
+    assert 'maze_explorer' in node._scan_blocked()
+    publishers['/maze/status'] = 0
+    assert node._scan_blocked() is None
+    publishers['/maze/status'] = 1
+    topic['value'] = ''
+    assert node._scan_blocked() is None
