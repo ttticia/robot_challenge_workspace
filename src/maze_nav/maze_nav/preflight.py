@@ -30,6 +30,7 @@ LOCAL = {
 }
 BRINGUP = {   # started by this launch with bringup:=true; expected with bringup:=false
     'fastlio_mapping': 'Fast-LIO', 'odom_relay': 'odom_relay',
+    'odom_guard': 'odom_relay (maze_nav)',
     'pointcloud_to_laserscan_node': 'lite3_launcher /scan',
     'fake_maze_lite3': 'maze simulator',
 }

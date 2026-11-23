@@ -184,7 +184,8 @@ counts from the bridge's POSING (/maze/pose_status) + `pose_turn_time` s; no POS
 (stair_detector /maze/terrain on_rough).
 Objects (`object_keepout`, 2026-11-21): 'footprint' keeps only the object's box (+ margin) out
 of the explorer's map, /maze/map and the Nav2 keepout mask, so the free half of a room can be
-entered; 'cell' blocks the whole cell (never entered).
+entered; 'cell' blocks the whole cell (never entered). No exit found on the
+`object_unblock_search`-th search (2): the objects are forgotten and not blocked again.
 Back of the start cell (user 2026-11-20): the pose at /maze/start is kept. No frontier goal,
 junction look or junction follow-up goes into the start cell (within 0.5 m of that pose) or
 behind it (`start_back_depth` m back, `start_back_width` m either side; the lidar never saw
@@ -470,6 +471,11 @@ class Explorer(Node):
         # explorer's map and /maze/map (Nav2), so no goal or path goes into it. Cells: the
         # scene_trigger grid (cell_size m, cell (0, 0) on the map origin, along its x axis).
         p('block_objects', True)
+        # A false object (08:32 run 2026-11-21: NO_EXIT) can close the only way on. From this
+        # no-exit search on (search_on; 0 = never), every object is forgotten for good: its
+        # cell / footprint is no longer drawn as wall or kept out, so frontiers behind it
+        # come back. Real objects stay in Nav2's costmaps (lidar obstacle layer).
+        p('object_unblock_search', 2)
         p('cell_size', 1.02)
         # Maze size (user 2026-11-22): maze_cols cells along the start heading (+i) by
         # maze_rows to its left (+j), start cell (0, 0) in the corner. The robot never leaves
@@ -672,7 +678,7 @@ class Explorer(Node):
                                       'pose_axis_limit', 'pose_margin', 'pose_overshoot',
                                       'start_back_depth', 'start_back_width', 'stairs_check_near',
                                       'stairs_approach',
-                                      'block_objects', 'cell_size', 'object_border',
+                                      'block_objects', 'object_unblock_search', 'cell_size', 'object_border',
                                       'maze_cols', 'maze_rows', 'exit_retry_wait', 'box_open_sides',
                                       'exit_cell_margin',
                                       'exit_confirm', 'launch_tolerance', 'launch_retries',
@@ -836,6 +842,7 @@ class Explorer(Node):
         self.grid_fit_at = -1e9
         self.object_seen = {}        # cell -> maps in a row with an object in it
         self.blocked_cells = {}      # cell -> (extent, (x, y)): objects, never entered
+        self.unblocked_cells = set()  # object cells given up on a no-exit search: not blocked again
         self.paint_cells = set()     # blocked cells drawn as wall (not the one the robot is in)
         self.object_boxes = {}       # blocked cell -> (x0, y0, x1, y1) map box of its object
         self.objects_map = None      # /map message the objects were last looked for on
@@ -1617,7 +1624,8 @@ class Explorer(Node):
                                  self.cfg['object_min_extent'], self.cfg['object_min_pixels'])
             here = self.cells.cell(xy)
             self.object_seen = {c: self.object_seen.get(c, 0) + 1 for c in found
-                                if c != here and c not in self.blocked_cells}
+                                if c != here and c not in self.blocked_cells
+                                and c not in self.unblocked_cells}
             for c, n in self.object_seen.items():
                 if n >= self.cfg['object_confirm']:
                     self.blocked_cells[c] = found[c]
@@ -3575,6 +3583,7 @@ class Explorer(Node):
             return
         self.search_wait_until = now + self.cfg['exit_retry_wait']
         self.searches += 1
+        self.unblock_objects()
         self.get_logger().warn(f'{why}: not stopping, the run ends only at the exit; '
                                f'search {self.searches}: forgetting {len(self.failed)} failed '
                                f'and {len(self.blacklist)} visited goals, exploring again')
@@ -3583,6 +3592,24 @@ class Explorer(Node):
                 c.call_async(ClearEntireCostmap.Request())
         self.failed, self.blacklist = [], []
         self.failures, self.empty_replans, self.recoveries = 0, 0, 0
+
+    def unblock_objects(self):
+        """From no-exit search `object_unblock_search` on: forget the object cells (a false
+        object may be closing the way to the exit) and never block them again. True if any
+        were forgotten."""
+        first = self.cfg.get('object_unblock_search', 0)
+        if not first or self.searches < first or not self.blocked_cells:
+            return False
+        cells = sorted(self.blocked_cells)
+        self.unblocked_cells.update(cells)
+        self.blocked_cells, self.object_boxes, self.paint_cells = {}, {}, set()
+        self.object_seen = {}
+        self.get_logger().warn(
+            f'no exit found with {len(cells)} object cell(s) kept out '
+            f'({", ".join(str(list(c)) for c in cells)}): no longer blocking them, in case '
+            'one is a false object across the way out')
+        self.publish_curtain_map()
+        return True
 
     def scan_or_begin(self):
         if self.cfg['start_scan']:

@@ -30,6 +30,7 @@ setup(
             'curtain_detector = maze_nav.curtain_detector:main',
             'curtain_yolo = maze_nav.curtain_yolo:main',
             'lidar_relay = maze_nav.lidar_relay:main',
+            'odom_guard = maze_nav.odom_guard:main',
             'cell_features = maze_nav.cell_feature_node:main',
             'telemetry_snapshot = touble_shooting.telemetry_snapshot:main',
             'trigger_scene = touble_shooting.trigger_scene:main',

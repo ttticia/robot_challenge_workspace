@@ -11,7 +11,10 @@ robot. Terrain (trays ~0.10 m + blocks / slats / slopes, tops <= ~0.25 m) and th
 out; walls (0.53 m) and hand rails stay in. The pyramid stairs' top tread (3 x 0.15 = 0.45 m)
 is in the band: the stair cell shows as an obstacle in the middle of a cell (cell_features
 uses that as a stair cue). The floor height is measured once at startup (robot standing on the
-start cell) unless floor_z is given. Until then it publishes base_link's height above the
+start cell) unless floor_z is given. On uneven ground the band's bottom rises
+(core.terrain_band): to band_low_rough (0.38) while stair_detector's /maze/terrain says
+on_rough, and by the height of the floor under the feet (/maze/local_floor_z) above that
+start floor; the top stays under the wall top. Until then it publishes base_link's height above the
 floor on /maze/body_height (latched): cmd_vel_bridge holds the gait until it reads standing,
 and the floor isn't measured while the robot isn't standing (ERROR every 5 s: stand it up
 by hand).
@@ -33,6 +36,7 @@ Published scan frame: base_link. Ranges are horizontal distances, so for SLAM / 
 small body pitch on ramps (a few degrees) is ignored, which costs < 1 % of range.
 """
 import collections
+import json
 import math
 import time
 
@@ -49,7 +53,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from touble_shooting.live_params import attach as attach_live_params, value as live_value
 from maze_nav.core import (StandSettle, body_height, cloud_xyz, estimate_floor, floor_accepted,
-                           posture, wall_ranges)
+                           posture, terrain_band, wall_ranges)
 from maze_nav.curtains import (BlockageMonitor, curtain_mask, curtains_from_json, invert_pose,
                                lidar_blockage, scan_curtains)
 
@@ -81,6 +85,16 @@ class WallScan(Node):
         p('base_frame', 'base_link')
         p('band_low', 0.30)       # m above the maze floor
         p('band_high', 0.50)  # practice walls are 0.53 m (maze_info.md 2026-11-23): stays under the top
+        # On uneven ground (core.terrain_band, user 2026-11-23: "on uneven terrain the wall
+        # band is too low"): band_low rises to band_low_rough while stair_detector says
+        # on_rough (and rough_hold s after), and by the floor under the feet's height above
+        # floor_z (/maze/local_floor_z, up to max_floor_lift). '' topics = off.
+        p('band_low_rough', 0.38)
+        p('terrain_topic', '/maze/terrain')
+        p('local_floor_topic', '/maze/local_floor_z')
+        p('terrain_timeout', 2.0)   # s; older terrain / local floor = not used
+        p('rough_hold', 3.0)        # s the raised band stays after the last on_rough
+        p('max_floor_lift', 0.12)   # m: terrain tiles ~0.10 (maze_info.md)
         p('floor_z', float('nan'))  # odom z of the floor; NaN = measure at startup
         p('expected_floor_drop', 0.35)  # base_link height when standing (odom_relay convention)
         p('floor_tolerance', 0.06)      # measured base_link height above drop + this: ignored
@@ -118,6 +132,14 @@ class WallScan(Node):
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self.odom, self.base = g('odom_frame'), g('base_frame')
         self.band = (g('band_low'), g('band_high'))
+        self.band_low_rough = float(g('band_low_rough'))
+        self.terrain_timeout = float(g('terrain_timeout'))
+        self.rough_hold = float(g('rough_hold'))
+        self.max_lift = float(g('max_floor_lift'))
+        self.rough_at = -1e9                       # monotonic s of the last on_rough
+        self.terrain_at = -1e9                     # ... of the last /maze/terrain
+        self.local_floor, self.local_floor_at = None, -1e9
+        self.band_used = None                      # (low, high, why) last logged
         self.floor = g('floor_z')
         self.floor = None if math.isnan(self.floor) else float(self.floor)
         self.drop = g('expected_floor_drop')
@@ -151,6 +173,10 @@ class WallScan(Node):
         self.curtains_on = bool(g('curtains_topic'))
         if self.curtains_on:
             self.create_subscription(String, g('curtains_topic'), self.on_curtains, latched)
+        if g('terrain_topic'):
+            self.create_subscription(String, g('terrain_topic'), self.on_terrain, 10)
+        if g('local_floor_topic'):
+            self.create_subscription(Float32, g('local_floor_topic'), self.on_local_floor, 10)
         if self.floor is not None:
             self.floor_pub.publish(Float32(data=float(self.floor)))
         # Never block waiting for TF: the odometry for a cloud (Fast-LIO) arrives just after
@@ -186,10 +212,44 @@ class WallScan(Node):
         s.update(setter(lambda: setattr(self, 'rmin', float(val('range_min'))), 'range_min'))
         s.update(setter(lambda: setattr(self, 'rmax', float(val('range_max'))), 'range_max'))
         for name, attr in (('floor_tolerance', 'floor_tolerance'),
+                           ('band_low_rough', 'band_low_rough'), ('rough_hold', 'rough_hold'),
+                           ('max_floor_lift', 'max_lift'),
                            ('lidar_min_range', 'lidar_min'), ('max_cloud_age', 'max_age'),
                            ('voxel_size', 'voxel'), ('expected_floor_drop', 'drop')):
             s.update(setter(lambda a=attr, n=name: setattr(self, a, float(val(n))), name))
         attach_live_params(self, setters=s)
+
+    def on_terrain(self, msg):
+        try:
+            t = json.loads(msg.data)
+        except ValueError:
+            return
+        self.terrain_at = time.monotonic()
+        if t.get('on_rough'):
+            self.rough_at = self.terrain_at
+
+    def on_local_floor(self, msg):
+        self.local_floor, self.local_floor_at = float(msg.data), time.monotonic()
+
+    def current_band(self):
+        """core.terrain_band for the ground under the robot now (logs each change)."""
+        now = time.monotonic()
+        rough = now - self.rough_at <= self.rough_hold
+        local = (self.local_floor if now - self.local_floor_at <= self.terrain_timeout
+                 else None)
+        low, high = terrain_band(self.band, self.floor, local, rough, self.band_low_rough,
+                                 max_lift=self.max_lift)
+        why = ('rough ground under the robot' if rough else '') + (
+            f'{"; " if rough else ""}floor under the feet {local - self.floor:+.2f} m'
+            if local is not None and abs(local - self.floor) >= 0.03 else '')
+        last = self.band_used
+        if last is None or abs(last[0] - low) >= 0.02 or abs(last[1] - high) >= 0.02:
+            if last is not None or why:
+                self.get_logger().info(
+                    f'wall band {low:.2f}..{high:.2f} m above the floor'
+                    + (f' ({why})' if why else ' (even ground)'))
+            self.band_used = (low, high, why)
+        return low, high
 
     def on_curtains(self, msg):
         frame, curtains = curtains_from_json(msg.data)
@@ -363,7 +423,8 @@ class WallScan(Node):
                     if c.crossed or c.distance(bxy) < self.curtain_near]
             if drop:
                 pts = pts[~curtain_mask(pts, drop, bxy)]
-        ranges = wall_ranges(pts, bxy, yaw, self.floor, self.band, -math.pi, self.inc, self.n,
+        ranges = wall_ranges(pts, bxy, yaw, self.floor, self.current_band(), -math.pi,
+                             self.inc, self.n,
                              self.rmin, self.rmax, self.voxel, self.body,
                              sensor=m[:3, 3], sensor_min=self.lidar_min)
         scan = LaserScan()

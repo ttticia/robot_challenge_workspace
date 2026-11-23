@@ -28,6 +28,10 @@ Nav2 can't talk to the robot directly, so this glue stays:
   recover instead of latching. A real divergence (2026-11-19 04:04: hundreds of metres in
   seconds) keeps jumping, so more than odom_jump_limit jumps within odom_jump_window s still
   latch until restart (odom_jump_limit 0 = latch at the first jump, the old behaviour).
+  odom_relay (odom_guard.py) now catches most jumps first (user 2026-11-23: stop and sync
+  again): it holds /odom at the last good pose and says HOLD on guard_status_topic; the
+  bridge stops and drops Nav2 until it says OK again (Fast-LIO steady for 3 s while
+  standing, resynced), then clears the costmaps and drives. FAULT (no resync) latches.
 - drive:=false: publishes to ~/cmd_vel_preview instead of /cmd_vel (dry run).
 - Gait: at startup, once the robot bridge subscribes /simple_cmd, sends Move mode
   (0x21010D06, needed before gait requests) and then the `gait` (default `hstep` = H-Step,
@@ -232,6 +236,8 @@ class CmdVelBridge(Node):
         p('odom_recover', 2.0)          # s of /odom without a new jump -> drive again
         p('odom_jump_limit', 3)         # jumps within odom_jump_window that recover; more latch
         p('odom_jump_window', 60.0)     # s
+        # odom_relay (odom_guard.py) HOLD / RESYNC / FAULT; '' = not followed
+        p('guard_status_topic', '/odom_guard/status')
         p('cloud_topic', '/livox/points')
         p('odom_topic', '/odom')
         p('gait', 'hstep')            # sent once at startup; 'none' = leave the gait alone
@@ -347,6 +353,12 @@ class CmdVelBridge(Node):
         self.paused = None       # reason, while late sensors hold Nav2 off (clears itself)
         self.paused_at = 0.0     # monotonic s the pause began
         self.fresh_since = None  # monotonic s since when every sensor is fresh again
+        self.guard_hold = None   # odom_guard status while it holds /odom after a Fast-LIO jump
+        if get('guard_status_topic'):
+            self.create_subscription(
+                String, get('guard_status_topic'), self.on_guard_status,
+                QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                           durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.drive = get('drive')
         self.ai_mode = False     # True from AI requested until AI exit sent: no velocity at all
         self.ai_armed = True     # False after an AI switch until /stairs/status leaves AT_STAIRS
@@ -1228,7 +1240,7 @@ class CmdVelBridge(Node):
         self.stop(f'{"ODOM JUMP" if jumped else "SENSOR STALE"} ({reason}); holding Nav2 off '
                   'until cloud and odom are steady for '
                   f'{self.sensor_recover + (self.odom_recover if jumped else 0.0):.1f} s')
-        if jumped:
+        if jumped and not reason.startswith('odom_guard'):
             self.get_logger().warn(f'odometry jump {len(self.jumps)}/{self.odom_jump_limit} in '
                                    f'{self.odom_jump_window:.0f} s: pausing; one more latches'
                                    if len(self.jumps) == self.odom_jump_limit else
@@ -1251,6 +1263,9 @@ class CmdVelBridge(Node):
         if self.jumps and now - self.jumps[-1] < self.odom_recover:
             self.fresh_since = None             # /odom jumped recently: not steady yet
             return
+        if self.guard_hold:
+            self.fresh_since = None             # odom_guard still resyncing Fast-LIO
+            return
         if self.fresh_since is None:
             self.fresh_since = now
         if now - self.fresh_since >= self.sensor_recover:
@@ -1262,6 +1277,28 @@ class CmdVelBridge(Node):
                 self.clear_costmaps()
             self.paused = None
             self.fresh_since = None
+
+    def on_guard_status(self, msg):
+        """odom_relay (odom_guard.py): HOLD = Fast-LIO jumped, /odom held: stop until it
+        resyncs (OK again; check_pause then clears the costmaps and drives). FAULT = it could
+        not resync: latch."""
+        s = msg.data
+        if s.startswith('HOLD'):
+            self.guard_hold = s
+            if self.walk is not None:
+                self.end_walk(f'odom_guard: {s}', warn=True)
+            if not self.blocked:
+                self.pause(f'odom_guard {s} (odometry jumped)')
+                self.get_logger().warn('Fast-LIO jumped: robot stopped until odom_relay has '
+                                       'resynced it (Fast-LIO steady while standing still)')
+        elif s.startswith('FAULT'):
+            self.guard_hold = None
+            if not self.blocked:
+                self.block(f'odom_guard {s}')
+        elif self.guard_hold:
+            self.guard_hold = None
+            self.get_logger().info(f'odom_relay resynced ({s}); driving again once cloud and '
+                                   'odom are steady')
 
     def clear_costmaps(self):
         """After an odometry jump: drop walls marked from the old pose (fire and forget)."""

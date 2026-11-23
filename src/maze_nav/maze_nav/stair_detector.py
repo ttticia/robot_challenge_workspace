@@ -299,8 +299,10 @@ class StairDetector(Node):
         # and not a wall (user 2026-11-23: "if wall is < 21 cm tall, treat as open path"):
         # no candidate, no held cell on the map, no stair check; the robot walks over it
         # (terrain <= 12 cm, the 18 cm pin, hurdles). wall_scan's band starts at 0.30 m, so
-        # it never was a wall for Nav2.
-        p('check_min_height', 0.21)
+        # it never was a wall for Nav2. Raised to 0.30 (user 2026-11-23: "when detecting
+        # stairs, top must be at least 30 cm tall"); also gates a confirmed-stairs takeover
+        # (decide). Challenge stairs: 3 x 15 cm = 45 cm, so >= 2 risers seen at ~15 cm pass.
+        p('check_min_height', 0.30)
         # Pose-mode pitch sweep during the check's hold (user 2026-11-21): level, nose up
         # check_pitch_deg, nose down check_pitch_deg (cmd_vel_bridge /maze/pose_*), so the
         # camera sees the upper steps and the bottom riser. Unavailable -> the plain hold.
@@ -1243,6 +1245,13 @@ class StairDetector(Node):
         dist = found.distance(np.asarray(xy))
         if self.state in CHECK_STATES:
             return                      # check_control decides at the end of the hold
+        if self.state == 'IDLE' and self.too_low(found):
+            self.get_logger().info(f'low obstacle {dist:.2f} m ahead: {found.risers} risers of '
+                                   f'{found.rise * 100:.0f} cm = '
+                                   f'{found.risers * found.rise * 100:.0f} cm tall < '
+                                   f'{self.check_cfg["check_min_height"] * 100:.0f} cm: not '
+                                   'stairs, open path', throttle_duration_sec=5.0)
+            return
         if self.state == 'IDLE' and self.check_on and self.in_look():
             self.note_candidate(found, xy, f'confirmed, {found.risers} risers, seen during '
                                 f'{self.explorer}')

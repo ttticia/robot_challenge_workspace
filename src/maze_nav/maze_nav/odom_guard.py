@@ -1,6 +1,7 @@
 """odom_guard: Fast-LIO odometry as odom -> base_link, with slips bridged by leg odometry.
 
-Replaces lite3_launcher's odom_relay.py in maze_nav.launch.py (odom_guard:=true). Like it:
+Replaces lite3_launcher's odom_relay.py in maze_nav.launch.py (node name still odom_relay).
+The slip guard is off there unless odom_guard:=true (leg_topic '' = a plain relay). Like it:
 
   T_odom_base = M * T_fastlio * M^-1      M = base_link -> livox_frame (static, from TF)
 
@@ -28,7 +29,28 @@ Fast-LIO (per slip, not the total of all slips), the guard gives
 up for the rest of the run and passes Fast-LIO through unchanged. /odom then jumps, and
 cmd_vel_bridge's odometry watchdog stops the robot as before.
 
-No leg odometry (none yet, or older than leg_timeout): the step is passed through unguarded.
+No leg odometry (none yet, or older than leg_timeout; the default, odom_guard:=false): slips
+are not bridged, but a step the robot can't have made (over jump_dist 0.3 m, or > 1 m/s, or
+> 2.5 rad/s) is a Fast-LIO JUMP (user 2026-11-23: "when odometry diverges too much, stop the
+robot and sync again if possible"; 10:31 run: four jumps of 0.35-0.78 m at a junction, then
+SENSOR FAULT until restart):
+
+  HOLD    /odom (and the TF) stays at the last good pose, status "HOLD: ..."; cmd_vel_bridge
+          stops the robot and drops Nav2 commands while it reads HOLD.
+  RESYNC  once Fast-LIO has been steady (moved < steady_dist m, turned < steady_yaw rad) for
+          steady_time s with the robot standing still, /odom goes on from the held pose with
+          Fast-LIO's motion from then on (a constant offset, like a bridged slip): status
+          "OK (... resynced ...)", cmd_vel_bridge clears the costmaps and drives again.
+  FAULT   not steady within resync_timeout s, or more than resync_limit holds in
+          resync_window s: /odom stays held, status "FAULT: ..." and cmd_vel_bridge latches
+          (SENSOR FAULT, until restart) as before.
+
+Start-up: Fast-LIO's first messages can arrive before the static base_link -> livox_frame
+(the robot bridge's latched /tf_static takes 0.2-2 s to reach a new node). The mount is
+looked up on every message until known (lite3_launcher's relay polled every 0.5 s and
+warned "Dropping odometry, base_link -> livox_frame not known yet" on each launch). Nothing
+is lost by skipping those messages: Fast-LIO's pose is absolute. Only a mount still missing
+after mount_wait s is a fault (robot bridge down / wrong ROS_DOMAIN_ID) and is reported.
 
   in : /fastlio/odometry (input_topic), /leg_odom2 (leg_topic), TF base_link -> livox_frame
   out: /odom, TF odom -> base_link, static TF odom -> lidar_init,
@@ -89,10 +111,22 @@ class GuardCore:
     """The guard's logic on 4x4 base_link poses (no ROS). See the module doc."""
 
     def __init__(self, slip_speed=0.4, slip_min=0.05, max_slip_time=3.0, max_offset=5.0,
-                 leg_timeout=0.5):
+                 leg_timeout=0.5, jump_dist=0.3, jump_min=0.08, jump_speed=1.0,
+                 jump_yaw=0.3, jump_yaw_rate=2.5, steady_time=3.0, steady_dist=0.03,
+                 steady_yaw=0.03, resync_timeout=30.0, resync_limit=3, resync_window=120.0):
         self.slip_speed, self.slip_min = slip_speed, slip_min
         self.max_slip_time, self.max_offset = max_slip_time, max_offset
         self.leg_timeout = leg_timeout
+        # HOLD + RESYNC (no leg odometry for the step; see the module doc). jump_dist 0 = off.
+        self.jump_dist, self.jump_min, self.jump_speed = jump_dist, jump_min, jump_speed
+        self.jump_yaw, self.jump_yaw_rate = jump_yaw, jump_yaw_rate
+        self.steady_time, self.steady_dist, self.steady_yaw = steady_time, steady_dist, steady_yaw
+        self.resync_timeout = resync_timeout
+        self.resync_limit, self.resync_window = resync_limit, resync_window
+        self.hold = None                              # dict while /odom is held
+        self.holds = collections.deque()              # stamps holds started (resync_window)
+        self.fault = None                             # reason, once resyncing gave up
+        self.resynced = None                          # text of the last resync
         self.legs = collections.deque(maxlen=400)     # (receive time, vx, vy) body frame
         self.fl_prev = None                           # (stamp, T) Fast-LIO base pose
         self.out = None                               # T published last
@@ -142,7 +176,17 @@ class GuardCore:
         d = np.linalg.inv(t_prev) @ t_fl            # this step, in the previous base frame
         if dt <= 0:
             dt = 0.1
+        if self.hold is not None or self.fault:
+            self.holding(stamp, t_fl)               # /odom stays where it was
+            self.fl_prev = (stamp, t_fl)
+            return self.out
         leg = self.leg_velocity(now, dt)
+        if leg is None and self.jump_dist > 0:
+            why = self.jump_reason(d, dt)
+            if why:
+                self.start_hold(stamp, t_fl, why)
+                self.fl_prev = (stamp, t_fl)
+                return self.out
         used = d
         if leg is not None:
             fl_xy = d[:2, 3]
@@ -177,15 +221,72 @@ class GuardCore:
             self.out = t_fl.copy()
         return self.out
 
+    def jump_reason(self, d, dt):
+        """Why the Fast-LIO step d (dt s) is a jump the robot can't have made, or None."""
+        step = float(np.linalg.norm(d[:2, 3]))
+        yaw = abs(math.atan2(d[1, 0], d[0, 0]))
+        if step > self.jump_dist:
+            return f'Fast-LIO jumped {step:.2f} m in {dt:.2f} s'
+        if step > self.jump_min and step / dt > self.jump_speed:
+            return f'Fast-LIO moved {step:.2f} m in {dt:.2f} s ({step / dt:.1f} m/s)'
+        if yaw > self.jump_yaw and yaw / dt > self.jump_yaw_rate:
+            return f'Fast-LIO turned {math.degrees(yaw):.0f} deg in {dt:.2f} s'
+        return None
+
+    def start_hold(self, stamp, t_fl, why):
+        self.holds.append(stamp)
+        while self.holds and stamp - self.holds[0] > self.resync_window:
+            self.holds.popleft()
+        self.hold = {'since': stamp, 'why': why, 'ref': t_fl, 'ref_at': stamp}
+        if len(self.holds) > self.resync_limit:
+            self.give_up(f'{why}: {len(self.holds)} jumps in {self.resync_window:.0f} s, '
+                         'Fast-LIO keeps diverging')
+            return
+        self.events.append(('warn', f'{why}: HOLD - /odom held at the last good pose until '
+                            f'Fast-LIO is steady for {self.steady_time:.0f} s (the robot is '
+                            'stopped meanwhile)'))
+
+    def holding(self, stamp, t_fl):
+        """While held: Fast-LIO steady (robot stopped) for steady_time s = resynced."""
+        h = self.hold
+        if self.fault or h is None:
+            return
+        m = np.linalg.inv(h['ref']) @ t_fl
+        if (np.linalg.norm(m[:3, 3]) > self.steady_dist or
+                abs(math.atan2(m[1, 0], m[0, 0])) > self.steady_yaw):
+            h['ref'], h['ref_at'] = t_fl, stamp      # still moving: steady window anew
+        elif stamp - h['ref_at'] >= self.steady_time:
+            self.hold = None
+            self.resynced = (f'resynced {stamp - h["since"]:.1f} s after "{h["why"]}"; /odom '
+                             f'goes on from the held pose')
+            self.events.append(('info', f'Fast-LIO steady for {self.steady_time:.0f} s: '
+                                f'RESYNC - {self.resynced} (/odom now {self.offset:.2f} m off '
+                                'Fast-LIO)'))
+            return
+        if stamp - h['since'] > self.resync_timeout:
+            self.give_up(f'{h["why"]}, and Fast-LIO not steady within '
+                         f'{self.resync_timeout:.0f} s')
+
+    def give_up(self, why):
+        self.fault = why
+        self.hold = None
+        self.events.append(('error', f'{why}: FAULT - /odom stays held, the robot stays '
+                            'stopped until restart'))
+
     @property
     def status(self):
+        if self.fault:
+            return f'FAULT: {self.fault}'
+        if self.hold is not None:
+            return f'HOLD: {self.hold["why"]}; waiting for Fast-LIO to be steady'
         if self.passthrough:
             return f'PASS-THROUGH: {self.passthrough}'
         if self.slip_since is not None:
             return f'SLIP: using leg odometry ({self.slip_dist:.2f} m so far)'
+        extra = f'; {self.resynced}' if self.resynced else ''
         if not self.legs:
-            return 'OK (no leg odometry yet: unguarded)'
-        return f'OK (offset {self.offset:.2f} m)'
+            return f'OK (no leg odometry yet: slips unguarded, jumps held{extra})'
+        return f'OK (offset {self.offset:.2f} m{extra})'
 
 
 # ------------------------------------------------------------------ node
@@ -232,16 +333,40 @@ def main():
             p('max_slip_time', 3.0)
             p('max_offset', 5.0)
             p('leg_timeout', 0.5)       # s; older leg odometry = unguarded
+            p('mount_wait', 5.0)        # s without the mount TF at start-up before it is an ERROR
+            # HOLD / RESYNC (no leg odometry): a Fast-LIO step over jump_dist m, or over
+            # jump_min m at more than jump_speed m/s, or over jump_yaw rad at more than
+            # jump_yaw_rate rad/s holds /odom; steady (within steady_dist m / steady_yaw rad)
+            # for steady_time s resyncs; not steady in resync_timeout s, or more than
+            # resync_limit holds in resync_window s = FAULT. jump_dist 0 = off (old relay).
+            p('jump_dist', 0.3)
+            p('jump_min', 0.08)
+            p('jump_speed', 1.0)
+            p('jump_yaw', 0.3)
+            p('jump_yaw_rate', 2.5)
+            p('steady_time', 3.0)
+            p('steady_dist', 0.03)
+            p('steady_yaw', 0.03)
+            p('resync_timeout', 30.0)
+            p('resync_limit', 3)
+            p('resync_window', 120.0)
             g = lambda n: self.get_parameter(n).value  # noqa: E731
             self.f = {n: g(n) for n in ('odom_frame', 'base_frame', 'lidar_frame',
                                         'lidar_init_frame', 'publish_tf')}
-            self.core = GuardCore(g('slip_speed'), g('slip_min'), g('max_slip_time'),
-                                  g('max_offset'), g('leg_timeout'))
+            self.core = GuardCore(
+                g('slip_speed'), g('slip_min'), g('max_slip_time'), g('max_offset'),
+                g('leg_timeout'), **{n: g(n) for n in (
+                    'jump_dist', 'jump_min', 'jump_speed', 'jump_yaw', 'jump_yaw_rate',
+                    'steady_time', 'steady_dist', 'steady_yaw', 'resync_timeout',
+                    'resync_limit', 'resync_window')})
             self.tf_buffer = Buffer()
             self.tf_listener = TransformListener(self.tf_buffer, self)
             self.tf_pub = TransformBroadcaster(self)
             self.static_pub = StaticTransformBroadcaster(self)
             self.mount = self.mount_inv = None
+            self.mount_wait = g('mount_wait')
+            self.started = time.monotonic()
+            self.skipped = 0                           # Fast-LIO messages before the mount
             self.prev = None                           # (stamp s, T published)
             self.status = None
             self.odom_pub = self.create_publisher(Odometry, g('output_topic'), 20)
@@ -263,8 +388,12 @@ def main():
                 tf = self.tf_buffer.lookup_transform(self.f['base_frame'], self.f['lidar_frame'],
                                                      Time())
             except TransformException as e:
-                self.get_logger().info(f'waiting for {self.f["base_frame"]} -> '
-                                       f'{self.f["lidar_frame"]}: {e}', throttle_duration_sec=5.0)
+                waited = time.monotonic() - self.started
+                if waited > self.mount_wait:
+                    self.get_logger().error(
+                        f'no TF {self.f["base_frame"]} -> {self.f["lidar_frame"]} after '
+                        f'{waited:.0f} s: NO /odom. Is the robot bridge (lite3_domain_bridge) '
+                        f'up and ROS_DOMAIN_ID right? ({e})', throttle_duration_sec=5.0)
                 return
             q, t = tf.transform.rotation, tf.transform.translation
             self.mount = make_tf(quat_to_rot(q.x, q.y, q.z, q.w), [t.x, t.y, t.z])
@@ -276,7 +405,10 @@ def main():
             init.child_frame_id = self.f['lidar_init_frame']
             fill(init.transform, self.mount)
             self.static_pub.sendTransform(init)
-            self.get_logger().info(f'got {self.f["base_frame"]} -> {self.f["lidar_frame"]}')
+            self.get_logger().info(
+                f'got {self.f["base_frame"]} -> {self.f["lidar_frame"]} after '
+                f'{time.monotonic() - self.started:.1f} s'
+                + (f' ({self.skipped} early Fast-LIO messages skipped)' if self.skipped else ''))
 
         def on_leg(self, msg):
             v = msg.twist.twist.linear
@@ -290,9 +422,10 @@ def main():
 
         def on_fastlio(self, msg):
             if self.mount is None:
-                self.get_logger().warn('dropping odometry: mount not known yet',
-                                       throttle_duration_sec=5.0)
-                return
+                self.lookup_mount()     # not only on the 0.5 s timer: the TF may be in by now
+                if self.mount is None:
+                    self.skipped += 1   # start-up; lookup_mount reports it if it lasts
+                    return
             pp, q = msg.pose.pose.position, msg.pose.pose.orientation
             t_fl = self.mount @ make_tf(quat_to_rot(q.x, q.y, q.z, q.w),
                                         [pp.x, pp.y, pp.z]) @ self.mount_inv

@@ -3,7 +3,7 @@
     ros2 launch maze_nav maze_nav.launch.py
 
 Pipeline:
-  Fast-LIO + odom_relay (lite3_launcher)        -> /odom, odom->base_link
+  Fast-LIO (lite3_launcher) + odom_relay (ours) -> /odom, odom->base_link
   wall_scan                                     -> /wall_scan (walls only, floor-referenced)
   slam_toolbox (online async)                   -> /map, map->odom
   maze_explorer (frontiers + exit detection)    -> /navigate_to_pose goals
@@ -18,6 +18,8 @@ the last part itself first (maze_nav/preflight.py) and warns if anything clashes
 
 Arguments:
   bringup:=false   Fast-LIO / odom already running (or a simulator)
+  odom_guard:=false  true = odom_relay bridges Fast-LIO slips with leg odometry (/leg_odom2;
+                   untested on the robot); false = plain relay of Fast-LIO
   go:=false        explorer picks goals but doesn't send them (watch /maze/goal in RViz)
   drive:=false     Nav2 runs but nothing reaches /cmd_vel (cmd_vel_bridge preview topic)
   gait:=hstep      cmd_vel_bridge sends Move mode + H-Step (high-stepping RUG gait) once at
@@ -80,9 +82,11 @@ Arguments:
                    and the junction follow-up run with it; a checked dead end is never
                    entered
   scene_understanding:=false  true = also room_scene (one camera frame per dead-end view
-                   -> VLM queue, logs/scene/) + task_reporter (/mission/task_completed).
+                   -> VLM queue, scene_save_dir) + task_reporter (/mission/task_completed).
                    Off by default: VLM not wired yet, and one more colour-camera copy over
                    the robot bridge. The explorer never waits for it either way
+  scene_save_dir:=~/challenge_ws/logs/scene  where room_scene saves its frames + rooms.jsonl
+                   (run_sim.sh: <log dir>/scene, so sim frames stay out of the real logs)
   creep_distance:=0.10  m straight ahead (no steering) after start, onto the SLAM map and off the
                    back wall (0 = off)
   start_scan:=false  true = turn 30 deg left, 60 right, 30 left after the creep, before exploring
@@ -461,7 +465,11 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('bringup', default_value='true',
-                              description='Start Fast-LIO and odom_relay (lite3_launcher)'),
+                              description='Start Fast-LIO (lite3_launcher) and odom_relay '
+                                          '(maze_nav odom_guard)'),
+        DeclareLaunchArgument('odom_guard', default_value='false',
+                              description='true = odom_relay bridges Fast-LIO slips with leg '
+                                          'odometry (/leg_odom2); false = plain relay'),
         DeclareLaunchArgument('go', default_value='true',
                               description='false = explorer only publishes /maze/goal'),
         DeclareLaunchArgument('pose_looks', default_value='true',
@@ -543,6 +551,9 @@ def generate_launch_description():
         DeclareLaunchArgument('scene_understanding', default_value='false',
                               description='true = room_scene (dead-end views -> VLM queue) '
                                           '+ task_reporter; needs scene_trigger'),
+        DeclareLaunchArgument('scene_save_dir',
+                              default_value=os.path.expanduser('~/challenge_ws/logs/scene'),
+                              description='room_scene: folder for its frames + rooms.jsonl'),
         DeclareLaunchArgument('cpu_log', default_value='true',
                               description='log CPU per process to ~/challenge_ws/logs/cpu/'),
         DeclareLaunchArgument('creep_distance', default_value='0.10',
@@ -616,7 +627,7 @@ def generate_launch_description():
         *death_banners(),
         *startup_summary(),
 
-        # Fast-LIO + odom_relay only; lite3_bringup would also start a /scan we don't use.
+        # Fast-LIO only; lite3_bringup would also start a /scan we don't use.
         # Our Fast-LIO settings (config/fastlio_mid360.yaml: blind 0.3, 0.3 m voxels, fixed
         # extrinsic). lite3_launcher joins config_path + config_file; '/' + an absolute path
         # is that path, so fastlio_config can be any file.
@@ -626,10 +637,14 @@ def generate_launch_description():
             launch_arguments={'config_path': '/',
                               'config_file': arg('fastlio_config')}.items(),
             condition=IfCondition(arg('bringup'))),
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(PathJoinSubstitution([lite3_base,
-                                                                'odom_relay.launch.py'])),
-            condition=IfCondition(arg('bringup'))),
+        # Our relay (maze_nav/odom_guard.py), under lite3_launcher's node name: that one
+        # warned "Dropping odometry, base_link -> livox_frame not known yet" at every launch
+        # (static TF polled every 0.5 s). Same maths and outputs.
+        Node(package='maze_nav', executable='odom_guard', name='odom_relay', output='both',
+             parameters=[{'leg_topic': ParameterValue(PythonExpression(
+                 ["'/leg_odom2' if '", arg('odom_guard'), "'.lower() in ('true', '1') "
+                  "else ''"]), value_type=str)}],
+             condition=IfCondition(arg('bringup'))),
         Node(package='maze_nav', executable='cpu_monitor', name='cpu_monitor', output='both',
              condition=IfCondition(arg('cpu_log'))),
         Node(package='maze_nav', executable='lidar_relay', name='lidar_relay', output='both',
@@ -732,6 +747,7 @@ def generate_launch_description():
                  'camera_topic': PythonExpression(
                      ["'/camera/color_relay/image_raw/compressed' if '", arg('perception'),
                       "'.lower() in ('true', '1') else '/camera/color/image_raw/compressed'"]),
+                 'save_dir': ParameterValue(arg('scene_save_dir'), value_type=str),
                  'cell_size': ParameterValue(arg('cell_size'), value_type=float)}],
              condition=IfCondition(arg('scene_understanding'))),
 

@@ -150,6 +150,35 @@ def wall_ranges(points_odom, robot_xy, robot_yaw, floor_z, band, angle_min, angl
     return ranges
 
 
+def terrain_band(band, floor_z, local_floor=None, rough=False, band_low_rough=0.38,
+                 max_lift=0.12, max_drop=0.06, min_width=0.08):
+    """The wall band (low, high) m above floor_z to use on the ground the robot stands on.
+
+    The band is measured from the maze floor (the walls stand on it), but on terrain
+    (maze_info.md: tiles raised ~0.10 m + slopes / slats / rubble up to 0.15 m: tops
+    ~0.21-0.25 m) the plain band_low 0.30 is only ~5 cm above the terrain tops. Standing on
+    it, the body tilts and odom z drifts by a few cm, and the terrain the robot walks on and
+    the next cell's blocks came into the band as walls (2026-11-23 10:31: cells [1,0],
+    [1,-1], [1,-2], [2,-1] "raised", Nav2 blocked, terrain push into the stair cell).
+
+    local_floor: odom z of the floor measured under the feet (stair_detector
+    /maze/local_floor_z), None = unknown. Above floor_z (on a tile, or odom z drifted
+    up) the band's bottom rises by as much (up to max_lift); below it (odom z drifted down)
+    the band's top comes down by as much (up to max_drop), so it stays under the wall top.
+    rough: stair_detector's on_rough (the ground under the robot is uneven): the bottom is
+    at least band_low_rough. The top never rises: wall tops (0.53 m) stand on the maze floor.
+    The band keeps at least min_width.
+    """
+    low, high = float(band[0]), float(band[1])
+    if local_floor is not None and floor_z is not None and math.isfinite(local_floor):
+        d = float(local_floor) - float(floor_z)
+        low += min(max(d, 0.0), max_lift)
+        high += max(min(d, 0.0), -max_drop)
+    if rough:
+        low = max(low, band_low_rough)
+    return min(low, high - min_width), high
+
+
 def estimate_floor(points_odom, robot_xy, robot_z, expected_drop=0.35, window=0.15,
                    min_points=200, layer_fraction=0.2):
     """Floor height (odom z) from the cloud around the standing robot, or None.
