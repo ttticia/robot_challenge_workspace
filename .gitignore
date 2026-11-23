@@ -22,3 +22,7 @@ logs/
 
 # YOLO datasets are tracked; the zip snapshots are copies of datasets/curtain
 datasets/*.zip
+
+# Dataset review sheets (sheet.py output) and source phone videos
+datasets/curtain/review/
+datasets/*.MOV
