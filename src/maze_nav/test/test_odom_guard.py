@@ -82,8 +82,8 @@ def test_divergence_is_passed_through_so_the_watchdog_sees_it():
     assert any(kind == 'error' for kind, _ in core.events)
 
 
-def test_no_leg_odometry_means_unguarded():
-    core = GuardCore()
+def test_no_leg_odometry_and_no_jump_hold_means_unguarded():
+    core = GuardCore(jump_dist=0.0)
     fl = [pose(0.0, 0.0 if k < 5 else 0.4) for k in range(10)]
     out = run(core, fl, [None] * 10)
     for a, b in zip(out, fl):
@@ -91,8 +91,76 @@ def test_no_leg_odometry_means_unguarded():
     assert 'no leg odometry' in core.status
 
 
+def test_no_leg_odometry_normal_driving_is_not_held():
+    core = GuardCore()
+    fl = [pose(0.25 * k * DT, 0.0, yaw=0.5 * k * DT) for k in range(40)]   # robot's max speeds
+    out = run(core, fl, [None] * 40)
+    for a, b in zip(out, fl):
+        assert np.allclose(a, b)
+    assert core.hold is None and core.status.startswith('OK')
+
+
+def test_jump_holds_odom_then_resyncs_once_steady():
+    core = GuardCore(steady_time=3.0)
+    # 10:31 run: Fast-LIO jumps 0.59 m, wobbles for 1 s, then is steady (robot stopped)
+    fl = [pose(0.02 * k, 0.0) for k in range(10)]                     # driving to x 0.18
+    fl += [pose(0.18 + 0.59, 0.1 * (k % 2)) for k in range(10)]       # jump + wobble
+    fl += [pose(0.77, 0.0)] * 35                                      # steady 3.5 s
+    fl += [pose(0.77 + 0.02 * k, 0.0) for k in range(1, 6)]           # drives on 10 cm
+    out = run(core, fl, [None] * len(fl))
+    held = out[10]
+    assert np.allclose(held[:2, 3], [0.18, 0.0])                     # never jumped on /odom
+    steps = [np.linalg.norm(out[k][:2, 3] - out[k - 1][:2, 3]) for k in range(1, len(out))]
+    assert max(steps) < 0.03
+    assert core.hold is None and core.fault is None
+    assert out[-1][0, 3] == pytest.approx(0.18 + 0.10, abs=1e-6)       # Fast-LIO's motion again
+    assert 'resynced' in core.status
+    kinds = [e[1] for e in core.events]
+    assert any('HOLD' in t for t in kinds) and any('RESYNC' in t for t in kinds)
+
+
+def test_status_says_hold_while_held():
+    core = GuardCore()
+    run(core, [pose(0.0, 0.0), pose(0.5, 0.0), pose(0.5, 0.0)], [None] * 3)
+    assert core.status.startswith('HOLD')
+
+
+def test_yaw_jump_is_held():
+    core = GuardCore()
+    out = run(core, [pose(0.0, 0.0), pose(0.0, 0.0, yaw=0.6)], [None] * 2)
+    assert core.hold is not None
+    assert np.allclose(out[1], out[0])
+
+
+def test_never_steady_is_a_fault():
+    core = GuardCore(resync_timeout=5.0)
+    fl = [pose(0.0, 0.0), pose(0.5, 0.0)]
+    fl += [pose(0.5 + 0.05 * k, 0.0) for k in range(80)]             # keeps drifting 0.5 m/s
+    out = run(core, fl, [None] * len(fl))
+    assert core.fault is not None and core.status.startswith('FAULT')
+    assert np.allclose(out[-1][:2, 3], [0.0, 0.0])                   # still held
+    assert any(kind == 'error' for kind, _ in core.events)
+
+
+def test_too_many_jumps_is_a_fault():
+    core = GuardCore(steady_time=1.0, resync_limit=3, resync_window=120.0)
+    fl, x = [pose(0.0, 0.0)], 0.0
+    for _ in range(4):                                               # 4 jumps, each resynced
+        x += 0.5
+        fl += [pose(x, 0.0)] * 15
+    run(core, fl, [None] * len(fl))
+    assert core.fault is not None and 'keeps diverging' in core.fault
+
+
+def test_with_leg_odometry_a_jump_is_bridged_not_held():
+    core = GuardCore()
+    fl = [pose(0.0, 0.0 if k < 5 else 0.4) for k in range(10)]
+    run(core, fl, [(0.0, 0.0)] * 10)
+    assert core.hold is None
+
+
 def test_stale_leg_odometry_is_not_used():
-    core = GuardCore(leg_timeout=0.5)
+    core = GuardCore(leg_timeout=0.5, jump_dist=0.0)
     core.add_leg(0.0, 0.0, 0.0)                      # one old sample only
     fl = [pose(0.0, 0.0), pose(0.4, 0.0)]
     out = [core.update(10.0, fl[0], 10.0), core.update(10.1, fl[1], 10.1)]
