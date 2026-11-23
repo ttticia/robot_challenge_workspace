@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk -F: '{print $1}')",
+      "Bash(ls -la /tmp/claude-1000/-home-user-challenge-ws/ 2>&1 | head; ls /tmp/claude-1000/-home-user-challenge-ws/*/scratchpad 2>&1 | head -30; ls ~/challenge_ws/datasets/curtain/images | grep -c -E \"scene_check|maze_2026\")",
+      "Read(//tmp/claude-1000/-home-user-challenge-ws/**)",
+      "Bash(sed -i '630,650{s/xy = \\(2.2, 0.75\\)/xy = \\(2.4, 0.75\\)/;s/visited\\\\[:, :44\\\\]/visited[:, :48]/}' test/test_core.py)",
+      "Bash(nice -n 19 python3 -m pytest test -q -x)",
+      "Bash(awk '{print $6,$7,$8}')",
+      "Bash(nice -n 19 sqlite3 \"file:stairs_check/stairs_check_0.db3?mode=ro\" \"select t.name, t.type, count\\(m.id\\), min\\(m.timestamp\\)/1e9, max\\(m.timestamp\\)/1e9 from topics t left join messages m on m.topic_id=t.id group by t.id\")",
+      "Bash(xxd)",
+      "Bash(xargs -r du -sh)",
+      "Bash(truncate -s $\\(\\(1204626*4096\\)\\) stairs_check/stairs_check_0.db3)",
+      "Bash(grep -vE '\\\\.\\(py|md|json|sh|yaml|yml|txt|xml|cfg|launch\\)$')",
+      "Bash(xargs -d '\\\\n' ls -la)",
+      "Bash(awk '$5>5000000')",
+      "Bash(git restore *)",
+      "Bash(GIT_TERMINAL_PROMPT=0 timeout 540 git push origin HEAD:integration)"
+    ]
+  }
+}
