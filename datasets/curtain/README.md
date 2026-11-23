@@ -5,7 +5,7 @@ One class: `0 curtain` (YOLO format, `labels/<image>.txt`, normalised `x y w h`)
 | Folder | What |
 |---|---|
 | `images/`, `labels/` | **Training set**: 446 frames, 250 with a curtain, 196 negatives (empty label file = checked, no curtain) |
-| `duplicates/` (+ `duplicates/labels/`) | 1263 near-repeat frames removed by `dedup_frames.py 0.45` (kept for reference, not for training) |
+| `duplicates/` (+ `duplicates/labels/`) | Not on disk: 1338 near-repeat frames removed by `dedup_frames.py 0.45` were deleted 2026-11-23 to save space (still in git at commit 044e17c, except the 75 unlabelled phone repeats). `dedup_frames.py` recreates the folder when it runs. |
 | `excluded/` | 43 frames with no usable label (camera pressed into the fabric, or only an unclear sliver of curtain) |
 | `manifest.csv` | every extracted frame: time, depth straight ahead (m), draft yes/no and the depth detector's reason |
 | `data.yaml` | YOLO config |
