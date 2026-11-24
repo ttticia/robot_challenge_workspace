@@ -7,3 +7,7 @@ yolo_test/*.pt
 yolo_test/venv/
 images/_delete_/
 *.zip
+# Bags and frames extracted from them stay local until labelled
+frames/
+*.db3
+*/metadata.yaml

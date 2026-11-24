@@ -3,7 +3,7 @@
 <package format="3">
   <name>maze_nav</name>
   <version>0.1.0</version>
-  <description>Lite3 maze traversal: walls-only scan, slam_toolbox, Nav2 and a frontier explorer that stops when the robot is out of the maze.</description>
+  <description>Lite3 curtain detection (curtain-only branch of maze_nav): lidar gap check (curtain_detector), lie-down inspection and a YOLO curtain model in the colour camera (curtain_yolo).</description>
   <maintainer email="ng.tricia2005@gmail.com">ngtri</maintainer>
   <license>Apache-2.0</license>
 
@@ -13,26 +13,12 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>sensor_msgs_py</exec_depend>
   <exec_depend>std_msgs</exec_depend>
-  <exec_depend>std_srvs</exec_depend>
-  <exec_depend>action_msgs</exec_depend>
-  <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
-  <exec_depend>slam_toolbox</exec_depend>
-  <exec_depend>nav2_common</exec_depend>
-  <exec_depend>nav2_planner</exec_depend>
-  <exec_depend>nav2_smac_planner</exec_depend>
-  <exec_depend>nav2_controller</exec_depend>
-  <exec_depend>nav2_regulated_pure_pursuit_controller</exec_depend>
-  <exec_depend>nav2_behaviors</exec_depend>
-  <exec_depend>nav2_bt_navigator</exec_depend>
-  <exec_depend>nav2_velocity_smoother</exec_depend>
-  <exec_depend>nav2_lifecycle_manager</exec_depend>
-  <!-- room_scene / task_reporter, started by maze_nav.launch.py (scene_understanding:=true) -->
-  <exec_depend>scene_understanding</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
-  <exec_depend>python3-opencv</exec_depend>  <!-- stairs.py median filter (optional) -->
-  <!-- lite3_launcher (Fast-LIO + odom_relay) is robot-only and not declared here; use bringup:=false without it -->
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
+  <!-- curtain_yolo: ultralytics (+ openvino for the exported model), pip, not rosdep -->
 
   <test_depend>python3-pytest</test_depend>
 
