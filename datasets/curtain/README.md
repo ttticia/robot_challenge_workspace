@@ -4,7 +4,7 @@ One class: `0 curtain` (YOLO format, `labels/<image>.txt`, normalised `x y w h`)
 
 | Folder | What |
 |---|---|
-| `images/`, `labels/` | **Training set**: 598 frames, 298 with a curtain, 300 negatives (empty label file = checked, no curtain) |
+| `images/`, `labels/` | **Training set**: 638 labelled frames, 298 with a curtain, 340 negatives (empty label file = checked, no curtain) |
 | `duplicates/` (+ `duplicates/labels/`) | Not on disk: 1338 near-repeat frames removed by `dedup_frames.py 0.45` were deleted 2026-11-23 to save space (still in git at commit 044e17c, except the 75 unlabelled phone repeats). `dedup_frames.py` recreates the folder when it runs. |
 | `excluded/` | 51 frames with no usable label (camera pressed into the fabric, only an unclear sliver of curtain, or a sideways view) |
 | `manifest.csv` | every extracted frame: time, depth straight ahead (m), draft yes/no and the depth detector's reason |
@@ -18,6 +18,9 @@ frames at 3 Hz, then de-duplicated) and
 `demo` (`runs/ROS_bags/demo`, 2026-11-23 robot run through the competition arena: curtain from behind the
 block field to pushing through it, twice, plus stairs, grey walls and props as negatives; 20 curtain + 102
 negative; colour only, 3 Hz, de-duplicated, the 347 near-repeats not kept; currently in `split_train.txt`).
+`img_20261124_035654` (`runs/ROS_bags/img_20261124_035654`, 2026-11-24, colour only, hand-carried camera view outside
+the arena: people, chairs, dark red table skirts, grey panels and close-ups of an OSB board; 40 negatives,
+no curtain; 3 Hz, de-duplicated, the 132 near-repeats not kept; in `split_train.txt`).
 Frames are named `<bag>_<SSSS>_<cc>.jpg` (seconds, hundredths into the bag).
 
 **Phone frames** (`phone_crop_IMG_1671/1672/1679/1680_*`, 70 curtain + 3 negative): hand-held phone videos

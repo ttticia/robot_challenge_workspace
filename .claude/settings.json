@@ -70,7 +70,26 @@
       "Bash(awk '/2\\\\.6/{f=1} f{print} /^## 3\\\\./{exit}' runs/ROS_bags/ROSBAG_GUIDE.md)",
       "Bash(grep -v -E '\\\\.\\(jpg|png|db3\\)$')",
       "Bash(nice -n 19 du -sh .vscode-server/cli/servers/* .vscode-server/extensions/* .vscode-server/data/* .local/lib/python3*/site-packages/*)",
-      "Bash(nice -n 19 du -xsh /usr/* /var/* /opt/*)"
+      "Bash(nice -n 19 du -xsh /usr/* /var/* /opt/*)",
+      "Bash(nice -n 19 python3 -m pytest -q test)",
+      "Bash(bash -ic 'ros2 pkg list 2>/dev/null | grep -E \"transfer_interfaces|livox_ros_driver2|fast_lio|lite3_launcher|maze_explore\"')",
+      "Bash(timeout 15 ros2 node list)",
+      "Bash(timeout 15 ros2 topic list)",
+      "Bash(awk '$6==\"2026-11-24\"')",
+      "Bash(ps -eo etime,pid,cmd)",
+      "Bash(ldd ~/ros2_ws/install/fast_lio/lib/fast_lio/fastlio_mapping)",
+      "Bash(python3 -c \"import transfer_interfaces\")",
+      "Bash(ps -eo pid,etimes,args)",
+      "Bash(./record.sh -n img t)",
+      "Bash(bash -ic 'type rec_img')",
+      "Read(//usr/lib/x86_64-linux-gnu/**)",
+      "Bash(python3 -c \"import pyzstd\")",
+      "Bash(python3 -c \"import zstd\")",
+      "Bash(git -C /home/user/challenge_ws status --short datasets/curtain/incoming)",
+      "Read(//home/runs/ROS_bags/**)",
+      "Bash(ros2 pkg *)",
+      "Bash(ls -la ~/.cache/team_perception 2>/dev/null | head; du -sh ~/.cache/team_perception 2>/dev/null; ls -la --time-style=long-iso ~/ros2_ws/src/FAST_LIO/Log 2>/dev/null | head -8; grep -n \"ROOT_DIR\\\\|fopen\\\\|open\\(\" ~/ros2_ws/src/FAST_LIO/src/laserMapping.cpp | head -12; cd ~/challenge_ws && cat .gitignore | grep -n \"models\\\\|logs\"; ls models | head; sed -n 25,40p src/team_perception/team_perception/human_utils.py; ls /tmp/launch_params_* 2>/dev/null | wc -l; crontab -l 2>/dev/null | grep -v \"^#\" | head -3)",
+      "Read(//tmp/**)"
     ],
     "additionalDirectories": [
       "/home/user/challenge_ws/runs"

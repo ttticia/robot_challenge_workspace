@@ -26,3 +26,6 @@ datasets/*.zip
 # Dataset review sheets (sheet.py output) and source phone videos
 datasets/curtain/review/
 datasets/*.MOV
+
+# model weights and caches written at run time
+models/

@@ -52,7 +52,7 @@ YOLO is capped (`yolo_threads:=2`, `yolo_rate_hz:=5.0`) so it leaves the CPU to 
    `poster_detector` and `human_detector` work around it: they keep the correct parent
    (`camera_depth_frame`) in their own TF buffers (`team_perception/tf_pin.py`, node
    parameter `tf_pin`, `['']` = off) and log one warning when they see the duplicate.
-5. **Write access** to `~/qr_logs/` and `~/poster_logs/` on the robot (snapshots and CSVs).
+5. **Write access** to `~/challenge_ws/logs/qr/` and `~/challenge_ws/logs/posters/` on the robot (snapshots and CSVs).
 6. **Don't record raw depth** (`/camera/depth/image_raw`) during an autonomous run: it stalled
    Nav2 on 2026-11-13. Record perception results with the `rec_*` presets in
    `runs/ROS_bags/ROSBAG_GUIDE.md` (group G).
@@ -73,7 +73,7 @@ ros2 launch team_perception robot.launch.py
 Expected startup lines:
 
 ```
-[qr_scanner]: QR scanner on /camera/color/image_raw/compressed using ..., logging to ~/qr_logs/qr_<date>_<time>.csv
+[qr_scanner]: QR scanner on /camera/color/image_raw/compressed using ..., logging to ~/challenge_ws/logs/qr/qr_<date>_<time>.csv
 [human_detector]: Loading YOLO model yolo11n.pt on cpu (2 threads) ...
 [human_detector]: Human detector on /camera/color/image_raw/compressed, <= 5 Hz, publishing /humans/detections
 [depth_relay]: /camera/depth/image_raw -> /camera/depth_relay/image_raw at <= 10.0 Hz; ...
@@ -113,7 +113,7 @@ ros2 launch team_perception robot.launch.py --show-args             # list every
 | `yolo_threads` | `2` | torch CPU threads for YOLO (`0` = torch default, about 8) |
 | `yolo_imgsz` | `640` | YOLO input size (smaller = faster, misses far people) |
 | `yolo_conf` | `0.4` | Minimum person confidence |
-| `yolo_model` | `yolo11n.pt` | Weights: bare name = `~/.cache/team_perception/`, or a path |
+| `yolo_model` | `yolo11n.pt` | Weights: bare name = `~/challenge_ws/models/team_perception/`, or a path |
 
 If the driver ever publishes aligned depth:
 
@@ -141,8 +141,8 @@ ros2 launch team_perception robot.launch.py \
 | `/perception/look_request` | `geometry_msgs/PointStamped` (`odom`) | From `poster_detector`: a QR room with no poster confirmed 3 s after the code was read; `maze_explorer` turns around there once |
 | `/posters/detections` | `std_msgs/String` (JSON) | One message per confirmed survivor: `id`, `cell` `[i, j]`, `cell_centre` `[x, y]` (the reported location) and its `frame`, plus the poster's `odom` position, votes and reasons. Again when SLAM re-places it |
 | `/humans/detections` | `std_msgs/String` (JSON) | From `human_detector`: `stamp`, `image_size`, `people` boxes |
-| `~/qr_logs/` | CSV + JPEG snapshot | One row (time, text, snapshot) and snapshot per new code (created on the first find) |
-| `~/poster_logs/` | CSV | One row per survivor report: cell, centre (the location to report), frame, poster position in `odom` (created on the first find) |
+| `~/challenge_ws/logs/qr/` | CSV + JPEG snapshot | One row (time, text, snapshot) and snapshot per new code (created on the first find) |
+| `~/challenge_ws/logs/posters/` | CSV | One row per survivor report: cell, centre (the location to report), frame, poster position in `odom` (created on the first find) |
 
 **QR codes and survivors.** Codes only appear in rooms with survivors (1-2 per room; not
 every survivor room has a code). In a code's room (room points within `room_radius_m`,

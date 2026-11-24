@@ -3,7 +3,9 @@ QR scanner node (robot build: no debug video).
 
 Subscribes to a colour (or left rectified) image, decodes QR codes in a background
 thread, and publishes/logs every NEW code once (with a saved snapshot as evidence). The
-codes' text is a hint to where other survivors are; it is logged as `QR hint: ...`.
+code's text is the conscious survivor's message (mission M04, booklet update 2026-11-24:
+one QR code per arena, beside the M03 survivor). It is passed on EXACTLY as decoded, on
+/qr/read, and logged as `QR message: ...`; task_reporter sends it as M04.
 
 QR locations are not reported. A code only appears in a room with a survivor, though, so
 with depth the node works out the code's ROOM point (the code's spot pulled back from its
@@ -94,7 +96,7 @@ class QrScanner(Node):
         p('unread_period_s', 1.0)      # at most one /qr/unread a second
         p('unread_range_m', 1.5)       # assumed distance along the ray when there's no depth
         p('unread_full_scan_s', 3.0)   # after an unread sighting: full scans on every frame
-        p('log_dir', os.path.expanduser('~/qr_logs'))
+        p('log_dir', os.path.expanduser('~/challenge_ws/logs/qr'))   # nothing outside the workspace
 
         def g(name):
             return self.get_parameter(name).value
@@ -324,7 +326,7 @@ class QrScanner(Node):
             if new_file:
                 csv.writer(f).writerow(['wall_time', 'text', 'snapshot'])
             csv.writer(f).writerow([time.time(), text, snap])
-        self.get_logger().info(f'QR hint: "{text}"'
+        self.get_logger().info(f'QR message (M04): "{text}"'
                                + ('' if room else ' (no room point: no depth or TF)'))
 
     def locate(self, u, v, header, shape):

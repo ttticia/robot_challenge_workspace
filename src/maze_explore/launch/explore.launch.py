@@ -22,13 +22,22 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
+# ros2 launch writes each node's parameters to a temporary file. Keep those in the workspace
+# too (user, 2026-11-24: no files outside ~/challenge_ws at run time); the daily log clean-up
+# removes them after a week.
+import tempfile  # noqa: E402
+_TMP = os.path.expanduser('~/challenge_ws/logs/tmp')
+os.makedirs(_TMP, exist_ok=True)
+tempfile.tempdir = _TMP
+os.environ['TMPDIR'] = _TMP
+
 ARGS = {
     'fastlio': ('true', 'run Fast-LIO and odom_relay (false: something else publishes /odom)'),
     'explore': ('true', 'run maze_explorer (false = mapping only)'),
     'drive': ('true', 'false: velocity goes to /explore/cmd_vel_preview, no mode requests'),
     'auto_start': ('false', 'start exploring without waiting for /nav/start'),
     'cloud_topic': ('/cloud_registered_body', 'cloud for wall_scan (sim: /livox/points)'),
-    'gait': ('hstep', 'walking gait: hstep or rug'),
+    'gait': ('rug', 'walking gait: rug (RUG general gear) or hstep (H-Step)'),
     'enter_rooms': ('false', 'walk into rooms instead of looking in from the cell before'),
     'v_max': ('0.20', 'top walking speed, m/s'),
     'stand_height': ('0.30', 'base_link height used when the floor cannot be measured'),

@@ -38,7 +38,7 @@ State of the new stack, as found when this file was written:
 | Each uneven-terrain cell crossed autonomously (4 cells) | 5 each |
 | Stairs crossed autonomously | 10 |
 | Movable obstacle (curtain) passed autonomously | 15 |
-| M01 object, M02 hazard, M03 and M05 survivors (label / scene type 5, position 5) | 10 each |
+| M01 object (always `hand_tools`), M02 hazard sign (type varies), M03 survivor with QR, M05 survivor without QR (label / scene type 5, position 5) | 10 each |
 | M04 QR message decoded | 5 |
 | Stop autonomously inside the final cell | 10 |
 | Drone landing | up to 50 |
@@ -53,6 +53,9 @@ Rules that shape the design:
   leave it at most one cell after. No points for any other cell crossed in AI mode.
 - A manual intervention gives 0 points for that obstacle. A mission reached with manual
   help is capped at 8 points.
+- Each restart is a new attempt with mission scores and reports reset; the best ground
+  attempt counts. The drone launch may be started at any time by carrying the robot to the
+  launch cell, but ends the ground mission (booklet update 2026-11-24).
 - "Inside the final cell" means all four legs inside it, nothing touching the frame.
 - Reported positions use the arena frame: origin at the centre of the start cell, +X along
   the start heading, +Y to the robot's left, cell centres 1.02 m apart. A position counts if
@@ -143,6 +146,12 @@ been explored, and the robot ends the run standing in the final cell.
 - **Start**: stand still, centred in the start cell, facing into the maze. The explorer
   waits for `/map`, `map -> base_level` and `/maze/cloud` (`WAIT` → `READY`), then for
   `/nav/start`. It sends Move → gait → navigation mode, creeps 0.10 m, fits the grid.
+- **Turning**: on the spot, about the cell centre, and held there: left alone the Lite3
+  walks backwards while turning (run1: 9 cm per 90°, 0.3 m in a half turn). The turn steers
+  back onto its pivot (forward and sideways only) and adds 0.03 m/s forward at full turn
+  rate. Body outline: 0.27 m ahead of base_link, **0.42 m behind** (0.37 m body + 0.05 m
+  for the bent hind legs), 0.23 m to each side; the rear corner sweeps 0.48 m, against
+  0.485 m from a cell centre to its walls.
 - **Walking**: turn to the heading, drive straight to the next centre. Top speed 0.20 m/s
   (team limit 0.25). Sideways and heading corrections on the way. **Never backwards**
   (`linear.x` is clamped at 0: nothing looks behind).
@@ -157,7 +166,7 @@ been explored, and the robot ends the run standing in the final cell.
   two cells (over the stair cell to the centre of the cell after) at 0.15 m/s, leave AI mode
   (AI off → manual → Move → gait → navigation mode). The stair cell is closed afterwards.
   This matches the one-cell-before, one-cell-after rule.
-- **Terrain**: no special handling. The H-Step gait (`gait:=hstep`, default) is used for the
+- **Terrain**: no special handling. The RUG general gait (`gait:=rug`, default since 2026-11-24; `hstep` = H-Step) is used for the
   whole run.
 - **Exit**: found from the map (open edge, nothing beyond). The red line on the floor
   (`maze_info.md`) is not used.
@@ -166,7 +175,7 @@ Safety behaviour:
 
 | Condition | Reaction |
 |---|---|
-| `/odom` jumps > 0.4 m, or faster than 1.5 m/s | `FAULT`: stop for good, relaunch needed |
+| `/odom` moves more than 0.15 m + 0.6 m/s × the time since the last message | pause 3 s, then carry on (after a stall in the lidar feed Fast-LIO catches up in one step: run3). Three such jumps in 10 s, or one over 2 m: `FAULT`, stop for good, relaunch needed |
 | Pose or lidar cloud older than 1 s | stand still until fresh (the action clock waits too) |
 | Something knee-high or taller 6–20 cm ahead while walking, and while pushing (`push_stop`) | stop; after 8 ticks give up the step |
 | No progress for 8 s (12 s in AI mode) | give up the step |
@@ -235,7 +244,7 @@ Unit tests: `nice -n 19 python3 -m pytest src/<package>/test -q`. `team_percepti
 | Package | Nodes | State |
 |---|---|---|
 | `team_perception` | `depth_relay`, `qr_scanner`, `human_detector`, `poster_detector` | Guides: `launch_guide.md`, `perception_guide.md`, `data_required.md`. `challenge_ws` is the master copy; do not re-sync from Robot-Dog-Grp4 |
-| `scene_understanding` | `room_scene`, `task_reporter` | The VLM is **not wired** (`vlm` = `none`): rooms are saved and skipped by `task_reporter` |
+| `scene_understanding` | `room_scene`, `task_reporter` | The VLM is **not wired** (`vlm` = `none`): rooms are saved and skipped by `task_reporter`. `task_reporter` (2026-11-24) maps results to the five fixed missions (`missions.py`). For now it only publishes the QR report (M04) on `/mission/task_completed` (`missions:=all`, `post:=true` + `group_id` turn the rest on) |
 | `datasets/curtain` | one-class curtain YOLO set | See its `README.md` |
 
 **The gap to close.** These packages were written against the old explorer and still
@@ -257,7 +266,10 @@ Decisions from the user that still hold:
   posters in `odom` and place them with the latest `map <- odom`; never track in `map`
   (it jumps on SLAM corrections).
 - QR codes appear only in rooms with survivors, on the left or right wall. QR positions are
-  not reported. QR text is a hint to another survivor's room.
+  not reported. **Booklet update 2026-11-24:** there are exactly two survivors and one QR
+  code. The survivor WITH the QR code is M03 and its decoded text is M04 (reported exactly
+  as decoded, e.g. "Please help me."); the survivor WITHOUT one is M05. The QR text is no
+  longer a hint to another survivor's room.
 - Detect QR codes and survivors only at dead ends (rooms); plain QR reading may run always.
 - The exit is a plain opening, never a curtain or stairs.
 
@@ -349,7 +361,9 @@ Measuring:
 - [ ] Unit tests for `grid.py`, `sense.py`, `plan.py`.
 - [ ] Connect perception and scene understanding to `/explore/event` and the cell grid
       (section 5).
-- [ ] Wire the VLM into `room_scene`, and check `task_reporter` against the report format.
+- [ ] Wire the VLM into `room_scene`. `task_reporter` follows the 2026-11-24 report format but
+      has never posted to the real server: test it against `192.168.10.141:8001` with our
+      `group_id`.
 - [ ] Decide whether the curtain YOLO model confirms a curtain before the robot pushes
       (today the height map alone decides).
 - [ ] `/livox/imu` reaches this computer at 10-20 Hz instead of 200 (2026-11-23 afternoon,

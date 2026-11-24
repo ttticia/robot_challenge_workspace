@@ -1,5 +1,5 @@
 """Tests for human_utils (YOLO person detector). The YOLO tests need torch, ultralytics and
-the weights in ~/.cache/team_perception/ (install_deps.sh); they are skipped without them."""
+the weights in ~/challenge_ws/models/team_perception/ (install_deps.sh); they are skipped without them."""
 import os
 
 import cv2

@@ -53,7 +53,7 @@ class Explorer(Node):
         self.w_max = p('w_max', 0.5).value             # rad/s
         self.min_spin = p('min_spin', 0.2).value       # the Lite3 does not turn below ~0.1
         self.creep = p('creep', 0.10).value            # m forward at the start
-        self.gait = p('gait', 'hstep').value
+        self.gait = p('gait', 'rug').value             # rug = RUG general gear, hstep = H-Step
         self.drive_on = p('drive', True).value         # false: /explore/cmd_vel_preview only
         self.send_modes = p('send_modes', True).value  # false: no /simple_cmd at all
         self.enter_rooms = p('enter_rooms', False).value
@@ -66,6 +66,21 @@ class Explorer(Node):
         self.pose_timeout = p('pose_timeout', 1.0).value
         self.push_stop = p('push_stop', True).value    # obstacle stop also while pushing (a
         #                                                real curtain then stops the push too)
+        # Body outline from base_link, m. The rear is the 0.37 m body plus 0.05 m for the bent
+        # hind legs (user, 2026-11-24). The rear corner sweeps turn_radius when turning on the
+        # spot: 0.48 m, against 0.485 m from a cell's centre to its walls, so turns are made
+        # ON the cell centre and held there (do_turn).
+        self.fp_front = p('footprint_front', 0.27).value
+        self.fp_rear = p('footprint_rear', 0.42).value
+        self.fp_half_width = p('footprint_half_width', 0.23).value
+        self.turn_radius = math.hypot(self.fp_rear, self.fp_half_width)
+        self.turn_ff = p('turn_forward', 0.03).value     # m/s forward at full turn rate: the
+        #                                                  Lite3 drifts ~9 cm back per 90 deg
+        self.pivot_snap = p('pivot_snap', 0.25).value     # m: turn about the cell centre when
+        #                                                  the robot stands this near it
+        self.odom_settle = p('odom_settle', 3.0).value   # s of pause after one odometry jump
+        self.odom_jumps = []
+        self.odom_hold_until = 0.0
         auto_start = p('auto_start', False).value
 
         self.state = 'WAIT'           # WAIT sensors, READY, RUN, DONE, STOPPED, FAULT
@@ -142,9 +157,22 @@ class Explorer(Node):
         if self.last_odom is not None:
             t0, x0, y0 = self.last_odom
             jump = math.hypot(p.x - x0, p.y - y0)
-            if jump > 0.4 or (t - t0 > 0.02 and jump / (t - t0) > 1.5):
-                self.halt('FAULT', f'/odom jumped {jump:.2f} m in {t - t0:.2f} s: odometry has '
-                                   'diverged. Stop, check the lidar / IMU rates, relaunch')
+            dt = max(t - t0, 0.0)
+            # More than the robot can walk in that time (0.6 m/s) plus 0.15 m. After a gap in
+            # the lidar stream Fast-LIO catches up in one step (run3, 2026-11-24: 0.48 m in
+            # 0.40 s after a 1 s stall, pose fine afterwards), so one jump only pauses the
+            # robot. A runaway keeps jumping or goes far: that latches.
+            if jump > 0.15 + 0.6 * dt:
+                now = self.now()
+                self.odom_jumps = [j for j in self.odom_jumps if now - j < 10.0] + [now]
+                if jump > 2.0 or len(self.odom_jumps) >= 3:
+                    self.halt('FAULT', f'/odom jumped {jump:.2f} m in {dt:.2f} s '
+                                       f'({len(self.odom_jumps)} jumps in 10 s): odometry has '
+                                       'diverged. Stop, run explore_check, relaunch')
+                elif self.state == 'RUN':
+                    self.get_logger().warn(f'/odom jumped {jump:.2f} m in {dt:.2f} s: paused '
+                                           f'{self.odom_settle:.0f} s to see that it holds')
+                self.odom_hold_until = now + self.odom_settle
         self.last_odom = (t, p.x, p.y)
 
     def read_pose(self):
@@ -379,7 +407,13 @@ class Explorer(Node):
                     self.begin()
         elif self.state == 'RUN':
             age = max(self.now() - self.pose_time, self.now() - (self.cloud_time or 0.0))
-            if age > self.pose_timeout:
+            if self.now() < self.odom_hold_until:
+                self.send()
+                self.why = 'odometry jumped: paused until it has held steady'
+                self.act_t0 += 0.1
+                if 't' in self.act_mem:
+                    self.act_mem['t'] += 0.1
+            elif age > self.pose_timeout:
                 self.send()
                 self.why = f'pose / lidar {age:.1f} s old: standing still until it is fresh'
                 self.act_t0 += 0.1                     # the action's clock stands still too
@@ -421,24 +455,48 @@ class Explorer(Node):
         return True
 
     def do_turn(self, target, tol_deg):
-        err = wrap(target - self.pose[2])
+        """Turn on the spot to heading `target`, WITHOUT leaving the spot. Left alone, the
+        Lite3 walks backwards while it turns (run1: 9 cm per 90 deg, 0.3 m in a half turn),
+        which puts its rear into the wall behind. So the turn has a pivot point (the cell
+        centre if the robot stands near it, else where the turn began) and the robot is
+        steered back onto it all the way round: forward only (never a backward command),
+        sideways both ways, plus a little forward that cancels the usual drift."""
+        x, y, yaw = self.pose
+        mem = self.act_mem
+        if 'pivot' not in mem:
+            mem['pivot'] = (x, y)
+            if self.grid is not None:
+                cx, cy = self.grid.centre(self.cur_cell())
+                if math.hypot(cx - x, cy - y) <= self.pivot_snap:
+                    mem['pivot'] = (cx, cy)
+        dx, dy = mem['pivot'][0] - x, mem['pivot'][1] - y
+        ahead = dx * math.cos(yaw) + dy * math.sin(yaw)       # pivot ahead of the robot (+)
+        left = -dx * math.sin(yaw) + dy * math.cos(yaw)
+        err = wrap(target - yaw)
         if abs(err) < math.radians(tol_deg):
-            self.act_mem['ok'] = self.act_mem.get('ok', 0) + 1
+            mem['ok'] = mem.get('ok', 0) + 1
             self.send()
-            return self.act_mem['ok'] >= 3
-        self.act_mem['ok'] = 0
+            return mem['ok'] >= 3
+        mem['ok'] = 0
         if self.elapsed() > 25.0:
             self.get_logger().warn(f'turn timed out {math.degrees(err):.0f} deg short')
             self.send()
             return True
         wz = clamp(1.5 * err, -self.w_max, self.w_max)
-        self.send(wz=math.copysign(max(abs(wz), self.min_spin), wz))
+        wz = math.copysign(max(abs(wz), self.min_spin), wz)
+        vx = clamp(1.5 * ahead, 0.0, 0.12)
+        if ahead > -0.03:
+            vx += self.turn_ff * abs(wz) / self.w_max
+        if self.front_blocked():
+            vx = 0.0
+        self.send(vx=vx, vy=clamp(1.5 * left, -0.10, 0.10), wz=wz)
         return False
 
     def front_blocked(self):
         """Something from knee height up, 6-20 cm ahead of the body, in the body's width."""
         p = self.cloud
-        m = (p[:, 0] > 0.33) & (p[:, 0] < 0.47) & (np.abs(p[:, 1]) < 0.20) & (p[:, 2] > 0.30) & (p[:, 2] < 1.0)
+        m = (p[:, 0] > self.fp_front + 0.06) & (p[:, 0] < self.fp_front + 0.20) & \
+            (np.abs(p[:, 1]) < self.fp_half_width - 0.03) & (p[:, 2] > 0.30) & (p[:, 2] < 1.0)
         return int(m.sum()) >= 6
 
     def do_drive(self, tx, ty, heading, mode):

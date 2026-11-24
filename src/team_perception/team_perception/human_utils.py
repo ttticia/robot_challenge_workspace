@@ -4,7 +4,7 @@ Person detection with Ultralytics YOLO, with no ROS imports so it can be tested 
 YOLO's COCO class 0 ('person') fires on real people AND on pictures of people
 (posters, printouts, screens), which is what the challenge's human targets are.
 
-The model weights (default yolo11n.pt, ~5 MB) are looked up in ~/.cache/team_perception/
+The model weights (default yolo11n.pt, ~5 MB) are looked up in ~/challenge_ws/models/team_perception/
 (install_deps.sh downloads them there) instead of the current folder.
 
 Pulled from team_perception_external (Robot-Dog-Grp4) to run on the robot computer. Changes
@@ -26,7 +26,11 @@ import os
 import numpy as np
 
 PERSON = 0
-MODEL_DIR = os.path.expanduser('~/.cache/team_perception')
+# Inside the workspace (user, 2026-11-24: nothing is written outside ~/challenge_ws at run
+# time). models/ is not under logs/, so the daily log clean-up leaves it alone.
+MODEL_DIR = os.path.expanduser('~/challenge_ws/models/team_perception')
+# Ultralytics writes its settings file on import: keep that in the workspace too.
+os.environ.setdefault('YOLO_CONFIG_DIR', os.path.expanduser('~/challenge_ws/models/ultralytics'))
 OPENVINO_SUFFIX = '_openvino_model'
 
 

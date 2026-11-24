@@ -50,7 +50,7 @@ pip3 uninstall -y setuptools || true
 echo ">> removing pip opencv (keeps apt python3-opencv)"
 pip3 uninstall -y opencv-python opencv-python-headless opencv-contrib-python || true
 
-echo ">> checking imports, YOLO weights -> ~/.cache/team_perception/yolo11n.pt"
+echo ">> checking imports, YOLO weights -> ~/challenge_ws/models/team_perception/yolo11n.pt"
 python3 - <<'PY'
 import os
 import cv2, numpy, zxingcpp
@@ -58,7 +58,7 @@ assert cv2.__file__.startswith('/usr/lib/'), f'pip opencv shadows apt: {cv2.__fi
 assert numpy.__version__.startswith('1.24.'), f'numpy {numpy.__version__}: want 1.24.x (apt scipy)'
 from pyzbar import pyzbar
 assert int(numpy.__version__.split('.')[0]) < 2, 'numpy must be < 2 for Humble cv_bridge'
-d = os.path.expanduser('~/.cache/team_perception')
+d = os.path.expanduser('~/challenge_ws/models/team_perception')
 os.makedirs(d, exist_ok=True)
 os.chdir(d)                      # ultralytics downloads bare names into the current folder
 import torch

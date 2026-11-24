@@ -58,6 +58,6 @@ poster positions come from `poster_detector`, which does the depth test anyway.
 
 ## Not from the robot, but needed
 
-- YOLO weights `yolo11n.pt` in `~/.cache/team_perception/` on the robot (`install_deps.sh`
+- YOLO weights `yolo11n.pt` in `~/challenge_ws/models/team_perception/` on the robot (`install_deps.sh`
   downloads them; without internet, copy the file there).
-- On the robot: write access to `~/qr_logs/` and `~/poster_logs/` for the snapshots and CSV logs.
+- On the robot: write access to `~/challenge_ws/logs/qr/` and `~/challenge_ws/logs/posters/` for the snapshots and CSV logs.

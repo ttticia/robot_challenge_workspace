@@ -60,7 +60,7 @@ class HumanDetectorNode(Node):
         #                                already aligned to colour
         p('camera_info_topic', '/camera/color/camera_info')
         p('map_frame', 'map')
-        p('model', 'yolo11n_openvino_model')   # bare name -> ~/.cache/team_perception/, or a
+        p('model', 'yolo11n_openvino_model')   # bare name -> ~/challenge_ws/models/team_perception/, or a
         #                                path; *_openvino_model = OpenVINO (falls back to .pt)
         p('conf', 0.4)                 # minimum confidence
         p('imgsz', 416)                # YOLO input size (smaller = faster, misses far people);

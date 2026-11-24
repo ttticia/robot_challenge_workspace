@@ -136,7 +136,7 @@ class PosterDetector(Node):
         p('vote_window', 8)
         p('vote_need', 5)
         p('repeat_after_s', 60.0)
-        p('log_dir', os.path.expanduser('~/poster_logs'))
+        p('log_dir', os.path.expanduser('~/challenge_ws/logs/posters'))
         # Maze cells (same names and defaults as maze_nav's scene_trigger): the survivor is
         # reported as the centre of the cell the poster is seen in.
         p('cell_size', 1.02)           # m (maze_info.md / booklet: 1.02 m cell pitch)

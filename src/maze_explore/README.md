@@ -21,10 +21,11 @@ Put the robot in the start cell facing roughly into the maze. It may be off-cent
 about 0.3 m) and at an angle (up to about 30 degrees): the walls are used to line up.
 
 Useful launch arguments: `drive:=false` (decides and logs, sends nothing), `explore:=false`
-(mapping only, for hand-driven bags), `v_max:=0.15`, `gait:=rug`.
+(mapping only, for hand-driven bags), `v_max:=0.15`, `gait:=hstep` (default is `rug`, the RUG general gear).
 
 Watch `ros2 topic echo /explore/status --field data` and the launch log (`job: ...` lines).
-In RViz add `/map` and `/explore/cells` (cell sides coloured by what they are).
+RViz, live or on a replayed bag: `rviz2 -d config/explore.rviz` shows `/map` and `/explore/cells`
+(cell sides coloured by what they are) with the scan, cloud and path (`launch_guide.md` section 6).
 
 ## How it works
 
@@ -86,8 +87,8 @@ The start cell is closed as soon as the robot has left it.
   While the fabric lies over the lidar no scans go to SLAM. No progress for 8 s = give up and
   mark it a wall.
 - **Stairs**: square up, then manual mode -> AI state -> AI basic gait, walk two cells
-  straight (over the stairs cell), then AI off -> manual -> move mode -> H-Step -> auto mode.
-- **Start**: move mode -> H-Step -> auto mode, creep 10 cm, line the grid up.
+  straight (over the stairs cell), then AI off -> manual -> move mode -> walking gait -> auto mode.
+- **Start**: move mode -> walking gait (RUG general by default) -> auto mode, creep 10 cm, line the grid up.
 
 ### 6. Safety stops
 - `/odom` jumping (0.4 m, or faster than 1.5 m/s): **FAULT**, latched until relaunch. This is

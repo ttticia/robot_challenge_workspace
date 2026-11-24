@@ -86,7 +86,7 @@ ros2 topic echo /explore/status --field data       # state, cell, job, action
 explore_stop                                       # zero velocity, stays stopped
 ```
 
-After `explore_go` the robot switches to H-Step and navigation mode, creeps 10 cm, lines
+After `explore_go` the robot switches to the RUG gait and navigation mode, creeps 10 cm, lines
 itself up with the walls, then explores. `explore_go` after `explore_stop` carries on.
 Ctrl+C in Terminal 1 also stops it with a zero velocity. The handheld controller takes over
 at any time with `lite3_manual`.
@@ -98,7 +98,7 @@ at any time with `lite3_manual`.
 | `explore.launch.py drive:=false auto_start:=true` | **Dry run.** Everything live, nothing sent to the robot. The log shows what it sees around its cell and what it would do. Do this first in a new arena |
 | `explore.launch.py explore:=false` | Mapping only, for hand-driven runs (`rec_manual`) |
 | `explore.launch.py v_max:=0.15` | Slower walking (default 0.20 m/s) |
-| `explore.launch.py gait:=rug` | RUG gait instead of H-Step |
+| `explore.launch.py gait:=hstep` | H-Step gait instead of the default RUG general gear |
 | `explore.launch.py auto_start:=true` | Starts without waiting for `/nav/start` |
 
 ### What the log tells you
@@ -109,7 +109,8 @@ at any time with `lite3_manual`.
 | `grid lined up: turned +3.5 deg, moved 0.12 m (quality 0.85)` | Start pose corrected from the walls. `not lined up` at the start: stop and re-place the robot |
 | `job: visit cell (1, 0) side 0 ...  [in (1, 0): ahead/left/back/right = free room free wall]` | Next job, and what it sees on each side of its cell |
 | `event: curtain ...`, `room left ...`, `stairs: AI mode ...` | Behaviours as they happen |
-| `FAULT: /odom jumped ...` | Odometry ran away. Stays stopped; relaunch after `explore_check` says GO |
+| `/odom jumped ... paused 3 s` | One jump after a stall in the lidar feed. Carries on by itself |
+| `FAULT: /odom jumped ... (3 jumps in 10 s)` | Odometry ran away. Stays stopped; relaunch after `explore_check` says GO |
 | `DONE: in the last cell` | Finished |
 
 ---
@@ -128,15 +129,19 @@ rec_list                 # what each one records
 - Both run `explore_check` first and ask before recording on a NO-GO.
 - Bags go to `~/challenge_ws/runs/ROS_bags/<name>/`.
 - `rec_test` records: transforms, compressed colour, Fast-LIO's cloud, `/odom`, `/scan`,
-  `/map`, body IMU, leg odometry, the commands sent (`/cmd_vel`, `/simple_cmd`), and the
-  explorer's `/explore/status`, `/explore/event`, `/explore/cells`. `rec_manual` adds the raw
-  lidar and the controller.
+  `/map`, the commands sent (`/cmd_vel`, `/simple_cmd`), and the explorer's
+  `/explore/status`, `/explore/event`, `/explore/cells`.
+  Compressed colour is the only stream it takes from the robot: every topic recorded from
+  the robot is one more copy across the bridge. `rec_manual` adds the raw lidar, both IMUs,
+  leg odometry and the controller, so use it only for hand-driven runs.
 - Neither records depth: one raw depth subscriber slows every stream from the robot.
 - Bags are zstd-compressed message by message (`REC_COMPRESS=0` turns it off). `ros2 bag`
   tools and `bag_video.py` read them as usual; reading the `.db3` with plain sqlite gives
   compressed blobs.
-- After Ctrl+C the summary lists each stream's rate. `SLOW` on `/odom` means the map and
-  pose in that bag cannot be trusted.
+- After Ctrl+C the summary lists each stream's rate over its own time span and its longest
+  gap. `SLOW` on `/odom` means the map and pose in that bag cannot be trusted. A longest gap
+  near 1 s is a stall in the robot's feed; the explorer stands still through it.
+- Stop the recorder and the stack in either order; the summary no longer depends on it.
 
 ### Hand-driven run (handheld controller), step by step
 
@@ -182,6 +187,53 @@ ros2 run nav2_map_server map_saver_cli -f ~/challenge_ws/maps/run1
 3. Note what happened next to the bag name (where it stopped, what it misread). The `job:`
    lines are in Terminal 1 and in `~/challenge_ws/logs/ros/`.
 
+## 6. Watch a run in RViz
+
+One view for both cases: [config/explore.rviz](config/explore.rviz). It opens top-down on
+`map` and shows the map, the cells with each side coloured by kind (`/explore/cells`), the
+wall scan, the lidar cloud, the path driven (`/odom`) and the `map`, `odom` and `base_link`
+frames. A second saved view, "Behind the robot", is in the Views panel.
+
+RViz needs a screen: it does not open from SSH or the VS Code terminal
+(`could not connect to display`). Use the robot computer's desktop, or a laptop with ROS 2
+Humble and a copy of the bag folder and of `explore.rviz`.
+
+**Live** (robot's domain, while Terminal 1 runs):
+
+```bash
+rviz2 -d ~/challenge_ws/src/maze_explore/config/explore.rviz
+```
+
+- It may be opened before or after `explore_go`; the map appears whenever RViz starts.
+- Every display in the file reads a topic made on this computer, so it adds no load on the
+  feed from the robot. Do **not** add a depth, raw-image, `/camera/depth/points` or
+  `/livox/points` display (section 2, point 3).
+- "Height cloud (/maze/cloud)" is switched off; tick it to see heights above the floor
+  (what `object` and `stairs` are judged from). It is not recorded, so it is live only.
+
+**Replay** of a `rec_test` or `rec_manual` bag (test domain, never domain 4, or the recorded
+`/cmd_vel` reaches the robot):
+
+```bash
+# Terminal A: RViz first, on the bag's clock
+export ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1
+rviz2 -d ~/challenge_ws/src/maze_explore/config/explore.rviz --ros-args -p use_sim_time:=true
+
+# Terminal B: the bag
+export ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1
+ros2 bag play ~/challenge_ws/runs/ROS_bags/run3 --clock \
+  --qos-profile-overrides-path ~/challenge_ws/runs/ROS_bags/qos_overrides.yaml
+```
+
+- Space in Terminal B pauses and resumes; `--rate 2` plays at double speed; `--loop` repeats
+  (press Reset in RViz if the picture freezes when the bag starts over).
+- `ros2 topic echo /explore/status --field data` in a third terminal (same two exports)
+  shows the state and job next to the picture.
+- A bag whose summary said `SLOW` on `/odom` shows a wrong map and pose. A bag without
+  `metadata.yaml` (`run2`) cannot be played.
+- The camera is not in this view. Make a video with `bag_video.py`
+  (`runs/ROS_bags/ROSBAG_GUIDE.md` section 4).
+
 ## Troubleshooting
 
 | Symptom | Check |
@@ -192,3 +244,6 @@ ros2 run nav2_map_server map_saver_cli -f ~/challenge_ws/maps/run1
 | Turns but will not walk | `way blocked` in the log: something within 20 cm ahead from 0.30 m up |
 | Stops at the stairs | `no progress on the stairs in AI mode`: take over (`lite3_ai_off`), walk it across, `explore_go` |
 | `rec_test: command not found` | `source ~/.bashrc` |
+| RViz: `could not connect to display` | No screen in this terminal (SSH, VS Code): section 6 |
+| RViz replay: map shown, nothing else moves | RViz started without `use_sim_time:=true`, or the bag without `--clock` |
+| RViz: no map | Replay: the `--qos-profile-overrides-path` option is missing. Live: the stack is still at `WAIT ... waiting for /map` |

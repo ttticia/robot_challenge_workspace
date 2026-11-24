@@ -11,6 +11,7 @@
 #               No depth: one raw depth subscriber slows every bridge stream (guide 2.6)
 #   explore     autonomous maze_explore run: cloud, odometry, /scan, /map, tf, colour,
 #               commands sent, explorer status / events
+#   img         camera only: /camera/color/image_raw/compressed, nothing else
 #
 # Options:
 #   -n, --dry-run   print the command, don't record
@@ -55,13 +56,18 @@ preset_topics() {
     #   /leg_odom2 /imu/data        robot's own odometry and body tilt (terrain, stairs)
     #   /explore/*                  the explorer's state, if it runs (drive:=false)
     manual)     echo "$A $B /livox/lidar /livox/imu /cloud_registered_body /imu/data /leg_odom2 $E /handle_state /commands/joy_raw /simple_cmd /cmd_vel /maze/body_height /explore/status /explore/event /explore/cells" ;;
-    # Autonomous maze_explore run (explore.launch.py): no raw lidar (a second copy across the
-    # bridge); Fast-LIO's cloud, the map, what the explorer decided and what it sent.
-    explore)    echo "$A $B /cloud_registered_body /imu/data /leg_odom2 $E /handle_state /simple_cmd /cmd_vel /explore/status /explore/event /explore/cells /maze/body_height" ;;
+    # Autonomous maze_explore run (explore.launch.py). Every topic taken from the robot is one
+    # more copy across the bridge, so the only one here is the compressed colour stream; the
+    # rest is published on this computer: Fast-LIO's cloud, odometry, the map, what the
+    # explorer decided and sent.
+    # Left out on purpose: raw lidar, /imu/data, /leg_odom2, /handle_state, camera_info.
+    explore)    echo "$A /camera/color/image_raw/compressed /cloud_registered_body $E /simple_cmd /cmd_vel /explore/status /explore/event /explore/cells /maze/body_height" ;;
+    # Camera only: the compressed colour stream and nothing else (small, no mapping needed).
+    img)        echo "/camera/color/image_raw/compressed" ;;
     *)          return 1 ;;
   esac
 }
-PRESETS="manual explore"
+PRESETS="manual explore img"
 
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -280,17 +286,30 @@ if [[ -f "$OUT/metadata.yaml" ]]; then
   # Rates: a stream that arrived slowly is as bad as a missing one (bag "demo", 2026-11-23:
   # /livox/imu at 8 Hz, so /odom and /map were garbage).
   if [[ "$PRESET" == manual || "$PRESET" == explore ]]; then
-    dur=$(sed -nE 's/^Duration: *([0-9.]+)s.*/\1/p' <<<"$INFO" | head -1)
-    for spec in /livox/imu:150 /livox/lidar:9 /imu/data:150 /odom:9 /scan:8 \
-                /camera/color/image_raw/compressed:20 /handle_state:40; do
-      t=${spec%:*}; need=${spec#*:}
-      [[ "$PRESET" == explore && "$t" == /livox/* ]] && continue      # not in that preset
-      n=$(grep -E "Topic: $t \|" <<<"$INFO" | sed -nE 's/.*Count: ([0-9]+).*/\1/p')
-      awk -v n="${n:-0}" -v d="${dur:-0}" -v need="$need" -v t="$t" 'BEGIN {
-        if (d < 5) exit; hz = n / d
-        printf "  %-38s %6.1f Hz%s\n", t, hz, (hz < need ? "   SLOW (needs >= " need ")" : "") }'
-    done
-    echo "A SLOW /livox/imu or /odom means the map and pose in this bag cannot be trusted."
+    # Each stream's rate over ITS OWN first-to-last message, not the bag's length: a stack
+    # stopped before the recorder used to read as a slow /odom (run3, 2026-11-24).
+    python3 - "$OUT" "$PRESET" <<'PY' || true
+import glob, sqlite3, sys
+out, preset = sys.argv[1:]
+need = {'/odom': 9, '/scan': 8, '/cloud_registered_body': 9,
+        '/camera/color/image_raw/compressed': 20}
+if preset == 'manual':
+    need.update({'/livox/imu': 150, '/livox/lidar': 9, '/imu/data': 150, '/handle_state': 40})
+db = sqlite3.connect('file:%s?mode=ro' % glob.glob(out + '/*.db3')[0], uri=True)
+ids = {n: i for i, n in db.execute('select id, name from topics')}
+for topic, hz_min in need.items():
+    ts = [r[0] * 1e-9 for r in db.execute('select timestamp from messages where topic_id = ? '
+                                          'order by timestamp', (ids.get(topic, -1),))]
+    span = ts[-1] - ts[0] if len(ts) > 1 else 0.0
+    if span < 5:
+        print('  %-38s %d messages' % (topic, len(ts)))
+        continue
+    hz, gap = (len(ts) - 1) / span, max(b - a for a, b in zip(ts, ts[1:]))
+    print('  %-38s %6.1f Hz over %5.1f s, longest gap %.2f s%s' % (
+        topic, hz, span, gap, '   SLOW (needs >= %d)' % hz_min if hz < hz_min else ''))
+PY
+    echo "SLOW /odom, /scan or (manual) /livox/imu: the map and pose in this bag cannot be trusted."
+    echo "A longest gap near 1 s is a stall in the robot's feed: the explorer stands still through it."
   fi
   if (( ${#missing[@]} )); then
     echo "WARNING: this $PRESET bag has no ${missing[*]}. Fix the driver / topic and record again." >&2

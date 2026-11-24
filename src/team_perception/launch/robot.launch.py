@@ -46,6 +46,15 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+# ros2 launch writes each node's parameters to a temporary file. Keep those in the workspace
+# too (user, 2026-11-24: no files outside ~/challenge_ws at run time); the daily log clean-up
+# removes them after a week.
+import tempfile  # noqa: E402
+_TMP = os.path.expanduser('~/challenge_ws/logs/tmp')
+os.makedirs(_TMP, exist_ok=True)
+tempfile.tempdir = _TMP
+os.environ['TMPDIR'] = _TMP
+
 ARGS = {
     'image_topic': ('/camera/color/image_raw', 'colour image topic (raw name)'),
     'image_transport': ('compressed', "'raw', or 'compressed' = <image_topic>/compressed"),

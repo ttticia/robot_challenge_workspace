@@ -19,7 +19,7 @@ zxing-cpp==2.3.0
 # Person detection (human_detector node), from team_perception_external
 ultralytics==8.4.210
 # Intel CPU runtime for YOLO: ~2-3x less CPU than PyTorch (install_deps.sh exports the
-# model to ~/.cache/team_perception/yolo11n_openvino_model/). Needs numpy < 2.2.
+# model to ~/challenge_ws/models/team_perception/yolo11n_openvino_model/). Needs numpy < 2.2.
 openvino==2024.6.0
 
 # 1.24.x: below 2 for Humble's cv_bridge, and below 1.25 for apt's python3-scipy 1.8 (used by

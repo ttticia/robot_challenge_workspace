@@ -1,0 +1,258 @@
+# RViz view of a maze_explore run, live (domain 4) or replayed from a rec_test / rec_manual bag.
+# Use: rviz2 -d ~/challenge_ws/src/maze_explore/config/explore.rviz   (launch_guide.md section 6)
+# Only small or local topics. Do NOT add a depth, raw-image or /livox/points display during a
+# live run: one such subscriber slows every stream from the robot.
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Help Height: 0
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+      Splitter Ratio: 0.6
+    Tree Height: 600
+  - Class: rviz_common/Views
+    Name: Views
+  - Class: rviz_common/Time
+    Name: Time
+    Experimental: false
+    SyncMode: 0
+    SyncSource: ""
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 15
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid 1.02 m (map frame, not the fitted cell grid)
+      Enabled: true
+      Reference Frame: <Fixed Frame>
+      Plane: XY
+      Plane Cell Count: 20
+      Cell Size: 1.02
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Color: 110; 110; 110
+      Alpha: 0.4
+      Normal Cell Count: 0
+      Offset:
+        X: 0.51
+        Y: 0.51
+        Z: 0
+      Value: true
+    - Class: rviz_default_plugins/Map
+      Name: Map (/map)
+      Enabled: true
+      Alpha: 0.7
+      Color Scheme: map
+      Draw Behind: true
+      Topic:
+        Value: /map
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Update Topic:
+        Value: /map_updates
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Use Timestamp: false
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Cells (/explore/cells)
+      Enabled: true
+      Namespaces:
+        {}
+      Topic:
+        Value: /explore/cells
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Value: true
+    - Class: rviz_default_plugins/LaserScan
+      Name: Wall scan (/scan)
+      Enabled: true
+      Topic:
+        Value: /scan
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Style: Points
+      Size (Pixels): 4
+      Size (m): 0.03
+      Color Transformer: FlatColor
+      Color: 255; 60; 60
+      Alpha: 1
+      Decay Time: 0
+      Position Transformer: XYZ
+      Selectable: false
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Lidar cloud (/cloud_registered_body)
+      Enabled: true
+      Topic:
+        Value: /cloud_registered_body
+        Depth: 2
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Style: Points
+      Size (Pixels): 2
+      Size (m): 0.02
+      Color Transformer: AxisColor
+      Axis: Z
+      Autocompute Value Bounds:
+        Value: false
+        Min Value: -0.3
+        Max Value: 1.2
+      Use Fixed Frame: true
+      Alpha: 0.6
+      Decay Time: 0
+      Position Transformer: XYZ
+      Selectable: false
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Height cloud (/maze/cloud, live only)
+      Enabled: false
+      Topic:
+        Value: /maze/cloud
+        Depth: 2
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Style: Points
+      Size (Pixels): 3
+      Size (m): 0.02
+      Color Transformer: AxisColor
+      Axis: Z
+      Autocompute Value Bounds:
+        Value: false
+        Min Value: 0
+        Max Value: 1
+      Use Fixed Frame: false
+      Alpha: 1
+      Decay Time: 0
+      Position Transformer: XYZ
+      Selectable: false
+      Value: false
+    - Class: rviz_default_plugins/Odometry
+      Name: Path driven (/odom)
+      Enabled: true
+      Topic:
+        Value: /odom
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Keep: 400
+      Position Tolerance: 0.05
+      Angle Tolerance: 0.2
+      Covariance:
+        Value: false
+        Position:
+          Value: false
+        Orientation:
+          Value: false
+      Shape:
+        Value: Arrow
+        Color: 60; 200; 255
+        Alpha: 0.8
+        Shaft Length: 0.12
+        Shaft Radius: 0.015
+        Head Length: 0.06
+        Head Radius: 0.035
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Name: Frames (map, odom, base_link)
+      Enabled: true
+      Frame Timeout: 15
+      Marker Scale: 0.5
+      Show Arrows: false
+      Show Axes: true
+      Show Names: true
+      Update Interval: 0
+      Frames:
+        All Enabled: false
+        map:
+          Value: true
+        odom:
+          Value: true
+        base_link:
+          Value: true
+        base_level:
+          Value: false
+        livox_frame:
+          Value: false
+        lidar_init:
+          Value: false
+        camera_link:
+          Value: false
+        camera_depth_frame:
+          Value: false
+        camera_depth_optical_frame:
+          Value: false
+        camera_color_frame:
+          Value: false
+        camera_color_optical_frame:
+          Value: false
+      Value: true
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/PublishPoint
+      Single click: true
+      Topic:
+        Value: /clicked_point
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Top down
+      Target Frame: <Fixed Frame>
+      Scale: 90
+      Angle: 0
+      X: 2
+      Y: 0
+      Near Clip Distance: 0.01
+      Value: TopDownOrtho (rviz_default_plugins)
+    Saved:
+      - Class: rviz_default_plugins/Orbit
+        Name: Behind the robot
+        Target Frame: base_link
+        Distance: 4
+        Pitch: 0.7
+        Yaw: 3.14
+        Focal Point:
+          X: 0.5
+          Y: 0
+          Z: 0
+        Focal Shape Fixed Size: true
+        Focal Shape Size: 0.05
+        Invert Z Axis: false
+        Near Clip Distance: 0.01
+        Value: Orbit (rviz_default_plugins)
+Window Geometry:
+  Height: 1000
+  Width: 1600
+  Displays:
+    collapsed: false
+  Views:
+    collapsed: true
+  Time:
+    collapsed: false

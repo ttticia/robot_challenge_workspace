@@ -67,7 +67,7 @@ Fast-LIO**. Start those before recording (see the checks below).
 **Don't record:** `/camera/color/image_raw` (uncompressed colour) or `/camera/depth/points`
 (point cloud from depth). Both fill the disk very quickly and can be rebuilt from groups B/C.
 The onboard perception nodes publish no debug images; QR and poster snapshots are saved to
-`~/qr_logs/` and `~/poster_logs/` instead.
+`~/challenge_ws/logs/qr/` and `~/challenge_ws/logs/posters/` instead.
 
 #### `/map` and `/tf_static`: QoS override
 
@@ -268,15 +268,15 @@ records it all. Use three terminals on the robot computer.
    BAG=~/challenge_ws/runs/ROS_bags/maze_run1_exited
    START=$(awk '/nanoseconds_since_epoch/{print int($2/1e9); exit}' $BAG/metadata.yaml)
    mkdir -p ${BAG}_extras
-   (cd ~ && find challenge_ws/maps qr_logs poster_logs challenge_ws/logs/cpu \
+   (cd ~ && find challenge_ws/maps challenge_ws/logs/qr challenge_ws/logs/posters challenge_ws/logs/cpu \
         -type f -newermt "@$START" -exec cp --parents {} ${BAG}_extras/ \; 2>/dev/null)
    ls -R ${BAG}_extras
    ```
    | What | Where |
    |---|---|
    | Final map | `~/challenge_ws/maps/maze_<date>_<time>.{pgm,yaml}` |
-   | QR snapshots (annotated JPEG) + CSV | `~/qr_logs/` |
-   | Poster CSV | `~/poster_logs/` |
+   | QR snapshots (annotated JPEG) + CSV | `~/challenge_ws/logs/qr/` |
+   | Poster CSV | `~/challenge_ws/logs/posters/` |
    | CPU per process + summary (`cpu_log`) | `~/challenge_ws/logs/cpu/run_<date>_<time>{.csv,_summary.txt}` |
    | Full node logs | `~/.ros/log/<date>-<time>-…/` (the folder `ros2 launch` printed at startup) |
 
@@ -321,6 +321,16 @@ swaying; also in front of the raised platform). Detection has to work from **1.5
 square on and 30-45° off, from both sides, lit and in shadow. Record negatives too: plain walls,
 extrusion walls with cavities or windows, doorways, slats, open floor, people. Spread the bags
 over several sessions and days.
+
+#### 2.7 Camera only: `rec_img`
+
+```bash
+rec_img frames1          # Ctrl+C to stop
+```
+
+Records `/camera/color/image_raw/compressed` and nothing else (no transforms, no camera info,
+no lidar). It needs no launch running and skips the sensor-rate check. About 1 MB per second.
+Turn it into a video with `bag_video.py` (section 4).
 
 #### 2.6 Hand-driven demonstration: `rec_manual`
 

@@ -13,6 +13,7 @@ _REC=~/challenge_ws/runs/ROS_bags/record.sh
 
 alias rec_test="$_REC explore"           # real autonomous test run of maze_explore (explore.launch.py)
 alias rec_manual="$_REC manual"          # hand-driven run with maze_explore mapping (explore:=false)
+alias rec_img="$_REC img"                # camera only: /camera/color/image_raw/compressed
 alias rec_list="$_REC --list"            # show presets and their topics
 alias rec_rename="$_REC --rename"        # rec_rename [old] new  (old = newest bag if left out)
 

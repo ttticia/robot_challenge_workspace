@@ -99,7 +99,9 @@ class WallScan(Node):
         self.blind_until = 0.0
         self.leg_z = None
         self.recent = deque(maxlen=p('scan_clouds', 5).value)     # band points in odom (x, y)
-        self.create_subscription(Odometry, '/leg_odom2', self.on_leg, qos_profile_sensor_data)
+        # only until the floor is set: a 200 Hz stream is one more copy across the bridge
+        self.leg_sub = self.create_subscription(Odometry, '/leg_odom2', self.on_leg,
+                                                qos_profile_sensor_data)
         self.create_subscription(Bool, '/maze/blind', self.on_blind, 5)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -162,6 +164,7 @@ class WallScan(Node):
                 self.get_logger().warn(f'floor not measured (lidar {self.stand_samples[-1]}, legs '
                                        f'{self.leg_z}); assuming a standing height of {h:.2f} m')
             self.floor_z = pos[2] - h
+            self.destroy_subscription(self.leg_sub)
         elif stand is not None and abs((pos[2] - stand) - self.floor_z) < 0.08:
             self.floor_z += 0.05 * ((pos[2] - stand) - self.floor_z)
         body = pos[2] - self.floor_z

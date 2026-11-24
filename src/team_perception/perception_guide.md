@@ -19,8 +19,9 @@ Everything runs on the **robot computer** (`192.168.10.74`), on its CPU, in
 
 The robot has to find two things in the maze:
 
-- **QR codes.** Every new code is reported once on `/found` as `QR found`. Its text, which is
-  a hint about where other survivors are, is logged.
+- **QR codes.** Every new code is reported once on `/found` as `QR found`. Its text is the
+  conscious survivor's message (mission M04): it goes out on `/qr/read` exactly as decoded and
+  `task_reporter` sends it. There is one QR code per arena, beside the M03 survivor.
 - **Survivors**: pictures of people (posters) on walls. Each one is reported once on `/found`
   as `Human found`, and its location is the **centre of the maze cell** it is in. Real people
   standing in the maze must *not* be reported.
@@ -204,18 +205,18 @@ Parameters are read at startup. To change one, relaunch with the launch argument
 ### Logs and saved results
 
 ```bash
-ls -t ~/qr_logs | head                        # newest QR CSV + JPEG snapshots
-ls -t ~/poster_logs | head                    # newest survivor CSV
-column -s, -t < "$(ls -t ~/poster_logs/*.csv | head -1)"   # read the latest survivor CSV as a table
+ls -t ~/challenge_ws/logs/qr | head                        # newest QR CSV + JPEG snapshots
+ls -t ~/challenge_ws/logs/posters | head                    # newest survivor CSV
+column -s, -t < "$(ls -t ~/challenge_ws/logs/posters/*.csv | head -1)"   # read the latest survivor CSV as a table
 ls -t ~/challenge_ws/logs/ros | head          # ROS launch logs (~/.ros/log points here)
-grep -h -E "SURVIVOR|Human found|QR hint|QR room" "$(ls -td ~/challenge_ws/logs/ros/*/ | head -1)"launch.log   # newest launch
+grep -h -E "SURVIVOR|Human found|QR message|QR room" "$(ls -td ~/challenge_ws/logs/ros/*/ | head -1)"launch.log   # newest launch
 ```
 
 Useful log lines:
 
 | Line | Meaning |
 |---|---|
-| `QR hint: "..."` | New code read; this is its text |
+| `QR message (M04): "..."` | New code read; this is its text, reported as mission M04 exactly as decoded |
 | `QR code in view but unreadable at odom (...)` | Code found but not decoded; `/qr/unread` published |
 | `QR room "..." ...: no poster yet, asking to look around` | Look request sent to the explorer |
 | `SURVIVOR #n in cell (i, j), centre (x, y) map (...)` | Survivor reported, with its location |

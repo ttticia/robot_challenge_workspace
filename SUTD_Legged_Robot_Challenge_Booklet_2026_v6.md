@@ -71,14 +71,14 @@ The robot is required to perform various scene understanding tasks, such as to i
 
 One of the tasks may also involve hazard detection and identification. Here are examples of hazard symbols that may be included in the scenes:
 
-They could be pasted on the wall, a cabinet-prop, or an object such as a container or a bottle. The objective is to detect and identify these hazard(s) and report them.
+They could be pasted on a cabinet-prop, or an object such as a container or a bottle. The objective is to detect and identify these hazard(s) and report them.
 
 Refer to section F for more examples of mission tasks and scoring.
 
 
 ## 6. Survivor Search and Localization
 
-Find survivors using the supplied cues and information observed during exploration. The concept may include a survivor interaction that yields a cue (QR code) and other survivors that do not provide cues. A cue may refer to the type of room containing other survivor(s) rather than its coordinates. All survivor tasks require reporting their location.
+Find survivors corresponding to the mission. A conscious survivor may be accompanied by a QR code which represents a message from the conscious survivor. All survivor tasks require reporting their location.
 
 ## QR Code Placement and Size
 
@@ -242,22 +242,30 @@ nic","label":"medical_equipment","pos":[3.06,2.04],"message":""}'
 | label | medical_equipment hand_tools food water utensils high_voltage radioactive chemical biological flammable | - |
 
 
-## Example JSON by mission (carefully note all relevant keys for each mission)
+## Mission Tasks (FIXED FOR PRACTICE, PRELIM, AND FINALS) and Example
 
-| task_id | Illustrative Mission Tasks | Result Message |
+JSON for Task Reporting (note important keys for scoring each mission in blue)
+
+|   | task_id Mission Tasks (Fixed) | Example Task Report |
 | --- | --- | --- |
-| M01 | The rescue team needs to provide urgent care to injured survivors. Find a location where medical equipment may be available. | { "group_id": "group01_A7K2", "task_id": "M01", "task_type": "object", "scene_type": "clinic", "label": "medical_equipment", "pos": [3.06, 2.04], "message": "" } |
-| M02 | A damaged electrical installation has been reported. Find the affected area and identify the warning sign displayed nearby | { "group_id": "group01_A7K2", "task_id": "M02", "task_type": "hazard", "scene_type": "kitchen", "label": "high_voltage", "pos": [4.08, 2.04], "message": "" } |
-| M03 | A survivor is believed to be in the right side of the room for food preparation. Locate the room, find the survivor, and report the survivor’s location. Find all other survivors | { "group_id": "group01_A7K2", "task_id": "M03", "task_type": "survivor", "scene_type": "kitchen", "label": "", "pos": [2.04, 3.06], "message": "" } |
-| M04 | The first survivor may be able to share useful information. Gather and report this information | { "group_id": "group01_A7K2", "task_id": "M04", "task_type": "qr", "scene_type": "kitchen", "label": "", "pos": null, "message": "My friend is in the market." } |
-| M05 | Locate and report the location of another survivor | { "group_id": "group01_A7K2", "task_id": "M05", "task_type": "survivor", "scene_type": "market", "label": "", "pos": [3.06, 3.06], "message": "" } |
+| M01 | Rescue teams need tools to clear debris and access damaged areas. Locate hand tools and report their location. | { "group_id": "group01_A7K2", "task_id": "M01", "task_type": "object", "scene_type": "workshop", "label": "hand_tools", "pos": [3.06, 2.04], "message": "" } |
+| M02 | A potential hazard has been reported in the affected area. Locate the hazard warning sign, identify the type of hazard, and report its location. | { "group_id": "group01_A7K2", "task_id": "M02", "task_type": "hazard", "scene_type": "kitchen", "label": "high_voltage", "pos": [4.08, 2.04], "message": "" } |
+| M03 | Locate a conscious survivor who has left a message for rescuers (represented by a QR code). Report the type of area where the survivor is found and their location. | { "group_id": "group01_A7K2", "task_id": "M03", "task_type": "survivor", "scene_type": "kitchen", "label": "", "pos": [2.04, 3.06], "message": "" } |
+| M04 | Find and decode the QR code beside the conscious survivor (M03) and report the survivor's message exactly as decoded. | { "group_id": "group01_A7K2", "task_id": "M04", "task_type": "qr", "scene_type": "kitchen", "label": "", "pos": null, "message": "Please help me." } |
+| M05 | Locate another survivor who is weak or unconscious and unable to communicate (without a QR code). Report the type of area where the survivor is found and their location. | { "group_id": "group01_A7K2", "task_id": "M05", "task_type": "survivor", "scene_type": "market", "label": "", "pos": [3.06, 3.06], "message": "" } |
 
 
 ## Scene understanding scoring rules
 
-- Each mission task_id corresponds to one specific task or target, as defined and communicated by the organizers before the competition. For example, if there are two survivors to identify, two separate mission IDs will be assigned, one for each survivor.
+- There will be exactly five fixed missions (M014M05), with the same task IDs, descriptions and task types across practice and competition. M01's target is fixed as hand_tools, while M02's hazard type may vary between arenas. Scene types, target locations and the QR message may also vary.
 
-- Mission types and task_id are fixed to standardise scoring.
+- There will be exactly 5 missions (M014M05). The mission IDs, mission description, and possible target labels or categories are pre-fixed for both practice and competition:
+
+- Each mission has exactly one intended target and one correct response.
+
+- Each mission task_id corresponds to one specific task or target. For example, if there are two survivors to identify, two separate mission IDs will be assigned, one for each survivor.
+
+- Missions may be completed in any order. The robot must explore the arena, identify the relevant targets, and determine the corresponding mission ID. For example, M03 involves locating the conscious survivor associated with a QR code, while M05 involves locating the other survivor, who is weak or unconscious and has no QR code.
 
 - For M01, M02, M03 and M05, up to 10 points may be awarded per task:
 
@@ -272,6 +280,8 @@ nic","label":"medical_equipment","pos":[3.06,2.04],"message":""}'
 - A location is considered correct if its reported coordinates fall within 0.5 m of the ground-truth cell centre along both the X and Y axes.
 
 - Teams may submit multiple results for the same task (task_id) during their run. Only the latest valid submission for each task will be evaluated for scoring, replacing any previous submission for that task. Submissions received after the competition run ends will not be considered.
+
+- Each restart begins a new independent attempt with reset mission scores and submissions. The highest-scoring ground-task attempt will be retained. Submissions received after the competition session ends will not be considered.
 
 - A valid submission refers to a correctly formatted message with permitted field values, regardless of whether the reported result is correct.
 
@@ -289,12 +299,12 @@ nic","label":"medical_equipment","pos":[3.06,2.04],"message":""}'
 
 - o The reported pos: [x, y] should represent the estimated centre of the cell containing the relevant scene, object, hazard or survivor.
 
+
 - Both competition arenas will follow the same starting-pose convention, Teams should initialize their robot's localization system using the marked starting position and orientation.
 
 - Localization scores will be evaluated against the ground-truth cell positions for the respective arena, using the specified localization acceptance criteria.
 
-
-## Example arena coordinate convention
+## Arena coordinate convention
 
 
 ## F. Challenge Guidelines
@@ -317,32 +327,34 @@ nic","label":"medical_equipment","pos":[3.06,2.04],"message":""}'
 
 - 7. No points will be awarded for using AI mode to overcome any other cells or terrains.
 
+- 8. Teams can end their ground mission and manually relocate their robots to the drone launching cell to perform drone launching at any time during their session, but it should be the last task (cannot go back to the ground mission). There is no requirement for the robot to reach the final cell for unlocking drone launching.
+
 ## Mapping, Autonomy and Mission Tasks
 
-- 8. The robot starts from a defined Start Area and must autonomously explore to discover routes and targets.
+- 9. The robot starts from a defined Start Area and must autonomously explore to discover routes and targets.
 
-- 9. Pre-mapping the competition environment is not allowed; autonomous exploration during the attempt is compulsory.
+- 10. Pre-mapping the competition environment is not allowed; autonomous exploration during the attempt is compulsory.
 
-- 10. Some regions contain uneven terrain representing earthquake damage; stair obstacles require three-dimensional mobility.
+- 11. Some regions contain uneven terrain representing earthquake damage; stair obstacles require three-dimensional mobility.
 
-- 11. Mission tasks (relevant to scene understanding) will be provided before the start of the competition. They may specify a room or describe objects rather than providing explicit coordinates.
+- 12. Mission tasks (relevant to scene understanding) are fixed and provided before the competition.
 
 ## Navigation and Safety
 
-- 12. Keep the robot within the designated arena and avoid striking walls, obstacles, props, spectators or other equipment.
+- 13. Keep the robot within the designated arena and avoid striking walls, obstacles, props, spectators or other equipment.
 
-- 13. Major collisions are intended to incur a penalty; judging thresholds will be defined in the final rules.
+- 14. Major collisions are intended to incur a penalty; judging thresholds will be defined in the final rules.
 
-- 14. Use safe gait selection, obstacle handling and appropriate stop/recovery behaviour on difficult terrain.
+- 15. Use safe gait selection, obstacle handling and appropriate stop/recovery behaviour on difficult terrain.
 
-- 15. Stop immediately and follow the marshals’ instructions if the robot behaves unsafely.
-
-Perception Tasks
+- 16. Stop immediately and follow the marshals’ instructions if the robot behaves unsafely.
 
 
-- 16. Only report a detected room, object, survivor or hazard when supported by sensor observations.
+## Perception Tasks
 
-- 17. Design the robot to recover gracefully if the scene-understanding service is delayed or returns an unusable response.
+- 17. Only report a detected room, object, survivor or hazard when supported by sensor observations.
+
+- 18. Design the robot to recover gracefully if the scene-understanding service is delayed or returns an unusable response.
 
 ## Definitions
 
@@ -358,11 +370,9 @@ Perception Tasks
 
 - o The team physically lifts or moves the robot to the nearest designated safe position when recovery is necessary.
 
-## Terrain-based obstacles (5 points each)
+## Terrain-based and movable obstacles:
 
-- Fully autonomous traversal: 5 points.
-
-- Traversal using manual intervention (manual teleoperation or physical repositioning): 0 points.
+- Successful autonomous traversal earns the points assigned to that obstacle in Section G (5 points per uneven-terrain cell, 10 points for stairs, and 15 points for the curtain). Traversal using manual intervention earns zero points.
 
 - If an obstacle was previously traversed autonomously, its 5 points are retained even if manual intervention is subsequently required to backtrack across it.
 
@@ -372,7 +382,7 @@ Perception Tasks
 
 - Correct completion after autonomous discovery and approach: 10 points.
 
-- Correct completion where manual intervention directly assists the robot in reaching a position from which the mission scene can be observed: 8 points.
+- For manually assisted mission access, the identification and localization components are reduced to 4 points each, subject to the same scoring conditions. Maximum 8 points.
 
 - Incorrect mission response: 0 points, regardless of assistance level.
 
@@ -390,10 +400,8 @@ Perception Tasks
 
 - 3. Terrain and scene-understanding scores are evaluated independently. Manual intervention affects only the relevant obstacle or mission and does not automatically reduce the scores of subsequent independently completed tasks.
 
-- 4. Scene-understanding assistance is determined by how the robot reaches the observation position. If manual intervention brings the robot into a position from
 
-
-- which a mission scene can be directly observed, that mission is capped at 8 points, even if scene recognition is subsequently performed autonomously.
+- 4. Scene-understanding assistance is determined by how the robot reaches the observation position. If manual intervention brings the robot into a position from which a mission scene can be directly observed, that mission is capped at 8 points, even if scene recognition is subsequently performed autonomously.
 
 - 5. Subsequent autonomous scene discovery remains eligible for full points. For example, if the robot is manually assisted past an obstacle, then autonomously navigates through at least one cell and discovers another scene, that mission remains eligible for 10 points.
 
@@ -405,13 +413,11 @@ Perception Tasks
 
 - 9. The team's final ground score is the highest total score achieved in a single valid attempt, including terrain points, mission points and any autonomy bonus earned.
 
-- 10. Ground completion time is recorded when the robot validly reaches the final cell. Drone-launching time is excluded from the recorded ground completion time.
+- 10. Ground completion time is recorded for the highest-scoring ground attempt and will be used as a tie-breaker. Drone-launching time is excluded from the recorded ground completion time.
 
-- 11. Completion time is used only as a tiebreaker, measured using the overall competition-session clock, which continues running across restarts. No completion- time bonus points are awarded.
+- 11. Physical repositioning directly to the final cell does not qualify as valid ground completion. Valid completion requires the robot to navigate into the final cell rather than being physically placed there.
 
-- 12. Physical repositioning directly to the final cell does not qualify as valid ground completion. Valid completion requires the robot to navigate into the final cell rather than being physically placed there.
-
-- 13. All interventions, scoring classifications and completion events are subject to judge verification and will be recorded in the competition scoring system.
+- 12. All interventions, scoring classifications and completion events are subject to judge verification and will be recorded in the competition scoring system.
 
 
 ## Drone Mission Rules and Guidelines
@@ -613,30 +619,20 @@ QR codes will be placed on the nearer half of the relevant cell wall, making the
 
 ## 5. How should teams interpret and complete M01 and M02 mission tasks?
 
-For M01 and M02, teams must interpret the mission description to identify the relevant object(s) or hazard(s) from the predefined list of labels, then detect and report them along with their corresponding scene_type. For example, given the mission:
-
-“The rescue team needs to provide urgent care to injured survivors. Find a location where medical equipment may be available.”
-
-- Teams should identify medical_equipment as the relevant label, locate it in the environment, and report both the detected label (medical_equipment) and scene type (e.g., clinic) using the appropriate task_id.
-
-Note: Teams must detect the relevant object or hazard, rather than infer its presence solely from the scene type.
+M01 requires locating the hand_tools target and reporting its scene type and position. M02 requires identifying the hazard warning sign present in the arena, selecting the correct hazard label from the predefined vocabulary, and reporting its scene type and position. Both tasks require detection of the actual target, rather than assumptions based solely on the room type.
 
 ## 6. What will hazard labels look like, and where might they be placed?
 
 Hazard identification may be included as a mission task. Hazards will be represented by visual symbols or labels, which may be attached to walls, cabinets, containers, bottles, or other props within a scene. You may refer to section D.5 for examples of hazard symbols. Teams may be required to detect, identify, and report the relevant hazards.
 
-
 ## 7. Can a scene contain a survivor without a QR code, or a QR code without a survivor?
 
-Survivor-related scenes will have one of two configurations:
+Each arena will contain exactly two mission-related survivors: one conscious survivor associated with a QR code (M03/M04) and one weak or unconscious survivor without a QR
 
-- A survivor with a QR code.
-
-- A survivor without a QR code.
-
-There will be no survivor-related scene containing only a QR code without a survivor. Both configurations may appear, and teams should not assume that exactly one of each will be present.
+code (M05). There will be one QR code to decode for M04.
 
 ## 8. Can multiple survivors appear in the same cell?
+
 
 No. Each scene-understanding cell will contain at most one survivor. If both a survivor and QR code are present, teams should submit separate reports for the survivor-identification task and the QR-decoding task, where applicable.
 
@@ -668,7 +664,6 @@ There is no time-completion bonus. However, completion time will still be record
 
 ## D. Robot Hardware and Modifications
 
-
 ## 15. What should teams do if the mounting standoffs above the robot's onboard computer become damaged? Can teams modify the mounting system?
 
 The provided standoffs are intended to facilitate mounting additional components above the robot's onboard computer (NUC). Teams that do not currently require them are encouraged to remove and safely store them, particularly during testing involving legged locomotion. Teams may also design alternative mounting arrangements, such as:
@@ -677,9 +672,10 @@ The provided standoffs are intended to facilitate mounting additional components
 
 - Redesigned mounting plates.
 
+
 - Alternative mounting interfaces attached to suitable existing structures.
 
 Physical modifications are permitted provided that both teams sharing the same robot agree. Modifications should not compromise the robot's safety or normal operation.
 
 
-## Sample layout
+## Sample layout (not competition layout)
