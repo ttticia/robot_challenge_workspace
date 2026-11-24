@@ -1,0 +1,42 @@
+{
+  "version": "4.3.3",
+  "flags": {},
+  "checked": false,
+  "shapes": [
+    {
+      "review_status": "pending",
+      "label": "curtain",
+      "score": null,
+      "points": [
+        [
+          167.52747252747253,
+          0.7142857142857204
+        ],
+        [
+          387.30769230769226,
+          0.7142857142857204
+        ],
+        [
+          387.30769230769226,
+          141.3736263736264
+        ],
+        [
+          167.52747252747253,
+          141.3736263736264
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "scene_check_0012_05.jpg",
+  "imageData": null,
+  "imageHeight": 480,
+  "imageWidth": 640,
+  "description": ""
+}

@@ -1,0 +1,42 @@
+{
+  "version": "4.3.3",
+  "flags": {},
+  "checked": false,
+  "shapes": [
+    {
+      "review_status": "pending",
+      "label": "curtain",
+      "score": null,
+      "points": [
+        [
+          241.13821138211387,
+          1.7886178861788524
+        ],
+        [
+          354.5528455284553,
+          1.7886178861788524
+        ],
+        [
+          354.5528455284553,
+          150.5691056910569
+        ],
+        [
+          241.13821138211387,
+          150.5691056910569
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "curtain_test1_0003_77.jpg",
+  "imageData": null,
+  "imageHeight": 480,
+  "imageWidth": 640,
+  "description": ""
+}

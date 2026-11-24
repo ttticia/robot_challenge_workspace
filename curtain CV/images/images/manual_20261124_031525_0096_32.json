@@ -1,0 +1,41 @@
+{
+  "version": "4.3.3",
+  "flags": {},
+  "checked": false,
+  "shapes": [
+    {
+      "review_status": "pending",
+      "label": "curtain",
+      "score": null,
+      "points": [
+        [
+          0.0,
+          1.8131868131868194
+        ],
+        [
+          640.0,
+          1.8131868131868194
+        ],
+        [
+          640.0,
+          480.0
+        ],
+        [
+          0.0,
+          480.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "manual_20261124_031525_0096_32.jpg",
+  "imageData": null,
+  "imageHeight": 480,
+  "imageWidth": 640
+}

@@ -1,0 +1,41 @@
+{
+  "version": "4.3.3",
+  "flags": {},
+  "checked": false,
+  "shapes": [
+    {
+      "review_status": "pending",
+      "label": "curtain",
+      "score": null,
+      "points": [
+        [
+          153.2417582417582,
+          0.0
+        ],
+        [
+          401.5934065934066,
+          0.0
+        ],
+        [
+          401.5934065934066,
+          55.659340659340664
+        ],
+        [
+          153.2417582417582,
+          55.659340659340664
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "run3_0047_47.jpg",
+  "imageData": null,
+  "imageHeight": 480,
+  "imageWidth": 640
+}

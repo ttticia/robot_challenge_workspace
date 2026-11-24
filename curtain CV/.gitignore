@@ -1,0 +1,8 @@
+# Training images, weights and archives stay out of git (labels, annotations and the manifest are tracked).
+*.jpg
+*.jpeg
+*.png
+*.zip
+*.pt
+yolo_test/venv/
+images/_delete_/

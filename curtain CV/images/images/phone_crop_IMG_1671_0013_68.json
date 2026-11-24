@@ -1,0 +1,72 @@
+{
+  "version": "4.3.3",
+  "flags": {},
+  "checked": false,
+  "shapes": [
+    {
+      "review_status": "pending",
+      "label": "curtain",
+      "score": null,
+      "points": [
+        [
+          57.8538812785388,
+          0.0
+        ],
+        [
+          168.81278538812785,
+          0.0
+        ],
+        [
+          168.81278538812785,
+          164.90867579908675
+        ],
+        [
+          57.8538812785388,
+          164.90867579908675
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    },
+    {
+      "review_status": "pending",
+      "label": "curtain",
+      "score": null,
+      "points": [
+        [
+          185.02283105022832,
+          1.2100456621004465
+        ],
+        [
+          317.2146118721461,
+          1.2100456621004465
+        ],
+        [
+          317.2146118721461,
+          134.54337899543378
+        ],
+        [
+          185.02283105022832,
+          134.54337899543378
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "phone_crop_IMG_1671_0013_68.jpg",
+  "imageData": null,
+  "imageHeight": 270,
+  "imageWidth": 360,
+  "description": ""
+}

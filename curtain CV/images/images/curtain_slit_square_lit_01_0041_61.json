@@ -1,0 +1,72 @@
+{
+  "version": "4.3.3",
+  "flags": {},
+  "checked": false,
+  "shapes": [
+    {
+      "review_status": "pending",
+      "label": "curtain",
+      "score": null,
+      "points": [
+        [
+          60.65040650406506,
+          0.16260162601625083
+        ],
+        [
+          255.77235772357727,
+          0.16260162601625083
+        ],
+        [
+          255.77235772357727,
+          194.47154471544715
+        ],
+        [
+          60.65040650406506,
+          194.47154471544715
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    },
+    {
+      "review_status": "pending",
+      "label": "curtain",
+      "score": null,
+      "points": [
+        [
+          295.20325203252037,
+          0.0
+        ],
+        [
+          535.040650406504,
+          0.0
+        ],
+        [
+          535.040650406504,
+          203.0081300813008
+        ],
+        [
+          295.20325203252037,
+          203.0081300813008
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "curtain_slit_square_lit_01_0041_61.jpg",
+  "imageData": null,
+  "imageHeight": 480,
+  "imageWidth": 640,
+  "description": ""
+}

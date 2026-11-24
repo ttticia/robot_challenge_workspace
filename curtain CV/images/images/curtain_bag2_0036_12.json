@@ -1,0 +1,72 @@
+{
+  "version": "4.3.3",
+  "flags": {},
+  "checked": false,
+  "shapes": [
+    {
+      "review_status": "pending",
+      "label": "curtain",
+      "score": null,
+      "points": [
+        [
+          284.2276422764228,
+          0.16260162601625083
+        ],
+        [
+          376.50406504065046,
+          0.16260162601625083
+        ],
+        [
+          376.50406504065046,
+          97.3170731707317
+        ],
+        [
+          284.2276422764228,
+          97.3170731707317
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    },
+    {
+      "review_status": "pending",
+      "label": "curtain",
+      "score": null,
+      "points": [
+        [
+          374.87804878048786,
+          0.5691056910569015
+        ],
+        [
+          460.6504065040651,
+          0.5691056910569015
+        ],
+        [
+          460.6504065040651,
+          74.55284552845528
+        ],
+        [
+          374.87804878048786,
+          74.55284552845528
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "curtain_bag2_0036_12.jpg",
+  "imageData": null,
+  "imageHeight": 480,
+  "imageWidth": 640,
+  "description": ""
+}

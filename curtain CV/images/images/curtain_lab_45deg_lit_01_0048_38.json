@@ -1,0 +1,72 @@
+{
+  "version": "4.3.3",
+  "flags": {},
+  "checked": false,
+  "shapes": [
+    {
+      "review_status": "pending",
+      "label": "curtain",
+      "score": null,
+      "points": [
+        [
+          274.4715447154472,
+          34.30894308943088
+        ],
+        [
+          403.739837398374,
+          34.30894308943088
+        ],
+        [
+          403.739837398374,
+          260.3252032520325
+        ],
+        [
+          274.4715447154472,
+          260.3252032520325
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    },
+    {
+      "review_status": "pending",
+      "label": "curtain",
+      "score": null,
+      "points": [
+        [
+          402.1138211382114,
+          33.90243902439023
+        ],
+        [
+          550.8943089430894,
+          33.90243902439023
+        ],
+        [
+          550.8943089430894,
+          216.8292682926829
+        ],
+        [
+          402.1138211382114,
+          216.8292682926829
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "curtain_lab_45deg_lit_01_0048_38.jpg",
+  "imageData": null,
+  "imageHeight": 480,
+  "imageWidth": 640,
+  "description": ""
+}
