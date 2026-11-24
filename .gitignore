@@ -1,6 +1,33 @@
-build/
-install/
-log/
+# ROS bag data: too large for GitHub (100 MB per-file limit)
 *.db3
 __pycache__/
 .pytest_cache/
+
+# colcon output
+build/
+install/
+log/
+
+# Large local data: keep on the robot, never in git
+# runs/: bags (runs/ROS_bags), videos and run folders; only the bag guide and scripts are tracked
+runs/*
+!runs/ROS_bags/
+runs/ROS_bags/*
+!runs/ROS_bags/ROSBAG_GUIDE.md
+!runs/ROS_bags/record.sh
+!runs/ROS_bags/aliases.sh
+!runs/ROS_bags/qos_overrides.yaml
+!runs/ROS_bags/bag_video.py
+recordings/
+maps/
+logs/
+
+# YOLO datasets are tracked; the zip snapshots are copies of datasets/curtain
+datasets/*.zip
+
+# Dataset review sheets (sheet.py output) and source phone videos
+datasets/curtain/review/
+datasets/*.MOV
+
+# model weights and caches written at run time
+models/
