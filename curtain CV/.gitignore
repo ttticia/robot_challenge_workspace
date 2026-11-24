@@ -1,8 +1,9 @@
-# Training images, weights and archives stay out of git (labels, annotations and the manifest are tracked).
-*.jpg
-*.jpeg
-*.png
-*.zip
-*.pt
+# Backed up: the original frames (images/images/*.jpg), labels, annotations, manifest and the
+# model in model/. Kept out: duplicate frames next to the labels, test pictures, archives,
+# other weights, the Windows venv and frames marked for deletion.
+images/labels/*.jpg
+yolo_test/*.jpg
+yolo_test/*.pt
 yolo_test/venv/
 images/_delete_/
+*.zip
