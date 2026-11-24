@@ -17,6 +17,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'junction_trigger = scene_understanding.junction_trigger:main',
             'room_scene = scene_understanding.room_scene:main',
             'task_reporter = scene_understanding.task_reporter:main',
         ],

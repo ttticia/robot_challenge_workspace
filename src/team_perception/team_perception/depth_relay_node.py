@@ -19,6 +19,16 @@ loopback at a third of the rate.
        out_info_topic  (/camera/depth_relay/camera_info), one per forwarded frame
        RELIABLE, keep last 2: matches BEST_EFFORT and RELIABLE subscribers, never blocks.
 
+On demand (on_demand:=true, the launch default for depth since 2026-11-24): the raw depth
+stream is NOT kept open. One subscriber to it, even this one, slows every stream from the
+robot to about 10 Hz (lidar and its IMU included, which makes odometry lag and jump). So the
+relay only subscribes while someone needs depth:
+  - an /explore/event that starts with one of `demand_words` ("room", "object": the explorer
+    is holding a look into a room), or
+  - any message on `demand_capture_topic` (/scene/capture),
+and closes the subscription again `demand_hold` s after the last one. on_demand:=false = the
+old always-open relay. (maze_explore's stair check opens depth by itself, for ~3 s.)
+
 Started by team_perception robot.launch.py (depth_relay:=true) and by maze_nav.launch.py
 (which shares one relay between perception and stair_detector). Run only one.
 
@@ -36,6 +46,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
+from std_msgs.msg import String
 
 OUT_QOS = QoSProfile(depth=2, history=HistoryPolicy.KEEP_LAST,
                      reliability=ReliabilityPolicy.RELIABLE)
@@ -82,6 +93,11 @@ class DepthRelay(Node):
         p('rate_hz', 10.0)               # 0 = forward every frame
         p('stats_period', 60.0)          # s between rate log lines
         p('compressed', False)           # True: relay sensor_msgs/CompressedImage (colour)
+        p('on_demand', False)            # depth: open the raw stream only while it is needed
+        p('demand_event_topic', '/explore/event')
+        p('demand_words', 'room,object')
+        p('demand_capture_topic', '/scene/capture')
+        p('demand_hold', 6.0)            # s the stream stays open after the last request
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self.gate = RateGate(float(g('rate_hz')))
         self.info = None
@@ -92,17 +108,55 @@ class DepthRelay(Node):
         self.depth_pub = self.create_publisher(msg_type, g('out_depth_topic'), OUT_QOS)
         self.info_pub = (self.create_publisher(CameraInfo, g('out_info_topic'), OUT_QOS)
                          if g('in_info_topic') else None)
-        self.create_subscription(msg_type, g('in_depth_topic'), self.on_depth,
-                                 qos_profile_sensor_data)
-        if g('in_info_topic'):
-            self.create_subscription(CameraInfo, g('in_info_topic'), self.on_info,
-                                     qos_profile_sensor_data)
+        self.msg_type, self.in_topic, self.in_info = msg_type, g('in_depth_topic'), g('in_info_topic')
+        self.on_demand = bool(g('on_demand'))
+        self.hold = float(g('demand_hold'))
+        self.words = tuple(w for w in str(g('demand_words')).replace(' ', '').split(',') if w)
+        self.subs = []                   # the raw subscriptions, while open
+        self.wanted_until = None
+        if self.on_demand:
+            if g('demand_event_topic'):
+                self.create_subscription(String, g('demand_event_topic'), self.on_event, 10)
+            if g('demand_capture_topic'):
+                self.create_subscription(String, g('demand_capture_topic'),
+                                         lambda m: self.want('capture'), 10)
+            self.create_timer(0.5, self.close_if_idle)
+        else:
+            self.open()
         self.stats_period = float(g('stats_period'))
         self.create_timer(5.0, self.watch)
         self.stats_at = self.get_clock().now()
         self.get_logger().info(
             f'{g("in_depth_topic")} -> {g("out_depth_topic")} at <= {g("rate_hz")} Hz'
             + (f'; {g("in_info_topic")} -> {g("out_info_topic")}' if self.info_pub else ''))
+
+    def open(self):
+        if self.subs:
+            return
+        self.subs = [self.create_subscription(self.msg_type, self.in_topic, self.on_depth,
+                                              qos_profile_sensor_data)]
+        if self.in_info:
+            self.subs.append(self.create_subscription(CameraInfo, self.in_info, self.on_info,
+                                                      qos_profile_sensor_data))
+
+    def on_event(self, msg):
+        if msg.data.startswith(self.words):
+            self.want(msg.data[:40])
+
+    def want(self, why):
+        if not self.subs:
+            self.get_logger().info(f'{self.kind} stream opened ({why})')
+        self.wanted_until = self.get_clock().now().nanoseconds * 1e-9 + self.hold
+        self.open()
+
+    def close_if_idle(self):
+        if self.subs and self.get_clock().now().nanoseconds * 1e-9 > self.wanted_until:
+            for sub in self.subs:
+                self.destroy_subscription(sub)
+            self.subs, self.last_in = [], None
+            self.gate.next = None
+            self.get_logger().info(f'{self.kind} stream closed (nobody has asked for '
+                                   f'{self.hold:.0f} s)')
 
     def on_info(self, msg):
         self.info = msg
@@ -120,6 +174,10 @@ class DepthRelay(Node):
 
     def watch(self):
         now = self.get_clock().now()
+        if self.on_demand and not self.subs:
+            self.n_in = self.n_out = 0
+            self.stats_at = now
+            return                           # closed on purpose
         if self.last_in is None or (now - self.last_in).nanoseconds > 5e9:
             self.get_logger().warn(f'no {self.kind} images for 5 s (camera driver / bridge up?)',
                                    throttle_duration_sec=30.0)

@@ -18,6 +18,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
+from launch.substitutions import PythonExpression
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -38,7 +39,13 @@ ARGS = {
     'auto_start': ('false', 'start exploring without waiting for /nav/start'),
     'cloud_topic': ('/cloud_registered_body', 'cloud for wall_scan (sim: /livox/points)'),
     'gait': ('rug', 'walking gait: rug (RUG general gear) or hstep (H-Step)'),
+    'scene_understanding': ('true', 'analyse stitched room and object looks with the VLM'),
+    'scene_camera_topic': ('/camera/color/image_raw', 'RGB image topic for the VLM'),
+    'scene_image_transport': ('compressed', 'compressed = <scene_camera_topic>/compressed '
+                                            '(JPEG); raw only where no compressed topic exists'),
     'enter_rooms': ('false', 'walk into rooms instead of looking in from the cell before'),
+    'stair_check': ('true', 'confirm stairs with the depth camera before crossing (depth is '
+                            'only subscribed for the ~3 s of each check)'),
     'v_max': ('0.20', 'top walking speed, m/s'),
     'stand_height': ('0.30', 'base_link height used when the floor cannot be measured'),
 }
@@ -69,9 +76,23 @@ def generate_launch_description():
                               'stand_height': val('stand_height', float)}]),
             Node(package='slam_toolbox', executable='async_slam_toolbox_node', name='slam_toolbox',
                  output='screen', parameters=[os.path.join(config, 'slam_toolbox.yaml')]),
+            Node(package='scene_understanding', executable='junction_trigger',
+                 output='screen', condition=IfCondition(PythonExpression([
+                     "'", c['explore'], "'.lower() == 'true' and '",
+                     c['scene_understanding'], "'.lower() == 'true'",
+                 ])),
+                 parameters=[{'enable_vlm': True, 'explore_event_topic': '/explore/event',
+                              'junction_scan_enabled': False,
+                              # compressed: a raw image subscriber slows the lidar IMU
+                              # on its way here and Fast-LIO diverges (08:19, 08:37 runs)
+                              'image_topic': c['scene_camera_topic'],
+                              'image_transport': c['scene_image_transport'],
+                              'log_rate': False,
+                              'save_dir': os.path.expanduser('~/challenge_ws/logs/scene')}]),
             Node(package='maze_explore', executable='maze_explorer', name='maze_explorer',
                  output='screen', additional_env=env, condition=IfCondition(c['explore']),
                  parameters=[{'drive': val('drive', bool), 'auto_start': val('auto_start', bool),
                               'gait': c['gait'], 'enter_rooms': val('enter_rooms', bool),
+                              'stair_check': val('stair_check', bool),
                               'v_max': val('v_max', float)}]),
         ])

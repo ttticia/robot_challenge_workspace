@@ -89,7 +89,13 @@
       "Read(//home/runs/ROS_bags/**)",
       "Bash(ros2 pkg *)",
       "Bash(ls -la ~/.cache/team_perception 2>/dev/null | head; du -sh ~/.cache/team_perception 2>/dev/null; ls -la --time-style=long-iso ~/ros2_ws/src/FAST_LIO/Log 2>/dev/null | head -8; grep -n \"ROOT_DIR\\\\|fopen\\\\|open\\(\" ~/ros2_ws/src/FAST_LIO/src/laserMapping.cpp | head -12; cd ~/challenge_ws && cat .gitignore | grep -n \"models\\\\|logs\"; ls models | head; sed -n 25,40p src/team_perception/team_perception/human_utils.py; ls /tmp/launch_params_* 2>/dev/null | wc -l; crontab -l 2>/dev/null | grep -v \"^#\" | head -3)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(awk '{s+=$4} END{print s/1e6\" MB\"}')",
+      "Bash(awk '{printf \"%8.1f KB  %s\\\\n\",$4/1e3,$5}')",
+      "Bash(awk '{d=$3; n=split\\(d,a,\"/\"\\); k=\\(n>2? a[1]\"/\"a[2]\"/…\" : d\\); s[k]+=$1; c[k]++} END{for\\(k in s\\) printf \"%9.1f KB %4d  %s\\\\n\",s[k],c[k],k}')",
+      "Bash(sort -k4)",
+      "Bash(kill -INT 36041)",
+      "Bash(python3 -m py_compile src/team_perception/team_perception/depth_relay_node.py src/maze_explore/maze_explore/explorer.py)"
     ],
     "additionalDirectories": [
       "/home/user/challenge_ws/runs"

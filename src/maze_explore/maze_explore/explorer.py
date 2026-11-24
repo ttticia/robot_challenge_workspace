@@ -23,13 +23,14 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
-from sensor_msgs.msg import PointCloud2
-from std_msgs.msg import Bool, Empty, String
+from sensor_msgs.msg import CameraInfo, Image, PointCloud2
+from std_msgs.msg import Bool, Empty, Float32, String
 from tf2_ros import Buffer, TransformException, TransformListener
 from transfer_interfaces.msg import MotionSimpleCMD
 from visualization_msgs.msg import Marker, MarkerArray
 
 from maze_explore import robot
+from maze_explore import stair_levels
 from maze_explore.grid import Grid, fit_grid, nb, opp, wrap
 from maze_explore.plan import next_job
 from maze_explore.sense import HeightMap, Occupancy, Sense
@@ -78,6 +79,31 @@ class Explorer(Node):
         #                                                  Lite3 drifts ~9 cm back per 90 deg
         self.pivot_snap = p('pivot_snap', 0.25).value     # m: turn about the cell centre when
         #                                                  the robot stands this near it
+        # Stair check with the depth camera (stair_levels.py, from ~/stairs_detect). The depth
+        # stream is only subscribed while the robot stands still for the check: one raw depth
+        # subscriber slows every stream from the robot, lidar and its IMU included.
+        self.stair_check_on = p('stair_check', True).value
+        self.stair_check_time = p('stair_check_time', 3.0).value     # s of looking
+        self.stair_rails = p('stair_rails', True).value   # handrails must show in the lidar too
+        self.stair_raise_min = p('stair_raise_min', 0.28).value   # m: lidar height in the next
+        #                                    cell from which it is looked at before walking in
+        self.stair_params = stair_levels.LevelParams(
+            rise=p('stair_rise', 0.12).value, tread=p('stair_tread', 0.20).value,
+            steps=p('stair_steps', 3).value,
+            # Wider than the detector's defaults, for close range (2026-11-24, on the real
+            # bags: 0.26 m shot 12 -> 18 of 21 frames, walk-in 61 -> 80 of 191, the look-alike
+            # obstacle still 0 of 27). Close up the floor is out of view, so the top tread's
+            # height is less exact, and less of each tread is seen.
+            top_min=p('stair_top_min', 0.31).value, top_max=p('stair_top_max', 0.42).value,
+            edge_max_foreign=p('stair_edge_foreign', 4).value)
+        self.stair_quick_no = p('stair_quick_no', 8).value   # frames without one hit = not stairs
+        self.depth_topic = p('depth_topic', '/camera/depth/image_raw').value
+        self.depth_info_topic = p('depth_info_topic', '/camera/depth/camera_info').value
+        self.stairs_checked = {}      # (cell, d) -> True (stairs) | False (not) | 'lidar' (no depth)
+        self.odom_rot = None          # base_link orientation in odom (roll / pitch for the check)
+        self.body_height = None
+        self.clouds = deque(maxlen=12)        # the last ~1.2 s of /maze/cloud, for the handrails
+        self.odom_grace_until = 0.0
         self.odom_settle = p('odom_settle', 3.0).value   # s of pause after one odometry jump
         self.odom_jumps = []
         self.odom_hold_until = 0.0
@@ -127,6 +153,8 @@ class Explorer(Node):
         self.create_subscription(OccupancyGrid, '/map', self.on_map, latched)
         self.create_subscription(PointCloud2, '/maze/cloud', self.on_cloud, qos_profile_sensor_data)
         self.create_subscription(Odometry, '/odom', self.on_odom, 20)
+        self.create_subscription(Float32, '/maze/body_height',
+                                 lambda m: setattr(self, 'body_height', m.data), 5)
         self.create_subscription(Empty, '/nav/start', lambda m: self.begin(), 1)
         self.create_subscription(Empty, '/explore/stop', lambda m: self.halt('STOPPED', 'stop asked'), 1)
         self.create_timer(0.1, self.tick)
@@ -144,6 +172,7 @@ class Explorer(Node):
     def on_cloud(self, msg):
         pts = np.frombuffer(msg.data, np.float32).reshape(-1, 3)
         self.cloud, self.cloud_time = pts, self.now()
+        self.clouds.append(pts)
         if self.pose is None or not len(pts) or self.now() < self.blind_until:
             return
         x, y, yaw = self.pose
@@ -153,7 +182,8 @@ class Explorer(Node):
 
     def on_odom(self, msg):
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        p = msg.pose.pose.position
+        p, q = msg.pose.pose.position, msg.pose.pose.orientation
+        self.odom_rot = stair_levels.quat_to_matrix(q.x, q.y, q.z, q.w)
         if self.last_odom is not None:
             t0, x0, y0 = self.last_odom
             jump = math.hypot(p.x - x0, p.y - y0)
@@ -165,7 +195,9 @@ class Explorer(Node):
             if jump > 0.15 + 0.6 * dt:
                 now = self.now()
                 self.odom_jumps = [j for j in self.odom_jumps if now - j < 10.0] + [now]
-                if jump > 2.0 or len(self.odom_jumps) >= 3:
+                if now < self.odom_grace_until:     # depth stream on: the lidar feed is slow
+                    self.odom_jumps = []
+                elif jump > 2.0 or len(self.odom_jumps) >= 3:
                     self.halt('FAULT', f'/odom jumped {jump:.2f} m in {dt:.2f} s '
                                        f'({len(self.odom_jumps)} jumps in 10 s): odometry has '
                                        'diverged. Stop, run explore_check, relaunch')
@@ -289,6 +321,15 @@ class Explorer(Node):
         if (cell, d) in self.forced_wall or (cell == self.start and d == 2) or b in self.closed:
             return 'wall'
         k = sense.kind(cell, d, may_exit=cell != self.start)
+        # The depth camera has the last word on stairs. Until it has looked, something that
+        # blocks the next cell is kept as possible stairs (looked at before anything is done).
+        checked = self.stairs_checked.get((cell, d))
+        if checked is True:
+            return 'stairs'
+        if checked is False and k == 'stairs':
+            k = 'blocked'
+        if checked is None and k == 'blocked' and self.stair_check_on:
+            k = 'stairs'
         if k == 'exit' and self.exit_cell is None:
             self.exit_cell, self.exit_d = cell, d
             self.event(f'exit seen from cell {cell} side {d}')
@@ -360,6 +401,12 @@ class Explorer(Node):
         """Queue one step from the centre of cell a through side d."""
         q, h, b = self.queue, self.grid.heading(d), nb(a, d)
         ax, ay = self.grid.centre(a)
+        if self.stair_check_on and (a, d) not in self.stairs_checked and (
+                how == 'stairs' or (how == 'walk' and b not in self.visited and self.raised(a, d))):
+            # look first; the next plan then knows whether this is stairs
+            q.extend([('drive', ax, ay, h, 'square'), ('turn', h, 2.0), ('hold', 0.5),
+                      ('stair_check', a, d)])
+            return
         if how == 'walk':
             bx, by = self.grid.centre(b)
             q.extend([('turn', h, 4.0), ('call', lambda: setattr(self, 'step', (a, d, b))),
@@ -393,6 +440,96 @@ class Explorer(Node):
                 q.extend([('cmd', code), ('hold', self.cmd_gap)])
             q.extend([('event', f'stairs: crossed, {self.gait} again'), ('call', crossed)])
 
+    def raised(self, cell, d):
+        """The lidar shows something stair-high (not just terrain) in the cell behind side d."""
+        _, front, top = Sense(self.grid, self.occ, self.heights).interior(cell, d)
+        return max([v for v in (front, top) if not math.isnan(v)], default=0.0) >= self.stair_raise_min
+
+    def do_stair_check(self, cell, d):
+        """Standing still, facing side d: watch the depth camera for stair_check_time s."""
+        self.send()
+        mem, now = self.act_mem, self.now()
+        self.odom_grace_until = now + 4.0
+        if 'subs' not in mem:
+            mem.update(frame=None, k=None, frames=0, hits=0, why='no depth frame arrived',
+                       confirm=stair_levels.Confirm(), rails='', mount=None)
+            mem['subs'] = [
+                self.create_subscription(Image, self.depth_topic,
+                                         lambda m: mem.update(frame=m), qos_profile_sensor_data),
+                self.create_subscription(CameraInfo, self.depth_info_topic,
+                                         lambda m: mem.update(k=(m.k[0], m.k[4], m.k[2], m.k[5])),
+                                         qos_profile_sensor_data)]
+            self.get_logger().info(f'stair check: cell {cell} side {d}, depth camera on')
+            return False
+        if mem['mount'] is None:
+            try:
+                tf = self.tf_buffer.lookup_transform('base_link', 'camera_link', Time())
+                t, q = tf.transform.translation, tf.transform.rotation
+                mem['mount'] = (stair_levels.quat_to_matrix(q.x, q.y, q.z, q.w), np.array([t.x, t.y, t.z]))
+            except TransformException:       # measured mount: 0.252 m ahead, 20 deg down
+                mem['mount'] = (stair_levels.quat_to_matrix(0.0, 0.17364817766693033, 0.0,
+                                                            0.984807753012208),
+                                np.array([0.25228, -0.0005, 0.0741]))
+        found = None
+        msg, mem['frame'] = mem['frame'], None
+        if msg is not None and mem['k'] is not None and self.odom_rot is not None:
+            depth = self.depth_image(msg)
+            if depth is not None:
+                level = stair_levels.roll_pitch_only(self.odom_rot)
+                r, t = stair_levels.level_camera(level, *mem['mount'])
+                # The detector looks for the floor within 12 cm of the standing height it is
+                # given. Try the measured one, then the two usual ones (0.35 nominal, 0.30).
+                h = self.body_height
+                seen = None
+                for height in ([h] if h and 0.25 <= h <= 0.40 else []) + [0.35, 0.30]:
+                    self.stair_params.body_height = height
+                    seen = stair_levels.detect(depth, mem['k'], r, t, self.stair_params)
+                    if seen is not None:
+                        break
+                mem['why'] = 'stairs seen' if seen else stair_levels.detect.last_why
+                if seen is not None and self.stair_rails:
+                    pts = np.concatenate(list(self.clouds)).astype(float) if self.clouds else None
+                    if pts is not None:      # /maze/cloud z = height above the floor
+                        pts[:, 2] += seen.floor_z
+                    ok, mem['rails'] = stair_levels.rails_check(pts, seen)
+                    if not ok:
+                        mem['why'], seen = f'treads look like stairs but {mem["rails"]}', None
+                mem['frames'] += 1
+                mem['hits'] += seen is not None
+                found = mem['confirm'].add(now, seen)
+        waited = self.elapsed()
+        quick_no = mem['hits'] == 0 and mem['frames'] >= self.stair_quick_no   # close depth early
+        if found is None and not quick_no and \
+                waited < self.stair_check_time + (2.0 if mem['frames'] == 0 else 0.0):
+            return False
+        for sub in mem['subs']:
+            self.destroy_subscription(sub)
+        if found is not None:
+            verdict = True
+            text = f'STAIRS: {found.summary()}; {mem["rails"]}'
+        elif mem['frames'] == 0:
+            verdict = 'lidar'                # no camera: the lidar's reading stands
+            text = f'no depth frames in {waited:.1f} s; keeping what the lidar says'
+        else:
+            verdict = False
+            text = f'not stairs ({mem["hits"]} of {mem["frames"]} frames; last: {mem["why"]})'
+        self.stairs_checked[(cell, d)] = verdict
+        self.event(f'stair check cell {cell} side {d}: {text}')
+        self.queue.appendleft(('hold', 1.5))        # the robot's streams recover
+        return True
+
+    @staticmethod
+    def depth_image(msg):
+        if msg.encoding in ('16UC1', 'mono16'):
+            kind = np.uint16
+        elif msg.encoding == '32FC1':
+            kind = np.float32
+        else:
+            return None
+        a = np.frombuffer(bytes(msg.data), kind)
+        a = a.reshape(msg.height, msg.step // np.dtype(kind).itemsize)[:, :msg.width]
+        return a.byteswap() if msg.is_bigendian else a
+
     # ---- actions ------------------------------------------------------------------------
     def tick(self):
         have = self.read_pose()
@@ -413,7 +550,7 @@ class Explorer(Node):
                 self.act_t0 += 0.1
                 if 't' in self.act_mem:
                     self.act_mem['t'] += 0.1
-            elif age > self.pose_timeout:
+            elif age > self.pose_timeout and not (self.act and self.act[0] == 'stair_check'):
                 self.send()
                 self.why = f'pose / lidar {age:.1f} s old: standing still until it is fresh'
                 self.act_t0 += 0.1                     # the action's clock stands still too

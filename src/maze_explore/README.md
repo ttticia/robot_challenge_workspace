@@ -86,6 +86,11 @@ The start cell is closed as soon as the robot has left it.
 - **Curtain**: square up in the cell in front, then walk straight through to the next centre.
   While the fabric lies over the lidar no scans go to SLAM. No progress for 8 s = give up and
   mark it a wall.
+- **Stair check**: before stepping into a cell where the lidar shows something 0.28 m or
+  higher, and before crossing stairs, the robot stands still facing it and looks with the
+  depth camera for up to 3 s (`stair_levels.py`, the detector from `~/stairs_detect`: treads
+  at 12 / 24 / 36 cm and the triangle handrails). Only a confirmed look makes it stairs.
+  The depth stream is on only for those seconds, because it slows every other stream.
 - **Stairs**: square up, then manual mode -> AI state -> AI basic gait, walk two cells
   straight (over the stairs cell), then AI off -> manual -> move mode -> walking gait -> auto mode.
 - **Start**: move mode -> walking gait (RUG general by default) -> auto mode, creep 10 cm, line the grid up.
@@ -96,6 +101,25 @@ The start cell is closed as soon as the robot has left it.
 - Pose or lidar older than 1 s: stands still until fresh.
 - No progress on the stairs: stops and waits for the operator.
 - Ctrl+C or `explore_stop`: one zero velocity.
+
+## Automatic scene understanding
+
+`explore.launch.py` starts the VLM observer by default during exploration.
+The observer uses the explorer's centre, left and right holds for room and
+object looks, stitches the RGB views left–centre–right and submits one prompt.
+Individual frames, the stitched JPEG and `results.jsonl` are saved below
+`~/challenge_ws/logs/scene/junctions_*`. Use `scene_understanding:=false` to
+run without the VLM or `scene_camera_topic:=...` to select another RGB topic.
+
+The observer reads `<scene_camera_topic>/compressed` (JPEG, about 75 KB a frame). Do not
+point it at the raw image on the robot (`scene_image_transport:=raw`): a raw image subscriber
+slows the lidar IMU on its way to this computer and Fast-LIO diverges within a minute (both
+runs on 2026-11-24 morning ended in `FAULT` in the start cell this way). Nothing is saved
+until a room or object look has finished all three views.
+
+The camera is subscribed only during a look: from the moment the explorer's status shows a
+`look` job in the current cell (the turn to the centre view) until 2 s after it ends. The
+terminal shows `Camera on for an explorer look` and `Camera off`.
 
 ## Events for perception
 `/explore/event` (String) says when the robot is posed for a look, e.g.

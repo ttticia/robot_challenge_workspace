@@ -68,6 +68,9 @@ ARGS = {
     'depth_relay': ('true', 'read depth through one depth_relay (one copy from the bridge); '
                             'false = qr_scanner subscribes depth_topic '
                             'themselves'),
+    'depth_on_demand': ('true', 'depth_relay opens the raw depth stream only while the explorer '
+                                'holds a room look (or on /scene/capture); false = always open, '
+                                'which slows every stream from the robot'),
     'relay_rate_hz': ('10.0', 'depth_relay: max depth frames a second passed on'),
     'qr': ('true', 'run qr_scanner'),
     'qr_detect': ('false', 'QR detection (full scans + /qr/unread for FACING_QR); false = '
@@ -113,7 +116,7 @@ def relay_topics(depth_topic, info_topic):
 def nodes(context):
     c = {name: LaunchConfiguration(name) for name in ARGS}
     v = {name: c[name].perform(context) for name in ('depth_topic', 'depth_camera_info_topic',
-                                                     'depth_relay', 'relay_rate_hz', 'nice',
+                                                     'depth_relay', 'relay_rate_hz', 'nice', 'depth_on_demand',
                                                      'cpus', 'image_topic', 'image_transport',
                                                      'colour_relay', 'colour_rate_hz',
                                                      'qr_detect')}
@@ -127,7 +130,8 @@ def nodes(context):
                         parameters=[{'in_depth_topic': depth, 'in_info_topic': info,
                                      'out_depth_topic': RELAY_DEPTH,
                                      'out_info_topic': RELAY_INFO,
-                                     'rate_hz': float(v['relay_rate_hz'])}]))
+                                     'rate_hz': float(v['relay_rate_hz']),
+                                     'on_demand': v['depth_on_demand'].lower() in ('true', '1')}]))
         depth, info = relay_topics(depth, info)
     image_topic = v['image_topic']
     if v['colour_relay'].lower() in ('true', '1') and v['image_transport'] == 'compressed':

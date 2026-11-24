@@ -100,6 +100,7 @@ at any time with `lite3_manual`.
 | `explore.launch.py v_max:=0.15` | Slower walking (default 0.20 m/s) |
 | `explore.launch.py gait:=hstep` | H-Step gait instead of the default RUG general gear |
 | `explore.launch.py auto_start:=true` | Starts without waiting for `/nav/start` |
+| `explore.launch.py stair_check:=false` | No depth-camera stair check; the lidar alone decides what is stairs |
 
 ### What the log tells you
 
@@ -111,6 +112,9 @@ at any time with `lite3_manual`.
 | `event: curtain ...`, `room left ...`, `stairs: AI mode ...` | Behaviours as they happen |
 | `/odom jumped ... paused 3 s` | One jump after a stall in the lidar feed. Carries on by itself |
 | `FAULT: /odom jumped ... (3 jumps in 10 s)` | Odometry ran away. Stays stopped; relaunch after `explore_check` says GO |
+| `stair check cell ... : STAIRS: stairs 0.58 m at +0 deg ...` | The depth camera confirmed stairs ahead; they are crossed in AI mode once nothing else is left |
+| `stair check ...: not stairs (0 of 14 frames; last: ...)` | It looked for 3 s and did not see the three treads and handrails; the reason of the last frame is given |
+| `stair check ...: no depth frames` | The depth camera did not answer; the lidar's reading is kept |
 | `DONE: in the last cell` | Finished |
 
 ---

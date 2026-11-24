@@ -17,7 +17,7 @@ check /livox/imu 150
 check /livox/lidar 9
 check /imu/data 150
 check /camera/color/image_raw/compressed 20
-others=$(timeout 6 ros2 node list 2>/dev/null | grep -v -e lite3_domain_bridge -e _ros2cli -e transform_listener_impl \
+others=$(timeout 6 ros2 node list 2>/dev/null | grep -v -e lite3_domain_bridge -e _ros2cli -e "^/rviz" -e transform_listener_impl \
          -e laser_mapping -e odom_relay -e wall_scan -e slam_toolbox -e maze_explorer -e rosbag2_recorder)
 # Any subscriber to raw depth or /livox/points (even one, even BEST_EFFORT) slows EVERY bridge
 # stream to ~10 Hz (2026-11-23: /imu/data 195 -> 11 Hz). Nodes show above; this catches the rest.

@@ -124,7 +124,7 @@ sending `/scan`, because the fabric lies over the lidar and SLAM would match aga
 | `exit` | open, and no walls for 2 m beyond | never from the start cell |
 | `object` | open, something taller than terrain stands inside the cell behind (toy set, prop) | height map: ≥ 8 squares of the interior (0.25 m clear of the borders) at ≥ 0.38 m, each seen 3 times. Checked before `room` |
 | `room` | open, the cell behind is closed on its other three sides (dead end) | |
-| `stairs` | open, the cell behind is blocked by something that rises like steps | height map: top 0.33–0.60 m, front 0.08–0.42 m |
+| `stairs` | open, the cell behind is blocked by something that rises like steps | height map: top 0.33–0.60 m, front 0.08–0.42 m; then confirmed by the depth-camera stair check (section 3.6) |
 | `blocked` | open, the cell behind is blocked by something else | |
 | `free` | open, the cell behind can be walked into | |
 
@@ -162,6 +162,15 @@ been explored, and the robot ends the run standing in the final cell.
   `/maze/blind` on. The crossing is remembered as a link so later routes can use it.
   **Off for now (user, 2026-11-23):** the obstacle stop stays on during the push
   (`push_stop`, default true), so the fabric stops the robot and the side becomes a wall.
+- **Stair check (2026-11-24)**: before walking into an unvisited cell where the lidar shows
+  something 0.28 m or higher, and before any stairs crossing, the robot squares up, stands
+  still and runs the teammates' depth-camera detector (`stair_levels.py`, copied from
+  `~/stairs_detect`: treads at 12 / 24 / 36 cm, plus the triangle handrails in the lidar)
+  for up to 3 s. Its verdict overrides the lidar's: `stairs` only when it confirms. Depth is
+  subscribed only during the check, because one raw depth subscriber slows every stream
+  from the robot; odometry jumps in that window do not count towards `FAULT`. A cell that
+  is `blocked` stays a stairs candidate until it has been looked at. `stair_check:=false`
+  turns it off (lidar only).
 - **Stairs**: square up in the cell before, enter AI mode (manual → AI on → AI gait), walk
   two cells (over the stair cell to the centre of the cell after) at 0.15 m/s, leave AI mode
   (AI off → manual → Move → gait → navigation mode). The stair cell is closed afterwards.
@@ -319,6 +328,12 @@ Sensors and odometry:
 
 - The bridge sends one full copy of a stream per subscribing process and saturates past
   about 4 copies. Use **one subscriber per heavy stream** and republish locally.
+- **Nothing keeps raw depth open (2026-11-24).** `depth_relay` is on demand by default
+  (`depth_on_demand:=true`): it subscribes only while the explorer holds a room look
+  (`/explore/event` starting with `room` / `object`) or on `/scene/capture`, and closes 6 s
+  after the last one. The stair check opens depth itself for at most 3 s (1.6 s when no
+  frame looks like stairs). `~/stairs_detect/stair_watch.py` still keeps depth and
+  `/livox/points` open: do not run it during a run.
 - **One subscriber to raw depth (`/camera/depth/image_raw`), even BEST_EFFORT, slows every
   bridge stream to about 10 Hz** (measured 2026-11-23: `/imu/data` 195 → 11 Hz). The same
   goes for `ros2 topic hz` / `echo` on a big topic or RViz showing depth during a run.
