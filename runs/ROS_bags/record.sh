@@ -6,13 +6,11 @@
 #   record.sh --list
 #
 # Presets:
-#   full        teleop, everything incl. depth          (guide 2.1, groups A-G)
-#   maze        full maze_nav run, no depth              (guide 2.2, groups A, B, D-H)
-#   navdebug    why it moved/stopped/turned             (guide 2.3)
-#   lidar       raw sensors to re-run Fast-LIO / SLAM   (guide 2.4, groups A, D)
-#   curtain     curtain YOLO training data: colour, depth, lidar, tf, odometry, IMU,
-#               controller (guide 2.5). Raw /livox/points automatically when maze_nav's
-#               lidar_relay isn't running; warns if the camera isn't publishing.
+#   manual      hand-driven demonstration run with maze_explore explore.launch.py
+#               explore:=false: lidar, odometry, /scan, /map, tf, colour, controller.
+#               No depth: one raw depth subscriber slows every bridge stream (guide 2.6)
+#   explore     autonomous maze_explore run: cloud, odometry, /scan, /map, tf, colour,
+#               commands sent, explorer status / events
 #
 # Options:
 #   -n, --dry-run   print the command, don't record
@@ -23,6 +21,11 @@
 # Names: letters, digits, '.', '_', '-' only. Topics after "--" are appended (e.g. an aligned
 # depth topic). After Ctrl+C you are asked for a new name (Enter keeps it); REC_ASK_NAME=0
 # skips the question.
+#
+# manual and explore bags are zstd-compressed message by message (about half the size; plain
+# .db3 file, read with ros2 bag / rosbag2_py as usual). REC_COMPRESS=0 turns it off.
+# They also run the sensor-rate check
+# (src/maze_explore/preflight.sh) first and ask before recording on a NO-GO; REC_CHECK=0 skips it.
 
 set -euo pipefail
 
@@ -33,31 +36,32 @@ MIN_FREE_GB=5
 # ---- topic groups (ROSBAG_GUIDE.md section 1) ------------------------------------------
 A="/tf /tf_static /rosout"
 B="/camera/color/image_raw/compressed /camera/color/camera_info"
-C="/camera/depth/image_raw /camera/depth/camera_info"
-# Lidar: /livox/points_local = maze_nav lidar_relay's local copy of /livox/points (same
-# messages, no second bridge copy). RAW_LIDAR=1 records raw /livox/points (teleop, no maze_nav).
-D="/livox/points_local /livox/lidar /livox/imu /imu/data /leg_odom2"
 E="/odom /scan /map"
-F="/plan /cmd_vel_nav /cmd_vel_smoothed /nav_cmd_vel /cmd_vel /simple_cmd /handle_state"
-G="/found /qr/detections /posters/detections /humans/detections /camera/color/image_offboard/compressed"
-H="/maze/status /maze/goal /wall_scan"
 
 preset_topics() {
   case "$1" in
-    full)       echo "$A $B $C $D $E $F $G" ;;
-    maze)       echo "$A $B $D $E $F $G $H" ;;
-    navdebug)   echo "$A /livox/points_local /odom /scan /map /leg_odom2 $F" ;;
-    lidar)      echo "$A /livox/lidar /livox/imu /livox/points_local /imu/data /leg_odom2" ;;
-    # curtain_yolo_frames.py: colour + depth + both camera_infos + /tf_static (camera pose),
-    # lidar for its --lidar draft labels. Motion and context for picking / checking frames:
-    # /odom (Fast-LIO, only with maze_nav), /leg_odom2 (robot's own odometry, always there),
-    # /imu/data (body pitch / roll while walking: tilts the camera), /handle_state +
-    # /simple_cmd (controller sticks and mode: moving or still, which frames blur).
-    curtain)    echo "$A $B $C /livox/points_local /odom /leg_odom2 /imu/data /handle_state /simple_cmd" ;;
+    # Demonstration drive by hand, to design the exploration stack from. Needs
+    # `ros2 launch maze_explore explore.launch.py explore:=false` (Fast-LIO, wall_scan,
+    # slam_toolbox) running.
+    #   /livox/lidar + /livox/imu   raw lidar: Fast-LIO can be re-run with other settings
+    #   /cloud_registered_body      Fast-LIO's motion-corrected cloud (local topic, no bridge
+    #                               copy): /scan can be rebuilt with another height band
+    #   /odom /scan /map + tf       where the robot was and what it had mapped
+    #   colour (compressed)         what the robot was looking at
+    #   /handle_state /simple_cmd /cmd_vel   what the operator did (sticks, mode changes)
+    #   /commands/joy_raw           handheld controller buttons (mode / gait changes made on
+    #                               the controller never reach /simple_cmd)
+    #   /maze/body_height           wall_scan's height above the floor
+    #   /leg_odom2 /imu/data        robot's own odometry and body tilt (terrain, stairs)
+    #   /explore/*                  the explorer's state, if it runs (drive:=false)
+    manual)     echo "$A $B /livox/lidar /livox/imu /cloud_registered_body /imu/data /leg_odom2 $E /handle_state /commands/joy_raw /simple_cmd /cmd_vel /maze/body_height /explore/status /explore/event /explore/cells" ;;
+    # Autonomous maze_explore run (explore.launch.py): no raw lidar (a second copy across the
+    # bridge); Fast-LIO's cloud, the map, what the explorer decided and what it sent.
+    explore)    echo "$A $B /cloud_registered_body /imu/data /leg_odom2 $E /handle_state /simple_cmd /cmd_vel /explore/status /explore/event /explore/cells /maze/body_height" ;;
     *)          return 1 ;;
   esac
 }
-PRESETS="full maze navdebug lidar curtain"
+PRESETS="manual explore"
 
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -193,56 +197,52 @@ node_running() { grep -qx "$1" <<<"$NODES"; }
 
 free_gb=$(df -Pk "$BAG_DIR" | awk 'NR==2 {print int($4 / 1048576)}')
 if (( free_gb < MIN_FREE_GB )); then
-  echo "Warning: only ${free_gb} GB free in $BAG_DIR (depth + lidar use ~1 GB/min)." >&2
+  echo "Warning: only ${free_gb} GB free in $BAG_DIR (a bag takes about 0.5 GB/min)." >&2
 fi
 
-# Recording raw depth while Nav2 drives delayed /livox/points ~1.2 s and collision_monitor
-# held the robot at zero (2026-11-13). Refuse unless the user insists.
-if [[ " $TOPICS " == *" /camera/depth/image_raw "* ]] \
-   && grep -qE "controller_server|collision_monitor" <<<"$NODES"; then
-  echo "Nav2 is running and preset '$PRESET' records raw depth, which stalls the lidar." >&2
-  echo "Use 'maze' instead, or set ALLOW_DEPTH_WITH_NAV2=1 to record anyway." >&2
-  [[ "${ALLOW_DEPTH_WITH_NAV2:-0}" == 1 ]] || exit 1
+# maze_explore presets: Fast-LIO needs /livox/imu at ~200 Hz. One subscriber to raw depth
+# (even BEST_EFFORT, measured 2026-11-23: /imu/data 195 -> 11 Hz, /livox/imu -> 8 Hz) or to
+# /livox/points slows EVERY stream from the bridge, so those are refused here. The camera has
+# no compressed depth topic; one would have to be published on the robot side of the bridge.
+if [[ "$PRESET" == manual || "$PRESET" == explore ]]; then
+  for t in "${EXTRA[@]}"; do
+    if [[ "$t" == /camera/depth/* || "$t" == /livox/points ]]; then
+      echo "$t slows every bridge stream (lidar IMU, odometry) while it is recorded." >&2
+      echo "Set ALLOW_HEAVY=1 to record it anyway." >&2
+      [[ "${ALLOW_HEAVY:-0}" == 1 ]] || exit 1
+    fi
+  done
+  PREFLIGHT="$HOME/challenge_ws/src/maze_explore/preflight.sh"
+  if [[ "${REC_CHECK:-1}" == 1 && $DRY_RUN == 0 && -x "$PREFLIGHT" ]]; then
+    echo "Checking sensor rates (about 30 s; REC_CHECK=0 skips this)..."
+    if ! "$PREFLIGHT"; then
+      echo "NO-GO: with a slow /livox/imu the bag's /odom, /map and tf will be wrong, and" \
+           "Fast-LIO cannot be re-run from it. Camera and raw lidar are still recorded." >&2
+      if [[ -t 0 ]]; then
+        read -r -p "Record anyway? [y/N] " ans || ans=n
+        [[ "$ans" == [yY]* ]] || exit 1
+      else
+        exit 1
+      fi
+    fi
+  fi
 fi
 
-# maze_nav's lidar_relay takes /livox/points across the bridge once and republishes the same
-# messages as /livox/points_local. Recording the raw topic too pulls a second full copy across
-# the bridge and makes the lidar and Fast-LIO odom late (run 2026-11-20 05:29: worst 0.67 s,
-# the old "swap if lidar_relay is listed" check missed it). So every preset records
-# /livox/points_local (ros2 bag record subscribes once it appears: starting before maze_nav is
-# fine). RAW_LIDAR=1 = raw /livox/points instead (teleop bags without maze_nav).
-# The curtain preset is teleop only (it records raw depth), so it picks for itself: raw
-# /livox/points unless lidar_relay runs (RAW_LIDAR=0 forces /livox/points_local).
-if [[ "$PRESET" == curtain && -z "${RAW_LIDAR:-}" ]] && ! node_running /lidar_relay; then
-  RAW_LIDAR=1
-  echo "curtain: maze_nav's lidar_relay isn't running, so the lidar is recorded as raw /livox/points."
-fi
-if [[ "${RAW_LIDAR:-0}" == 1 ]]; then
-  TOPICS=" $TOPICS "
-  TOPICS="${TOPICS// \/livox\/points_local / \/livox\/points }"
-  echo "RAW_LIDAR=1: recording raw /livox/points (a second bridge copy if maze_nav runs)."
-elif [[ " $TOPICS " == *" /livox/points_local "* ]] && ! node_running /lidar_relay; then
-  echo "Note: /livox/points_local comes from maze_nav's lidar_relay, not seen yet. It is" \
-       "recorded once maze_nav starts; for a teleop bag without maze_nav use RAW_LIDAR=1." >&2
-fi
-if [[ " ${EXTRA[*]} " == *" /livox/points "* ]] && node_running /lidar_relay; then
-  echo "Warning: you added /livox/points; with lidar_relay running that is a second bridge" \
-       "copy (lidar and odom late). Use /livox/points_local." >&2
-fi
-
-# Topics a curtain bag is useless without (curtain_yolo_frames.py: frames, depth for the range
-# and draft labels, camera pose, lidar drafts). Checked before (published?) and after (count).
+# Topics a manual bag is useless without. Checked before (published?) and after (count).
 REQUIRED=()
-if [[ "$PRESET" == curtain ]]; then
-  LIDAR_TOPIC=/livox/points_local
-  [[ " $TOPICS " == *" /livox/points "* ]] && LIDAR_TOPIC=/livox/points
-  REQUIRED=(/camera/color/image_raw/compressed /camera/color/camera_info /camera/depth/image_raw
-            /camera/depth/camera_info /tf_static "$LIDAR_TOPIC")
+if [[ "$PRESET" == manual ]]; then
+  REQUIRED=(/tf_static /livox/lidar /livox/imu /odom /scan /map
+            /camera/color/image_raw/compressed /handle_state)
+  for n in /slam_toolbox /odom_relay; do
+    node_running "$n" || echo "Warning: $n isn't running, so no /odom, /scan or /map. Start" \
+      "'ros2 launch maze_explore explore.launch.py explore:=false' first (robot standing still)." >&2
+  done
+fi
+if (( ${#REQUIRED[@]} )); then
   LISTED=$(timeout 5 ros2 topic list 2>/dev/null || true)
   for t in "${REQUIRED[@]}"; do
-    [[ "$t" == /livox/points_local ]] && continue      # appears when maze_nav starts
     grep -qx "$t" <<<"$LISTED" || echo "Warning: $t is not published (camera / lidar driver" \
-      "running? ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-unset}). The bag will be missing it." >&2
+      "/ mapping launch running? ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-unset}). The bag will be missing it." >&2
   done
 fi
 
@@ -250,6 +250,13 @@ fi
 # shellcheck disable=SC2206
 CMD=(ros2 bag record -o "$OUT")
 CMD+=(--qos-profile-overrides-path "$QOS_FILE")
+COMPRESS="${REC_COMPRESS:-}"
+[[ -z "$COMPRESS" && ( "$PRESET" == manual || "$PRESET" == explore ) ]] && COMPRESS=1
+if [[ "$COMPRESS" == 1 ]]; then
+  # message mode: the file stays <name>_0.db3. A full queue drops messages, so it is large.
+  CMD+=(--compression-mode message --compression-format zstd
+        --compression-queue-size 2000 --compression-threads 2)
+fi
 CMD+=($TOPICS "${EXTRA[@]}")
 
 echo "Preset: $PRESET  ->  $OUT"
@@ -270,6 +277,21 @@ if [[ -f "$OUT/metadata.yaml" ]]; then
     n=$(grep -E "Topic: $t \|" <<<"$INFO" | sed -nE 's/.*Count: ([0-9]+).*/\1/p')
     [[ "${n:-0}" -gt 0 ]] || missing+=("$t")
   done
+  # Rates: a stream that arrived slowly is as bad as a missing one (bag "demo", 2026-11-23:
+  # /livox/imu at 8 Hz, so /odom and /map were garbage).
+  if [[ "$PRESET" == manual || "$PRESET" == explore ]]; then
+    dur=$(sed -nE 's/^Duration: *([0-9.]+)s.*/\1/p' <<<"$INFO" | head -1)
+    for spec in /livox/imu:150 /livox/lidar:9 /imu/data:150 /odom:9 /scan:8 \
+                /camera/color/image_raw/compressed:20 /handle_state:40; do
+      t=${spec%:*}; need=${spec#*:}
+      [[ "$PRESET" == explore && "$t" == /livox/* ]] && continue      # not in that preset
+      n=$(grep -E "Topic: $t \|" <<<"$INFO" | sed -nE 's/.*Count: ([0-9]+).*/\1/p')
+      awk -v n="${n:-0}" -v d="${dur:-0}" -v need="$need" -v t="$t" 'BEGIN {
+        if (d < 5) exit; hz = n / d
+        printf "  %-38s %6.1f Hz%s\n", t, hz, (hz < need ? "   SLOW (needs >= " need ")" : "") }'
+    done
+    echo "A SLOW /livox/imu or /odom means the map and pose in this bag cannot be trusted."
+  fi
   if (( ${#missing[@]} )); then
     echo "WARNING: this $PRESET bag has no ${missing[*]}. Fix the driver / topic and record again." >&2
   fi

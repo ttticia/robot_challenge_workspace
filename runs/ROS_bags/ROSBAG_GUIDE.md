@@ -125,6 +125,12 @@ For dense per-pixel depth you need `/camera/depth/image_raw`. Don't record
 
 ## 2. Record a run
 
+> **2026-11-23: only two presets remain.** `rec_manual` (hand-driven run, section 2.6) and
+> `rec_test` (autonomous `maze_explore` run; preset `explore`). The presets and aliases in
+> sections 2.1-2.5 (`rec_full`, `rec_maze`, `rec_navdebug`, `rec_lidar`, `rec_curtain`)
+> belonged to the old `maze_nav` stack and were removed; those sections are kept for
+> reference only. For a hand-driven data run, go straight to section 2.6.
+
 You need **two terminals**.
 
 **Terminal 1: drive the robot.** Teleop, for example:
@@ -146,6 +152,7 @@ press **Ctrl+C** to stop:
 | Full `maze_nav` run: navigation + perception | `rec_maze` | A, B, D–H | **no** | [2.2](#22-autonomous-run-rec_maze) |
 | Debug navigation (why it stopped or turned) | `rec_navdebug` | A, lidar, E, F | no | [2.3](#23-navigation-debug-rec_navdebug) |
 | Re-run Fast-LIO / SLAM offline | `rec_lidar` | A, D | no | [2.4](#24-raw-sensors-for-fast-lio--slam-rec_lidar) |
+| Hand-driven demonstration run with `maze_explore` mapping | `rec_manual` | A, B, raw lidar + IMU, `/cloud_registered_body`, E, controller, `/explore/*` | no | [2.6](#26-hand-driven-demonstration-rec_manual) |
 | Curtain YOLO training data (teleop) | `rec_curtain` | A, B, C, lidar, `/odom` | yes | [2.5](#25-curtain-yolo-training-data-rec_curtain) |
 
 Every alias works the same way:
@@ -315,6 +322,57 @@ square on and 30-45° off, from both sides, lit and in shadow. Record negatives 
 extrusion walls with cavities or windows, doorways, slats, open floor, people. Spread the bags
 over several sessions and days.
 
+#### 2.6 Hand-driven demonstration: `rec_manual`
+
+A run driven with the handheld controller, to show what the robot should do and to collect
+camera frames. The new stack (`maze_explore`, branch `exploration-v2`) provides localisation
+and the map:
+
+```bash
+# Terminal 1: robot standing still and level in the start cell (this pose becomes the map origin)
+explore_check                                   # must say GO
+ros2 launch maze_explore explore.launch.py explore:=false   # Fast-LIO, /odom, /scan, slam_toolbox
+# Terminal 2 (wait ~10 s for the launch to settle)
+rec_manual demo2                                # runs explore_check again, then records; Ctrl+C to stop
+# save the map before stopping Terminal 1 (it is also in the bag as /map)
+mkdir -p ~/challenge_ws/maps && ros2 run nav2_map_server map_saver_cli -f ~/challenge_ws/maps/demo2
+```
+
+Recorded: `/tf`, `/tf_static`, `/rosout`, compressed colour + `camera_info`, `/livox/lidar`,
+`/livox/imu` (Fast-LIO can be re-run), `/cloud_registered_body` (Fast-LIO's cloud: `/scan` can
+be rebuilt with another height band), `/odom`, `/scan`, `/map`, `/imu/data`, `/leg_odom2`,
+`/maze/body_height`, `/handle_state` (sticks), `/commands/joy_raw` (controller buttons),
+`/simple_cmd`, `/cmd_vel`, and `/explore/*` (only with the explorer running).
+`rec_test` (preset `explore`) is the same for autonomous runs, without the raw lidar.
+
+**Checks built in.** `rec_manual` runs `explore_check` first and asks before recording on a
+NO-GO (`REC_CHECK=0` skips it). After Ctrl+C it prints each stream's average rate and marks
+slow ones `SLOW`. A slow `/livox/imu` (needs ~200 Hz) means `/odom`, `/map` and tf in the bag
+are wrong; the camera frames and raw lidar are still good. Bag `demo` (2026-11-23) had
+`/livox/imu` at 8 Hz: its map ran away and is unusable.
+
+**Compression.** These bags are zstd-compressed message by message (`REC_COMPRESS=0` = off).
+Measured 2026-11-23: a lidar message 400 → 297 KB, a colour frame 78 → 49 KB, recorder CPU
+16 % of a core against 13 %, no messages lost. About **0.35 GB per minute** (0.5 without).
+`ros2 bag info / play`, `rosbag2_py` (`SequentialCompressionReader`) and `bag_video.py` read
+them as usual; reading the `.db3` with plain sqlite gives zstd blobs.
+This saves disk only. The lidar and camera streams cross the bridge uncompressed, and nothing
+on this computer can change that.
+
+**No depth, and no `/livox/points`.** There is no compressed depth topic. One subscriber to
+raw `/camera/depth/image_raw`, even a single BEST_EFFORT one, slows every stream from the
+bridge to about 10 Hz (measured 2026-11-23: `/imu/data` 195 → 11 Hz, `/livox/imu` 13 → 8 Hz),
+which breaks Fast-LIO. `rec_manual` refuses those topics (`ALLOW_HEAVY=1` overrides). For
+depth, record a separate short teleop bag without the mapping launch:
+`ros2 bag record -o <name> /camera/depth/image_raw /camera/depth/camera_info /camera/color/image_raw/compressed /camera/color/camera_info /tf_static`.
+Compressed depth would need a `compressedDepth` publisher on the robot side of the bridge
+(ask the lab).
+
+Before starting, `ros2 node list` should show only `/lite3_domain_bridge_4`: another stack on
+the robot's domain (a second Fast-LIO / slam_toolbox, RViz showing depth, `ros2 topic hz` on a
+big topic) makes the lidar IMU arrive late and the pose drift. Do not run a simulator on this
+computer during the run.
+
 #### While recording
 
 - Start recording **before** you start driving, and stop with **Ctrl+C** in Terminal 2.
@@ -410,6 +468,7 @@ The robot computer has no screen, so use your own computer:
 rec_list                     # presets and topics
 rec_full run1                # teleop, everything (Ctrl+C to stop)
 rec_maze maze_run1           # full maze_nav run: navigation + perception, no depth (section 2.2)
+rec_manual demo1             # hand-driven demo with maze_explore mapping.launch.py (section 2.6)
 rec_last                     # check: every topic Count > 0
 rec_rename run1_good         # rename the newest bag (or: rec_rename <old> <new>)
 python3 ~/bag_to_video.py ~/challenge_ws/runs/ROS_bags/run1   # -> run1.mp4
