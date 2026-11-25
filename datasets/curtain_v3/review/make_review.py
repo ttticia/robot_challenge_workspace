@@ -8,9 +8,10 @@ half of its area lies inside a label box (a box on one curtain half still counts
 missed: a frame with a curtain label and no model box on a curtain.
 false:  a model box on no curtain: on a frame labelled "no curtain" (empty label file), or next
         to a real curtain (off-curtain box on a curtain frame).
-Writes review/missed_NN.jpg, review/false_NN.jpg (12 frames a sheet, numbered like review.csv)
-and review/review.csv (fill in 'verdict': model error / label error / ok). The auto_reason
-is a guess from the box geometry only; check every frame by eye.
+correct: a frame with a curtain label and a model box on it (sorted by split, then recording).
+Writes review/missed_NN.jpg, review/false_NN.jpg, review/correct_NN.jpg (12 frames a sheet,
+numbered like review.csv) and review/review.csv (fill in 'verdict': model error / label error
+/ ok). The auto_reason is a guess from the box geometry only; check every frame by eye.
 """
 import argparse
 import csv
@@ -60,7 +61,7 @@ def reason(gt, best):
 ahead = {r['image']: float(r['ahead_m']) for r in csv.DictReader(open('manifest.csv'))
          if r.get('ahead_m')}
 model = YOLO(a.model, task='detect')
-items = {'missed': [], 'false': []}
+items = {'missed': [], 'false': [], 'correct': []}
 for lst, split in (('split_val.txt', 'val'), ('split_test.txt', 'test')):
     for im in [ln.strip() for ln in open(lst) if ln.strip()]:
         f = os.path.basename(im)
@@ -73,6 +74,12 @@ for lst, split in (('split_val.txt', 'val'), ('split_test.txt', 'test')):
         d = dict(im=im, f=f, split=split, a=ahead.get(f), gt=gt, pred=pred, best=best)
         if gt and not any(on_curtain(p, gt) for p, _ in pred):
             items['missed'].append(dict(d, why=reason(gt, best)))
+        elif gt:
+            conf = max(c for p, c in pred if on_curtain(p, gt))
+            far = ' far' if max(g[3] - g[1] for g in gt) < 0.25 else ''
+            extra = ' + off-curtain box' if any(not on_curtain(p, gt) for p, _ in pred) else ''
+            items['correct'].append(dict(d, why=f'detected{far}: conf {conf:.2f}, IoU {best:.2f}'
+                                                f'{extra}'))
         if not gt and pred:
             items['false'].append(dict(d, why='box on a frame labelled "no curtain"'))
         elif gt and any(not on_curtain(p, gt) for p, _ in pred):

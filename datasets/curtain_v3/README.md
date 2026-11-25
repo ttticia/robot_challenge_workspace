@@ -14,7 +14,7 @@ lists, which hold the dev laptop's absolute paths.
 | `runs/curtain/` | training run: `args.yaml`, `results.csv` (per epoch), curves, val batches, `weights/best.pt` (epoch 44 of 64) + `last.pt` |
 | `runs/curtain/export/` | OpenVINO exports: FP16 / INT8 at 416x320 and 320x256 (4:3, use INT8 320x256), FP16 416x416 (square: more false boxes, don't use); `bench.log` = speed + accuracy of each |
 | `runs/curtain/compare_runs.png` | run 1 (23 Nov) vs run 2 (24 Nov) vs v3: mAP50 by epoch, in-range recall, false boxes |
-| `review/` | missed and false detections of the INT8 320x256 model on val + test at conf 0.5, scored by detection (`make_review.py`, `review.csv` with a verdict column to fill in) |
+| `review/` | missed (14), false (5) and correct (79) detections of the INT8 320x256 model on val + test at conf 0.5, scored by detection: `missed_*.jpg`, `false_*.jpg`, `correct_*.jpg`, `review.csv` (one row per frame, verdict column to fill in), `make_review.py` to regenerate |
 | `mining/` | hard-negative mining over frames not in the dataset (`candidates.csv` with a decision column, `sheets/`); the frame copies (`mining/images/`) are not in git |
 | `train.log` | the training console log |
 
