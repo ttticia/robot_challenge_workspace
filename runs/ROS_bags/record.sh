@@ -11,6 +11,10 @@
 #               No depth: one raw depth subscriber slows every bridge stream (guide 2.6)
 #   explore     autonomous maze_explore run: cloud, odometry, /scan, /map, tf, colour,
 #               commands sent, explorer status / events
+#   curtain     curtain detection test, hand-driven, with curtain_node running
+#               (`ros2 run maze_explore curtain_node --ros-args -p always:=true`): colour,
+#               the node's /curtain/seen + /curtain/status, tf, and /odom /scan /map if the
+#               mapping launch runs too (guide 2.3). No depth
 #   img         camera only: /camera/color/image_raw/compressed, nothing else
 #
 # Options:
@@ -23,7 +27,7 @@
 # depth topic). After Ctrl+C you are asked for a new name (Enter keeps it); REC_ASK_NAME=0
 # skips the question.
 #
-# manual and explore bags are zstd-compressed message by message (about half the size; plain
+# manual, explore and curtain bags are zstd-compressed message by message (about half the size; plain
 # .db3 file, read with ros2 bag / rosbag2_py as usual). REC_COMPRESS=0 turns it off.
 # They also run the sensor-rate check
 # (src/maze_explore/preflight.sh) first and ask before recording on a NO-GO; REC_CHECK=0 skips it.
@@ -34,7 +38,7 @@ BAG_DIR="${BAG_DIR:-$HOME/challenge_ws/runs/ROS_bags}"
 QOS_FILE="$BAG_DIR/qos_overrides.yaml"
 MIN_FREE_GB=5
 
-# ---- topic groups (ROSBAG_GUIDE.md section 1) ------------------------------------------
+# ---- topic groups -------------------------------------------------------------------------
 A="/tf /tf_static /rosout"
 B="/camera/color/image_raw/compressed /camera/color/camera_info"
 E="/odom /scan /map"
@@ -62,12 +66,19 @@ preset_topics() {
     # explorer decided and sent.
     # Left out on purpose: raw lidar, /imu/data, /leg_odom2, /handle_state, camera_info.
     explore)    echo "$A /camera/color/image_raw/compressed /cloud_registered_body $E /simple_cmd /cmd_vel /explore/status /explore/event /explore/cells /maze/body_height" ;;
+    # Curtain detection test by hand: what the camera saw and what curtain_node said about
+    # each frame (boxes, confidence, direction), so misses and false boxes can be found
+    # afterwards. /curtain/image is NOT recorded: it is raw (2.7 MB/s) and makes the node
+    # decode at full size; the boxes can be drawn again from /curtain/seen.
+    # $E and /handle_state only have messages with the mapping launch / the controller on.
+    curtain)    echo "$A $B /curtain/seen /curtain/status $E /maze/body_height /handle_state" ;;
     # Camera only: the compressed colour stream and nothing else (small, no mapping needed).
     img)        echo "/camera/color/image_raw/compressed" ;;
     *)          return 1 ;;
   esac
 }
-PRESETS="manual explore img"
+PRESETS="manual explore curtain img"
+checked() { [[ "$PRESET" == manual || "$PRESET" == explore || "$PRESET" == curtain ]]; }
 
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -210,7 +221,7 @@ fi
 # (even BEST_EFFORT, measured 2026-11-23: /imu/data 195 -> 11 Hz, /livox/imu -> 8 Hz) or to
 # /livox/points slows EVERY stream from the bridge, so those are refused here. The camera has
 # no compressed depth topic; one would have to be published on the robot side of the bridge.
-if [[ "$PRESET" == manual || "$PRESET" == explore ]]; then
+if checked; then
   for t in "${EXTRA[@]}"; do
     if [[ "$t" == /camera/depth/* || "$t" == /livox/points ]]; then
       echo "$t slows every bridge stream (lidar IMU, odometry) while it is recorded." >&2
@@ -221,6 +232,8 @@ if [[ "$PRESET" == manual || "$PRESET" == explore ]]; then
   PREFLIGHT="$HOME/challenge_ws/src/maze_explore/preflight.sh"
   if [[ "${REC_CHECK:-1}" == 1 && $DRY_RUN == 0 && -x "$PREFLIGHT" ]]; then
     echo "Checking sensor rates (about 30 s; REC_CHECK=0 skips this)..."
+    # curtain_node is part of a curtain test, not a leftover stack
+    [[ "$PRESET" == curtain ]] && export EXPLORE_CHECK_ALLOW=curtain_node
     if ! "$PREFLIGHT"; then
       echo "NO-GO: with a slow /livox/imu the bag's /odom, /map and tf will be wrong, and" \
            "Fast-LIO cannot be re-run from it. Camera and raw lidar are still recorded." >&2
@@ -244,6 +257,11 @@ if [[ "$PRESET" == manual ]]; then
       "'ros2 launch maze_explore explore.launch.py explore:=false' first (robot standing still)." >&2
   done
 fi
+if [[ "$PRESET" == curtain ]]; then
+  REQUIRED=(/camera/color/image_raw/compressed /curtain/seen)
+  node_running /curtain_node || echo "Warning: /curtain_node isn't running, so no /curtain/seen." \
+    "Start it first: ros2 run maze_explore curtain_node --ros-args -p always:=true" >&2
+fi
 if (( ${#REQUIRED[@]} )); then
   LISTED=$(timeout 5 ros2 topic list 2>/dev/null || true)
   for t in "${REQUIRED[@]}"; do
@@ -257,7 +275,7 @@ fi
 CMD=(ros2 bag record -o "$OUT")
 CMD+=(--qos-profile-overrides-path "$QOS_FILE")
 COMPRESS="${REC_COMPRESS:-}"
-[[ -z "$COMPRESS" && ( "$PRESET" == manual || "$PRESET" == explore ) ]] && COMPRESS=1
+[[ -z "$COMPRESS" ]] && checked && COMPRESS=1
 if [[ "$COMPRESS" == 1 ]]; then
   # message mode: the file stays <name>_0.db3. A full queue drops messages, so it is large.
   CMD+=(--compression-mode message --compression-format zstd
@@ -285,7 +303,7 @@ if [[ -f "$OUT/metadata.yaml" ]]; then
   done
   # Rates: a stream that arrived slowly is as bad as a missing one (bag "demo", 2026-11-23:
   # /livox/imu at 8 Hz, so /odom and /map were garbage).
-  if [[ "$PRESET" == manual || "$PRESET" == explore ]]; then
+  if checked; then
     # Each stream's rate over ITS OWN first-to-last message, not the bag's length: a stack
     # stopped before the recorder used to read as a slow /odom (run3, 2026-11-24).
     python3 - "$OUT" "$PRESET" <<'PY' || true
@@ -293,6 +311,8 @@ import glob, sqlite3, sys
 out, preset = sys.argv[1:]
 need = {'/odom': 9, '/scan': 8, '/cloud_registered_body': 9,
         '/camera/color/image_raw/compressed': 20}
+if preset == 'curtain':
+    need = {'/camera/color/image_raw/compressed': 20, '/curtain/seen': 2, '/odom': 9, '/scan': 8}
 if preset == 'manual':
     need.update({'/livox/imu': 150, '/livox/lidar': 9, '/imu/data': 150, '/handle_state': 40})
 db = sqlite3.connect('file:%s?mode=ro' % glob.glob(out + '/*.db3')[0], uri=True)
@@ -308,6 +328,7 @@ for topic, hz_min in need.items():
     print('  %-38s %6.1f Hz over %5.1f s, longest gap %.2f s%s' % (
         topic, hz, span, gap, '   SLOW (needs >= %d)' % hz_min if hz < hz_min else ''))
 PY
+    [[ "$PRESET" == curtain ]] && echo "/odom and /scan only count if the mapping launch ran; a SLOW /curtain/seen means the node fell behind."
     echo "SLOW /odom, /scan or (manual) /livox/imu: the map and pose in this bag cannot be trusted."
     echo "A longest gap near 1 s is a stall in the robot's feed: the explorer stands still through it."
   fi

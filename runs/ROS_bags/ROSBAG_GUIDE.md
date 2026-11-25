@@ -1,511 +1,215 @@
-# Recording Sensor Data on the Lite3 (rosbag)
+# Recording bags on the Lite3
 
-How to record the robot's camera, depth, lidar and navigation topics with the `rec_*` aliases, check the recording, and turn the camera stream into a viewable `.mp4`.
+How to record a run with the `rec_*` aliases, check the bag, replay it and get a video or
+frames out of it. Robot computer: `192.168.10.74`, ROS 2 Humble, `ROS_DOMAIN_ID=4`.
 
-**Machine:** robot computer `192.168.10.74`, ROS 2 Humble.
+Cleaned up 2026-11-25: everything about the old `maze_nav` stack (`rec_full`, `rec_maze`,
+`rec_navdebug`, `rec_lidar`, `rec_curtain`, their topic groups) is gone. It is still in git
+history (`git log -- runs/ROS_bags/ROSBAG_GUIDE.md`) and on branch `curtain_cv`.
 
----
+## 1. The aliases
 
-## 1. Before you start
-
-Open a terminal on the robot computer (VS Code terminal or `ssh`). On the robot,
-`~/.bashrc` already loads ROS and the recording aliases. Check that they're there:
-
-```bash
-rec_list            # prints the presets; "command not found" -> see below
-```
-
-If it isn't found (a new machine, or an old terminal), load them:
+`~/.bashrc` on the robot computer loads them. In a new terminal, or on another machine:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/challenge_ws/runs/ROS_bags/aliases.sh     # add both lines to ~/.bashrc to make them permanent
+source ~/challenge_ws/runs/ROS_bags/aliases.sh
 ```
 
-Check that the sensors are publishing:
+| Alias | What it does |
+|---|---|
+| `rec_test [name]` | Record an autonomous `maze_explore` run (section 2.1) |
+| `rec_manual [name]` | Record a hand-driven run with the mapping launch (section 2.2) |
+| `rec_curtain [name]` | Record a curtain detection test driven by hand (section 2.3) |
+| `rec_img [name]` | Record the colour camera only (section 2.4) |
+| `rec_list` | Print each preset and its exact topics |
+| `rec_last` | `ros2 bag info` of the newest bag |
+| `rec_rename [old] new` | Rename a bag (`old` = the newest bag if left out) |
+| `explore_check` | Sensor-rate go / no-go before a run (`src/maze_explore/preflight.sh`) |
+| `explore_go` / `explore_stop` | Start / stop the explorer (`/nav/start`, `/explore/stop`) |
+| `curtain_watch` / `curtain_view` | Run `curtain_node` on every frame / show its picture with the boxes in rqt |
+
+All four recording aliases work the same way:
 
 ```bash
-ros2 topic list | grep -i -e image -e camera_info -e depth -e livox -e scan
-ros2 topic hz /camera/color/image_raw/compressed     # Ctrl+C after a few lines
-ros2 topic hz /livox/points                          # before maze_nav only; stop it (Ctrl+C)
-#                                                      before launching: once lidar_relay runs,
-#                                                      check /livox/points_local instead
+rec_test                     # bag named explore_<date>_<time>
+rec_test run5                # choose the name
+rec_test run5 -- /qr/read    # extra topics after --
+rec_test -n                  # print the ros2 bag record command, record nothing
 ```
 
-If a topic is missing, its driver isn't running, so start the robot first.
-
-### Topics to record
-
-Topics come in groups. Each alias in section 2 records a fixed set of groups, always
-including A. A topic that isn't being published just records `Count: 0`, so extra topics do
-no harm, apart from depth (see the warning below). The groups are defined once, at the top
-of [record.sh](record.sh); change topics there.
-
-| Group | Topics | Rate | Needed for |
-|---|---|---|---|
-| **A. Always** | `/tf`, `/tf_static`, `/rosout` | small | Frames between map, odom, base, lidar and camera. Warnings from every node |
-| **B. Colour camera** | `/camera/color/image_raw/compressed`, `/camera/color/camera_info` | 30 Hz | QR/poster replay, `.mp4` video, 3-D positions |
-| **C. Depth** (large) | `/camera/depth/image_raw`, `/camera/depth/camera_info` | 30 Hz | Dense per-pixel depth, poster flatness test. **Teleop runs only** |
-| **D. Lidar and IMU** | `/livox/points_local` (lidar_relay's copy of `/livox/points`), `/livox/lidar`, `/livox/imu`, `/imu/data`, `/leg_odom2` | 10 Hz / ~190 Hz | Re-running Fast-LIO (needs `/livox/lidar` + `/livox/imu`), rebuilding `/scan`, comparing with leg odometry |
-| **E. Localization and map** | `/odom`, `/scan`, `/map` | 10 Hz, `/map` occasional | Positions in `map`, the static-map poster test, Nav2 replay. `/map` needs the QoS override below |
-| **F. Navigation and commands** | `/plan`, `/cmd_vel_nav`, `/cmd_vel_smoothed`, `/nav_cmd_vel`, `/cmd_vel`, `/simple_cmd`, `/handle_state` | ≤ 20 Hz | Why the robot moved or didn't: planner → controller → smoother → collision_monitor → bridge |
-| **G. Perception results** | `/found`, `/qr/detections`, `/posters/detections`, `/humans/detections`, `/camera/color/image_offboard/compressed` | small | What the robot decided live. `/camera/color/image_offboard/compressed` is left over from the removed external-computer mode: nothing publishes it any more, so it records nothing |
-| **H. Maze explorer** | `/maze/status`, `/maze/goal`, `/wall_scan` | small | What `maze_nav`'s explorer was doing (state, current frontier goal, wall slice fed to SLAM) |
-
-**Not recorded by any preset yet** (added to `maze_nav` / `team_perception` since the presets
-were written): `/stairs/status`, `/stairs/detection`, `/stairs/pose` (stair line-up),
-`/scene/trigger`, `/junction_detected` (scene trigger), `/qr/read`, `/qr/unread`,
-`/perception/look_request` (explorer `FACING_QR` / `LOOKING`). All are small. Add them after
-`--` for now, e.g. `rec_maze run1 -- /stairs/status /scene/trigger /qr/unread /qr/read
-/perception/look_request`, or add them to groups G/H in [record.sh](record.sh).
-
-Groups E–H only have messages while the matching launch is running: `/tf` to `map`, `/odom`,
-`/scan` and `/map` need Fast-LIO and `slam_toolbox` (from `lite3_launcher` or `maze_nav`); group F needs
-Nav2; group G needs the perception launch; group H needs `maze_nav`. `/tf` is **empty without
-Fast-LIO**. Start those before recording (see the checks below).
-
-**Don't record:** `/camera/color/image_raw` (uncompressed colour) or `/camera/depth/points`
-(point cloud from depth). Both fill the disk very quickly and can be rebuilt from groups B/C.
-The onboard perception nodes publish no debug images; QR and poster snapshots are saved to
-`~/challenge_ws/logs/qr/` and `~/challenge_ws/logs/posters/` instead.
-
-#### `/map` and `/tf_static`: QoS override
-
-`/map` and `/tf_static` are published **once** (transient local), often before recording
-starts. Without an override the recorder misses them, and a replay has no map and no
-camera/lidar mounting frames. The `rec_*` aliases create
-`~/challenge_ws/runs/ROS_bags/qos_overrides.yaml` the first time and pass it to the recorder for you
-Its contents, for reference:
-
-```yaml
-/map:
-  history: keep_last
-  depth: 1
-  reliability: reliable
-  durability: transient_local
-/tf_static:
-  history: keep_last
-  depth: 100          # one message per static publisher: keep them all
-  reliability: reliable
-  durability: transient_local
-```
-
-Pass it to `ros2 bag play` yourself (section 3). On replay, start the nodes **first**, then
-play the bag.
-
-#### Check before recording
-
-```bash
-ros2 topic info /map --verbose | grep -E "Publisher count|Durability"  # >= 1, TRANSIENT_LOCAL
-ros2 run tf2_ros tf2_echo map camera_color_optical_frame               # prints a transform each second
-ros2 topic hz /livox/points_local                                      # ~10 Hz (lidar_relay)
-```
-
-If `tf2_echo` says the `map` frame doesn't exist, SLAM isn't running and the bag will have no
-`map` positions. The map should be built **without people in it**, otherwise the poster
-map test treats them as walls.
-
-**Depth: check for aligned depth.** `/camera/depth/image_raw` is **not** aligned to the color image (see [data_required.md](../src/team_perception/data_required.md)). If the driver publishes an aligned topic (for example `/camera/aligned_depth_to_color/image_raw`), record that one too by adding it after `--` (for example
-`rec_full -- /camera/aligned_depth_to_color/image_raw`). Find it with `ros2 topic list | grep depth`.
-
-**Lidar vs depth.** `/livox/points` is 3-D (x, y, z in metres, so distance is built in), but
-sparse: about 20,000 points per scan over 360°, only a small part inside the camera view, and
-not pixel-aligned with the colour image. To get depth for image pixels, project the points
-with `/camera/color/camera_info` and `/tf_static`; you get scattered dots, not a dense image.
-For dense per-pixel depth you need `/camera/depth/image_raw`. Don't record
-`/camera/depth/points` instead: it's even larger.
-
-> **Recording while the robot drives itself (Nav2):** leave out
-> `/camera/depth/image_raw`. On 2026-11-13, recording it during an autonomous run made
-> `/livox/points` arrive about 1.2 s late (normal ≈ 0.14 s); collision_monitor ignored the
-> stale lidar and the robot never moved. Use `rec_maze` (section 2.2), or record depth only
-> during teleop runs. `rec_full` and `rec_curtain` refuse to start while Nav2 is running.
-
----
+- Start recording **before** the robot moves. **Ctrl+C** stops it.
+- After Ctrl+C it prints the duration, the size and every topic with `Count: 0`, then asks for
+  a name. Enter keeps the name; `REC_ASK_NAME=0` skips the question.
+- Names: letters, digits, `.`, `_`, `-`. A name that exists is refused.
+- It warns when less than 5 GB is free.
+- Bags go to `~/challenge_ws/runs/ROS_bags/<name>/` (a `.db3` file and `metadata.yaml`).
+  They are never committed.
+- The topics of each preset are defined in [record.sh](record.sh); change them there.
 
 ## 2. Record a run
 
-> **2026-11-23: only two presets remain.** `rec_manual` (hand-driven run, section 2.6) and
-> `rec_test` (autonomous `maze_explore` run; preset `explore`). The presets and aliases in
-> sections 2.1-2.5 (`rec_full`, `rec_maze`, `rec_navdebug`, `rec_lidar`, `rec_curtain`)
-> belonged to the old `maze_nav` stack and were removed; those sections are kept for
-> reference only. For a hand-driven data run, go straight to section 2.6.
-
-You need **two terminals**.
-
-**Terminal 1: drive the robot.** Teleop, for example:
+### 2.1 Autonomous run: `rec_test`
 
 ```bash
-ros2 launch transfer transfer_launch.py
-ros2 run teleop_twist_keyboard teleop_twist_keyboard
+explore_check                                   # terminal 1: must say GO
+ros2 launch maze_explore explore.launch.py      # terminal 1
+rec_test run5                                   # terminal 2, once the launch has settled
+explore_go                                      # terminal 3
 ```
 
-Keyboard teleop only responds while its terminal is focused. For an autonomous run, start
-your Nav2 or `maze_nav` launch here instead.
+Recorded: `/tf`, `/tf_static`, `/rosout`, compressed colour, `/cloud_registered_body`
+(Fast-LIO's cloud), `/odom`, `/scan`, `/map`, `/simple_cmd`, `/cmd_vel`,
+`/explore/status`, `/explore/event`, `/explore/cells`, `/maze/body_height`.
 
-**Terminal 2: record.** Pick the alias for the run, start it **before** the robot moves, and
-press **Ctrl+C** to stop:
+Only the colour stream comes from the robot; the rest is published on this computer. Every
+topic taken from the robot is one more copy across the bridge, so the raw lidar, the IMUs
+and `camera_info` are left out on purpose.
 
-| Run | Alias | Groups | Depth? | Section |
-|---|---|---|---|---|
-| Teleop, record everything | `rec_full` | A–G | yes | [2.1](#21-full-run-teleop-rec_full) |
-| Full `maze_nav` run: navigation + perception | `rec_maze` | A, B, D–H | **no** | [2.2](#22-autonomous-run-rec_maze) |
-| Debug navigation (why it stopped or turned) | `rec_navdebug` | A, lidar, E, F | no | [2.3](#23-navigation-debug-rec_navdebug) |
-| Re-run Fast-LIO / SLAM offline | `rec_lidar` | A, D | no | [2.4](#24-raw-sensors-for-fast-lio--slam-rec_lidar) |
-| Hand-driven demonstration run with `maze_explore` mapping | `rec_manual` | A, B, raw lidar + IMU, `/cloud_registered_body`, E, controller, `/explore/*` | no | [2.6](#26-hand-driven-demonstration-rec_manual) |
-| Curtain YOLO training data (teleop) | `rec_curtain` | A, B, C, lidar, `/odom` | yes | [2.5](#25-curtain-yolo-training-data-rec_curtain) |
+### 2.2 Hand-driven run: `rec_manual`
 
-Every alias works the same way:
+Drive with the handheld controller while the mapping part of the stack runs, to collect
+camera frames and a map.
 
 ```bash
-rec_maze                    # bag named maze_<date>_<time>, e.g. runs/ROS_bags/maze_20261114_153000
-rec_full teleop_run2        # choose the name yourself
-rec_maze maze_try3 -- /stairs/status /scene/result   # name + extra topics after --
-rec_maze -n                 # print the full ros2 bag record command, don't record
-rec_list                    # every preset and its exact topics
-rec_last                    # ros2 bag info for the newest bag
-rec_rename maze_ok          # rename the newest bag to maze_ok
-rec_rename maze_20261114_153000 maze_try3   # rename any bag
-```
-
-**Names:** use letters, digits, `.`, `_` and `-` only (no spaces or `/`), for example
-`maze_try3` or `poster-test.2`. Leave the name out to get `<preset>_<date>_<time>`, which
-never clashes.
-
-Before recording, the alias:
-- creates `runs/ROS_bags/` and `qos_overrides.yaml` if they're missing
-- refuses a name that already exists
-- warns if less than 5 GB is free
-- refuses depth while Nav2 is running (override with `ALLOW_DEPTH_WITH_NAV2=1`, not recommended)
-
-After Ctrl+C it prints the duration, size and any topic with `Count: 0`, then asks for a
-name:
-
-```
-Name for this bag (Enter keeps 'maze_20261114_153000'): maze_try3_exited
-Renamed: ~/challenge_ws/runs/ROS_bags/maze_20261114_153000 -> ~/challenge_ws/runs/ROS_bags/maze_try3_exited
-```
-
-Press **Enter** to keep the name. This is handy for naming a bag after you know how the run
-went. A bad or already-used name is refused, and you are asked again. To skip the question
-(for example in scripts), set `REC_ASK_NAME=0`, e.g. `REC_ASK_NAME=0 rec_maze`.
-
-Without the aliases, run the script directly: `~/challenge_ws/runs/ROS_bags/record.sh <preset> [name]`
-(rename: `record.sh --rename [old] new`).
-To record a set of topics no preset covers, print the nearest one with `-n`, then copy and
-edit the command.
-
-#### 2.1 Full run (teleop): `rec_full`
-
-Everything, for replaying navigation and perception together. Teleop only, because of depth.
-
-#### 2.2 Autonomous run: `rec_maze`
-
-The same as `rec_full` without depth, plus the `maze_nav` explorer topics (group H), so the
-lidar isn't delayed and collision_monitor doesn't stop the robot. Navigation and perception are
-recorded together in one bag: lidar, localization, map, plan and velocity chain, plus the
-colour camera and every detection. Use it for any autonomous run (Nav2 alone too).
-**Lidar topic (all presets).** Every preset records `/livox/points_local` (maze_nav
-`lidar_relay`'s copy, same messages), never the raw `/livox/points`: a second subscriber on the
-raw topic pulls another full copy across the bridge and makes the lidar and Fast-LIO odom late
-(2026-11-20 05:29: worst 0.67 s). The recorder subscribes once the topic appears, so starting
-the recording before maze_nav is fine. Teleop bags **without maze_nav** have no
-`/livox/points_local`: record those with `RAW_LIDAR=1 rec_...` (raw topic). Replaying for tools
-that expect the raw name: `ros2 bag play <bag> --remap /livox/points_local:=/livox/points`.
-
-Untested whether this keeps the lidar lag under 0.5 s. Check during the recording with
-`ros2 topic delay /livox/points_local` (should stay around 0.1–0.3 s; not the raw topic: that
-is one more bridge copy while it runs). If it doesn't, use
-`rec_navdebug` instead, which leaves out the camera and the raw lidar/IMU.
-
-##### Full maze run, step by step
-
-A complete challenge run: `maze_nav` drives, perception reports codes and posters, and one bag
-records it all. Use three terminals on the robot computer.
-
-1. **Terminal 1: start navigation.** Do the clash checks in
-   [nav_launch.md](../src/maze_nav/nav_launch.md) section 1 first. Perception, YOLO included,
-   runs on the robot ([launch_guide.md](../src/team_perception/launch_guide.md)).
-   ```bash
-   cd ~/challenge_ws && source install/setup.bash
-   ros2 launch maze_nav maze_nav.launch.py        # also starts perception (perception:=true)
-   ```
-   Wait until `/maze/status` reads `PAUSED`: `ros2 topic echo /maze/status`. The operator
-   sends `lite3_auto` once the log says `gait sent`.
-
-2. **Terminal 2: start recording.** Start it after `PAUSED`, so that SLAM, TF to `map` and
-   `/map` are up, and **before** `/maze/start`:
-   ```bash
-   rec_maze maze_run1
-   ```
-   Don't use `rec_full` or `rec_curtain` here (raw depth stalls Nav2; both refuse to start
-   anyway).
-
-3. **Terminal 3: check the lidar delay, then start the run.**
-   ```bash
-   ros2 topic delay /livox/points_local  # ~0.1-0.3 s; Ctrl+C after a few lines
-   ros2 topic pub --once /maze/start std_msgs/msg/Empty
-   ```
-   If the delay stays above 0.5 s, stop the recording and use
-   `rec_navdebug maze_run1 -- /maze/status /maze/goal /found /qr/detections /posters/detections`
-   instead.
-
-4. **During the run** (Terminal 3, or a laptop with `ROS_DOMAIN_ID=4`):
-   ```bash
-   ros2 topic echo /maze/status          # CREEPING -> SCANNING -> EXPLORING -> EXITED / NO_EXIT / STOPPED
-   ros2 topic echo /found                # QR found / Human found
-   ```
-
-5. **Stop.** Once the status reads `EXITED`, `NO_EXIT` or `STOPPED` (or you stop the robot):
-   Ctrl+C in **Terminal 2** first. The recorder prints the summary; check that no topic you
-   need shows `Count: 0`. Name the bag after the outcome, for example `maze_run1_exited`.
-   Then press Ctrl+C in **Terminal 1**, which saves the map.
-
-6. **Keep the run's other files with the bag.** The map, QR snapshots and logs aren't in the
-   bag. Right after the run, copy everything written since the recording started into
-   `<bag>_extras/`:
-   ```bash
-   BAG=~/challenge_ws/runs/ROS_bags/maze_run1_exited
-   START=$(awk '/nanoseconds_since_epoch/{print int($2/1e9); exit}' $BAG/metadata.yaml)
-   mkdir -p ${BAG}_extras
-   (cd ~ && find challenge_ws/maps challenge_ws/logs/qr challenge_ws/logs/posters challenge_ws/logs/cpu \
-        -type f -newermt "@$START" -exec cp --parents {} ${BAG}_extras/ \; 2>/dev/null)
-   ls -R ${BAG}_extras
-   ```
-   | What | Where |
-   |---|---|
-   | Final map | `~/challenge_ws/maps/maze_<date>_<time>.{pgm,yaml}` |
-   | QR snapshots (annotated JPEG) + CSV | `~/challenge_ws/logs/qr/` |
-   | Poster CSV | `~/challenge_ws/logs/posters/` |
-   | CPU per process + summary (`cpu_log`) | `~/challenge_ws/logs/cpu/run_<date>_<time>{.csv,_summary.txt}` |
-   | Full node logs | `~/.ros/log/<date>-<time>-…/` (the folder `ros2 launch` printed at startup) |
-
-   `rec_rename` doesn't rename `_extras/`, so rename it by hand if you rename the bag.
-
-#### 2.3 Navigation debug: `rec_navdebug`
-
-Why the robot moved, stopped or turned: lidar, localization, the plan and every stage of the
-velocity chain. Small enough to leave running during autonomous runs.
-
-#### 2.4 Raw sensors for Fast-LIO / SLAM: `rec_lidar`
-
-The inputs to re-run Fast-LIO and `slam_toolbox` offline. On replay, leave `/tf` out of
-`--topics` so it doesn't clash with the `odom → base_link` that Fast-LIO publishes again.
-
-#### 2.5 Curtain YOLO training data: `rec_curtain`
-
-Bags for training the curtain YOLO model (`maze_nav/curtain_yolo.py`; plan in
-`src/to_do.md`, "YOLO curtain detector"). It records what `maze_nav/tools/curtain_yolo_frames.py`
-reads: compressed colour + `camera_info`, raw depth + `camera_info`, `/tf` + `/tf_static` (camera
-pose), and the lidar for its `--lidar` draft labels. Also `/odom` (Fast-LIO, only with maze_nav),
-`/leg_odom2` (the robot's own odometry), `/imu/data` (body pitch / roll while walking) and
-`/handle_state` + `/simple_cmd` (controller sticks and mode), to tell moving / blurred frames
-from still ones. Teleop only (manual mode with the controller is fine): it records raw depth,
-so it refuses to start while Nav2 runs. The lidar is recorded as raw `/livox/points` by itself
-when maze_nav's `lidar_relay` isn't running (no `RAW_LIDAR=1` needed). It warns before
-recording if the camera or lidar isn't publishing, and after Ctrl+C if the bag is missing one
-of them. About 1.5 GB/min, so keep each bag to one approach of 1-2 minutes.
-
-```bash
-rec_curtain curtain_spec_square_lit_01        # name: curtain, angle, lighting, number
-rec_curtain neg_extru_cavity_01               # negatives too (walls, cavities, doorways)
-nice -n 19 python3 src/maze_nav/tools/curtain_yolo_frames.py ~/challenge_ws/runs/ROS_bags/<bag> \
-    ~/challenge_ws/datasets/curtain --every 10 --lidar --cloud-topic /livox/points
-    # --max-gap 0.25 for a curtain hanging ~20 cm up; /livox/points_local for a bag
-    # recorded with maze_nav running
-```
-
-What to record: the competition curtains (both halves, closed with the 1-3 cm slit, parted,
-swaying; also in front of the raised platform). Detection has to work from **1.5 m down to
-0.3 m**, so approach slowly from about 2 m to 0.3 m and spend most of the bag in that range:
-square on and 30-45° off, from both sides, lit and in shadow. Record negatives too: plain walls,
-extrusion walls with cavities or windows, doorways, slats, open floor, people. Spread the bags
-over several sessions and days.
-
-#### 2.7 Camera only: `rec_img`
-
-```bash
-rec_img frames1          # Ctrl+C to stop
-```
-
-Records `/camera/color/image_raw/compressed` and nothing else (no transforms, no camera info,
-no lidar). It needs no launch running and skips the sensor-rate check. About 1 MB per second.
-Turn it into a video with `bag_video.py` (section 4).
-
-#### 2.6 Hand-driven demonstration: `rec_manual`
-
-A run driven with the handheld controller, to show what the robot should do and to collect
-camera frames. The new stack (`maze_explore`, branch `exploration-v2`) provides localisation
-and the map:
-
-```bash
-# Terminal 1: robot standing still and level in the start cell (this pose becomes the map origin)
+# Terminal 1: robot standing still and level in the start cell (this pose is the map origin)
 explore_check                                   # must say GO
-ros2 launch maze_explore explore.launch.py explore:=false   # Fast-LIO, /odom, /scan, slam_toolbox
-# Terminal 2 (wait ~10 s for the launch to settle)
-rec_manual demo2                                # runs explore_check again, then records; Ctrl+C to stop
-# save the map before stopping Terminal 1 (it is also in the bag as /map)
+ros2 launch maze_explore explore.launch.py explore:=false
+# Terminal 2 (wait about 10 s)
+rec_manual demo2
+# before stopping terminal 1, if you want the map as a file (it is also in the bag as /map):
 mkdir -p ~/challenge_ws/maps && ros2 run nav2_map_server map_saver_cli -f ~/challenge_ws/maps/demo2
 ```
 
-Recorded: `/tf`, `/tf_static`, `/rosout`, compressed colour + `camera_info`, `/livox/lidar`,
-`/livox/imu` (Fast-LIO can be re-run), `/cloud_registered_body` (Fast-LIO's cloud: `/scan` can
-be rebuilt with another height band), `/odom`, `/scan`, `/map`, `/imu/data`, `/leg_odom2`,
-`/maze/body_height`, `/handle_state` (sticks), `/commands/joy_raw` (controller buttons),
-`/simple_cmd`, `/cmd_vel`, and `/explore/*` (only with the explorer running).
-`rec_test` (preset `explore`) is the same for autonomous runs, without the raw lidar.
+Recorded: everything `rec_test` records, plus `/camera/color/camera_info`, the raw lidar
+(`/livox/lidar`, `/livox/imu`, so Fast-LIO can be re-run), `/imu/data`, `/leg_odom2`,
+`/handle_state` (sticks) and `/commands/joy_raw` (controller buttons).
 
-**Checks built in.** `rec_manual` runs `explore_check` first and asks before recording on a
-NO-GO (`REC_CHECK=0` skips it). After Ctrl+C it prints each stream's average rate and marks
-slow ones `SLOW`. A slow `/livox/imu` (needs ~200 Hz) means `/odom`, `/map` and tf in the bag
-are wrong; the camera frames and raw lidar are still good. Bag `demo` (2026-11-23) had
-`/livox/imu` at 8 Hz: its map ran away and is unusable.
-
-**Compression.** These bags are zstd-compressed message by message (`REC_COMPRESS=0` = off).
-Measured 2026-11-23: a lidar message 400 → 297 KB, a colour frame 78 → 49 KB, recorder CPU
-16 % of a core against 13 %, no messages lost. About **0.35 GB per minute** (0.5 without).
-`ros2 bag info / play`, `rosbag2_py` (`SequentialCompressionReader`) and `bag_video.py` read
-them as usual; reading the `.db3` with plain sqlite gives zstd blobs.
-This saves disk only. The lidar and camera streams cross the bridge uncompressed, and nothing
-on this computer can change that.
-
-**No depth, and no `/livox/points`.** There is no compressed depth topic. One subscriber to
-raw `/camera/depth/image_raw`, even a single BEST_EFFORT one, slows every stream from the
-bridge to about 10 Hz (measured 2026-11-23: `/imu/data` 195 → 11 Hz, `/livox/imu` 13 → 8 Hz),
-which breaks Fast-LIO. `rec_manual` refuses those topics (`ALLOW_HEAVY=1` overrides). For
-depth, record a separate short teleop bag without the mapping launch:
-`ros2 bag record -o <name> /camera/depth/image_raw /camera/depth/camera_info /camera/color/image_raw/compressed /camera/color/camera_info /tf_static`.
-Compressed depth would need a `compressedDepth` publisher on the robot side of the bridge
-(ask the lab).
-
-Before starting, `ros2 node list` should show only `/lite3_domain_bridge_4`: another stack on
-the robot's domain (a second Fast-LIO / slam_toolbox, RViz showing depth, `ros2 topic hz` on a
-big topic) makes the lidar IMU arrive late and the pose drift. Do not run a simulator on this
-computer during the run.
-
-#### While recording
-
-- Start recording **before** you start driving, and stop with **Ctrl+C** in Terminal 2.
-- Depth and lidar make bags large (roughly 1 GB per minute or more). Keep runs short.
-- The recording is saved as a folder (for example `~/challenge_ws/runs/ROS_bags/maze_20261114_153000/`)
-  containing a `.db3` file and `metadata.yaml`.
-
----
-
-## 3. Check the recording
-
-The alias prints a short summary when you stop it. For the full listing:
+### 2.3 Curtain detection test: `rec_curtain`
 
 ```bash
-rec_last                                       # newest bag
+curtain_watch                 # terminal 1: curtain_node on every frame
+rec_curtain curtain_t1        # terminal 2; drive with the controller; Ctrl+C to stop
+```
+
+Recorded: `/tf`, `/tf_static`, `/rosout`, compressed colour + `camera_info`, `/curtain/seen`
+(one JSON per processed frame: boxes, confidence, direction), `/curtain/status`, and
+`/odom`, `/scan`, `/map`, `/maze/body_height`, `/handle_state`, which only have messages
+when the mapping launch or the controller is on. No depth. `/curtain/image` is not recorded:
+it is raw, and the boxes can be drawn again from `/curtain/seen`.
+
+It warns if `curtain_node` is not running, runs `explore_check` (with `curtain_node`
+allowed), and after Ctrl+C prints the rates of the camera and of `/curtain/seen` (about 3 a
+second). The whole procedure is in `src/maze_explore/launch_guide.md`, "Test curtain
+detection by hand".
+
+### 2.4 Camera only: `rec_img`
+
+```bash
+rec_img frames1
+```
+
+Records `/camera/color/image_raw/compressed` and nothing else. Needs no launch, skips the
+sensor check, about 1 MB per second. Use it for dataset frames (section 4).
+
+### 2.5 What `rec_test`, `rec_manual` and `rec_curtain` check for you
+
+- **Before:** they run `explore_check` and ask before recording on a NO-GO (`REC_CHECK=0`
+  skips it). `rec_manual` also warns when the mapping launch or a needed topic is missing.
+- **After:** they print each stream's average rate and longest gap, and mark slow ones
+  `SLOW`. A slow `/livox/imu` (needs about 200 Hz) means `/odom`, `/map` and the transforms
+  in the bag are wrong; the camera frames and raw lidar are still good. Bag `demo`
+  (2026-11-23) had `/livox/imu` at 8 Hz and its map is unusable.
+- **Compression:** zstd, message by message (`REC_COMPRESS=0` = off). About 0.35 GB per
+  minute instead of 0.5. It saves disk only; the streams still cross the bridge
+  uncompressed. `ros2 bag info` / `play` and `rosbag2_py` (`SequentialCompressionReader`)
+  read these bags as usual.
+- **`/map` and `/tf_static`** are published once, often before recording starts. The aliases
+  pass `qos_overrides.yaml` (created on first use) so the recorder still gets them.
+
+### 2.6 Depth and `/livox/points`: not with the mapping stack
+
+One subscriber to raw `/camera/depth/image_raw` or to `/livox/points`, even a single
+BEST_EFFORT one, slows every stream from the robot to about 10 Hz (measured 2026-11-23:
+`/imu/data` 195 → 11 Hz), which breaks Fast-LIO. The three presets above refuse those
+topics (`ALLOW_HEAVY=1` overrides). There is no compressed depth topic.
+
+For depth, record a separate short teleop bag with no launch running:
+
+```bash
+ros2 bag record -o ~/challenge_ws/runs/ROS_bags/<name> /camera/depth/image_raw \
+    /camera/depth/camera_info /camera/color/image_raw/compressed /camera/color/camera_info /tf_static
+```
+
+Depth is not aligned to the colour image (different intrinsics): see
+[data_required.md](../../src/team_perception/data_required.md).
+
+Also keep the robot's domain quiet while recording: no second stack, no RViz showing depth,
+no `ros2 topic hz` / `echo` on a big topic, no simulator on this computer.
+
+## 3. Check, rename, replay
+
+```bash
+rec_last                                            # newest bag: every topic you need has Count > 0
 ros2 bag info ~/challenge_ws/runs/ROS_bags/<name>   # any bag
+rec_rename run5_stairs                              # rename the newest bag
+rec_rename run5 run5_stairs                         # rename a given bag
 ```
 
-Every recorded topic should have a **count above 0**. As a rough guide, the camera and depth counts should be about 30 × duration in seconds, and `/livox/points_local` (or `/livox/points` with `RAW_LIDAR=1`) about 10 × duration. A topic with `Count: 0` had the wrong name or wasn't publishing.
+Use `rec_rename`, not `mv`: it renames the folder, the `.db3` inside, `metadata.yaml` and a
+matching video, so `ros2 bag info` / `play` keep working. It refuses a name in use and a bag
+that is still being recorded.
 
-Forgot the folder name? List recordings, newest first:
-
-```bash
-ls -dt ~/challenge_ws/runs/ROS_bags/*/metadata.yaml | xargs -n1 dirname
-```
-
-### Rename a recording
+Replay, on a test domain and never on domain 4 (the recorded `/cmd_vel` would reach the
+robot):
 
 ```bash
-rec_rename maze_try3                       # newest bag -> maze_try3
-rec_rename maze_20261114_153000 maze_try3   # a specific bag
-```
-
-Use `rec_rename` rather than `mv`. It renames the folder, the `.db3` files inside,
-`metadata.yaml`, and the matching `.mp4` if you already made one, so the names stay
-consistent and `ros2 bag info` / `ros2 bag play` keep working. It refuses a name that's
-already used and a bag that's still being recorded.
-
-To replay a bag (for example, to test a perception node against it):
-
-```bash
+export ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1
 ros2 bag play ~/challenge_ws/runs/ROS_bags/<name> \
-  --qos-profile-overrides-path ~/challenge_ws/runs/ROS_bags/qos_overrides.yaml
+    --qos-profile-overrides-path ~/challenge_ws/runs/ROS_bags/qos_overrides.yaml
 ```
 
-Start the nodes you are testing **before** `bag play`, so they receive the single `/map` and
-`/tf_static` messages. Add `--topics <list>` to replay only some topics. Replay on a test
-domain (`export ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1`), never on domain 4, or the replay
-reaches the robot.
+Start the nodes you are testing **before** `bag play`, so they get the single `/map` and
+`/tf_static` messages. `--topics <list>` replays only some topics.
 
----
-
-## 4. Convert the camera to video
-
-`bag_to_video.py` is not in this workspace. It lives in the team repo
-([Robot-Dog-Grp4](https://github.com/ttticia/Robot-Dog-Grp4), branch `video-conversion`,
-`challenge_files/onboard/team_perception/scripts/`). Download it once:
+## 4. Video and frames
 
 ```bash
-curl -fsSL -o ~/bag_to_video.py \
-    https://raw.githubusercontent.com/ttticia/Robot-Dog-Grp4/video-conversion/challenge_files/onboard/team_perception/scripts/bag_to_video.py
+# side-by-side video: camera | map with the robot's track (rec_test / rec_manual bags)
+nice -n 19 python3 ~/challenge_ws/runs/ROS_bags/bag_video.py ~/challenge_ws/runs/ROS_bags/<name> <name>.webm
+# frames for a dataset (any bag with a colour topic)
+nice -n 19 python3 ~/challenge_ws/datasets/extract_frames.py ~/challenge_ws/runs/ROS_bags/<name> --hz 3
 ```
 
-(After the branch is merged, replace `video-conversion` with `main` in the URL.) Then:
+Write `.webm`: it plays in VS Code and browsers. This OpenCV has no H.264 encoder, so an
+`.mp4` only opens in players like VLC. A `rec_img` bag has no map, so the right half of
+the video stays empty. `extract_frames.py --help` lists its options (`--dedup`, `--start`,
+`--end`, `--list`).
 
-```bash
-python3 ~/bag_to_video.py ~/challenge_ws/runs/ROS_bags/<name>
-```
+## 5. Get the files
 
-This creates `~/challenge_ws/runs/ROS_bags/<name>.mp4` (H.264, real-time speed) from `/camera/color/image_raw/compressed`. Depth and lidar are not included in the video.
+The robot computer has no screen.
 
-Optional: choose the output name and/or a different camera topic:
-
-```bash
-python3 ~/bag_to_video.py ~/challenge_ws/runs/ROS_bags/run1 ~/challenge_ws/runs/ROS_bags/front_cam.mp4 /image_raw
-```
-
----
-
-## 5. Watch the video / get the bag
-
-The robot computer has no screen, so use your own computer:
-
-- **VS Code:** click the `.mp4` in the Explorer sidebar to play it. Right-click a file or bag folder and choose **Download…** to save a copy.
-- **Browser:** open **http://192.168.10.74:8080** (FileBrowser), log in, and click the file to play or download it.
-- **Copy a whole bag** to your computer: `scp -r User@192.168.10.74:~/challenge_ws/runs/ROS_bags/run1 .`
-
----
-
-## Quick reference
-
-```bash
-rec_list                     # presets and topics
-rec_full run1                # teleop, everything (Ctrl+C to stop)
-rec_maze maze_run1           # full maze_nav run: navigation + perception, no depth (section 2.2)
-rec_manual demo1             # hand-driven demo with maze_explore mapping.launch.py (section 2.6)
-rec_last                     # check: every topic Count > 0
-rec_rename run1_good         # rename the newest bag (or: rec_rename <old> <new>)
-python3 ~/bag_to_video.py ~/challenge_ws/runs/ROS_bags/run1   # -> run1.mp4
-```
-
----
+- **VS Code:** click a video in the Explorer to play it; right-click a file or bag folder and
+  choose **Download…**.
+- **Browser:** `http://192.168.10.74:8080` (FileBrowser).
+- **Copy a bag:** `scp -r <user>@192.168.10.74:~/challenge_ws/runs/ROS_bags/<name> .`
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| A topic has `Count: 0` in `ros2 bag info` | Wrong topic name or driver not running. Re-check with `ros2 topic list` and `ros2 topic hz <topic>`. |
-| `/map` or `/tf_static` has `Count: 0` | The recorder started after their one message. The `rec_*` aliases pass the QoS override for you; if you ran `ros2 bag record` by hand, add `--qos-profile-overrides-path` (section 1). If the map is still missing, save it while SLAM runs: `ros2 run nav2_map_server map_saver_cli -f ~/challenge_ws/runs/ROS_bags/<name>_map` |
-| `/tf` has `Count: 0` | Fast-LIO wasn't running. Start `lite3_bringup` (from `lite3_launcher`) before recording |
-| `/livox/points` missing | The Livox driver isn't running. Start the robot's lidar driver, then check `ros2 topic hz /livox/points`. |
-| Depth doesn't line up with the color image | `/camera/depth/image_raw` isn't aligned. Record the aligned depth topic, or turn on `depth_registration` in the camera driver. See [data_required.md](../src/team_perception/data_required.md). |
-| `Topic '...' has more than one type associated` (repeats every 0.1 s) | Another node uses the topic with a different message type, usually an `rqt_image_view` on a laptop subscribed to a `.../compressed` topic as a raw `Image`. Find it with `ros2 topic info -v <topic>` (look at each `Topic type`). Close it, or reopen it and pick the topic from the dropdown (`rqt_image_view` with no argument). Topics the recorder had already subscribed keep recording; a topic that first appears during the conflict is skipped. |
-| Dropped messages / recorder warnings | Disk or CPU can't keep up. Record fewer topics, or try `--max-cache-size 1000000000`. |
-| Robot won't move under Nav2 while recording; collision_monitor `Ignoring the source` | Recording raw depth delays `/livox/points` (~1.2 s seen). Stop the recording and use `rec_nav` or `rec_navdebug`. |
-| `could not connect to display` / Qt platform plugin error | GUI tools (e.g. `rqt_image_view`, `rviz2`) don't work over SSH/VS Code. Convert to `.mp4` (step 4), or copy the bag to a computer with a screen. |
-| `Package 'image_view' not found` | Not needed. Use `bag_to_video.py`. |
-| `Topic ... not in bag` (bag_to_video.py) | The script lists the topics that are in the bag. Pass one of them as the 3rd argument. |
-| `ros2: command not found` | Run `source /opt/ros/humble/setup.bash`. |
-| `rec_maze: command not found` | Run `source ~/challenge_ws/runs/ROS_bags/aliases.sh` (section 1). |
-| `... already exists. Pick another name.` | Give a new name, or leave the name out to get a timestamped one. |
-| `Bad name '...'` | Names may only use letters, digits, `.`, `_` and `-`. Replace spaces with `_`. |
-| Renamed a bag folder with `mv` and the files inside still have the old name | Harmless (`metadata.yaml` refers to the files by their own names), but to tidy up rename it back and use `rec_rename` |
-| `rec_rename: command not found` | Open a new terminal or `source ~/challenge_ws/runs/ROS_bags/aliases.sh` (alias added 2026-11-14). |
-| `Nav2 is running and preset ... records raw depth` | Use `rec_maze`, or stop Nav2 first. |
-| Disk filling up | Check with `df -h`. Don't record uncompressed color. Delete or copy off old bag folders. |
+| `rec_test: command not found` | `source ~/challenge_ws/runs/ROS_bags/aliases.sh` (section 1) |
+| `explore_check` prints `NOTICE the explore launch is already running` and asks `Proceed? [y/N]` | Normal for `rec_test`: it checks while the launch is up, and lists the launch's own nodes (`qr_scanner`, `task_reporter`, `junction_trigger`, `curtain_node`). Type `y` to record. If you meant to start a new run, answer `n` and stop the old launch first |
+| `explore_check` says NO-GO | Do not start a run. Slow streams come from the robot or bridge side; "other nodes on domain 4" means a leftover node (find it with `ros2 node list`, stop that process) |
+| A topic has `Count: 0` | It was not published: wrong name, driver or launch not running. Check with `ros2 topic list` |
+| `/map` or `/tf_static` has `Count: 0` | Recorded by hand without `--qos-profile-overrides-path` (section 3), or SLAM was not running |
+| `/tf` has `Count: 0` | Fast-LIO was not running: start the launch before recording |
+| A stream is marked `SLOW` after recording | Section 2.5. The pose and map in that bag cannot be trusted |
+| `... slows every bridge stream` and the recorder stops | You asked for depth or `/livox/points` after `--` (section 2.6) |
+| `Topic '...' has more than one type associated` | Another node uses the topic with a different type, usually an `rqt_image_view` subscribed to a `.../compressed` topic as a raw image. Close it, or pick the topic from its dropdown |
+| `... already exists. Pick another name.` | Give a new name, or leave it out for a timestamped one |
+| `Bad name '...'` | Letters, digits, `.`, `_`, `-` only |
+| Renamed a bag with `mv` | Harmless, but rename it back and use `rec_rename` to keep the file names consistent |
+| `could not connect to display` | GUI tools do not work over SSH. Make a video (section 4) or copy the bag to a computer with a screen |
+| Disk filling up | `df -h`; copy old bags off and delete them |
