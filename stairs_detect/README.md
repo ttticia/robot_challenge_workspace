@@ -117,3 +117,39 @@ AI mode -> drive to the centre of the cell after (SLAM) -> AI exit, auto.
 - `explore_stairs.launch.py`: copy of explore.launch.py running it (stairs_check:=false = off).
 
     ros2 launch ~/stairs_detect/explore_stairs.launch.py drive:=false auto_start:=true
+
+## stairs_crossing package (25 Nov, in ~/challenge_ws/src on the robot)
+
+The 24 Nov copies above are replaced by the ROS package `stairs_crossing/` (this folder). It is
+based on the team's code of 25 Nov, where `stair_levels.py` now lives in the team package
+`stairs` and maze_explore already runs a depth stair check. Team packages are untouched.
+
+- `explorer_stairs`: copy of maze_explore/explorer.py. The changes are listed at the top of the
+  file: `object` sides that are stair-high get the depth check, the handrail check is off, an
+  unconfirmed stair-high side is `blocked`, AUTO is sent after the AI gait (so /cmd_vel drives
+  it), and the AI walk uses leg odometry and the IMU with /odom jumps ignored (Fast-LIO
+  diverged on the steps in run7).
+- `launch/explore_stairs.launch.py`: the team's explore.launch.py with that explorer, plus the
+  arguments stair_rails, ai_auto, ai_speed and ai_wz.
+- `stair_watch` (detector only; imports stair_levels from the `stairs` package) and `keyboard_teleop`.
+
+Install:
+
+    scp -r stairs_crossing user@192.168.10.74:~/challenge_ws/src/
+    cd ~/challenge_ws && nice -n 19 colcon build --symlink-install --packages-select stairs_crossing --parallel-workers 1
+    source install/setup.bash
+
+Run:
+
+    ros2 launch stairs_crossing explore_stairs.launch.py 2>&1 | tee ~/challenge_ws/logs/stairs_runN.log
+
+The full lab procedure is in the Obsidian note `notes/stairs-crossing-lab-test-guide.md`.
+The loose files in this folder (explorer_stairs.py, explore_stairs.launch.py, ai_auto_helper.py,
+keyboard_teleop.py) are older stand-alone versions. Use the package.
+
+### 25 Nov evening: working on the real stairs (run10)
+
+AI walk = 1.88 m at 0.5 m/s, timed by speed x time (leg odometry read about half the real
+distance in the AI gait), with a wall stop. Then back to H-Step + navigation, and exploring goes on.
+`stairs_crossing/integration/maze_explore_stairs.patch` (+ README) puts all of this into the
+team's maze_explore when its owner applies it.

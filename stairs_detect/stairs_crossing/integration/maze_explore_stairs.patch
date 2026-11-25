@@ -1,0 +1,335 @@
+diff -ru a/maze_explore/launch/explore.launch.py b/maze_explore/launch/explore.launch.py
+--- a/maze_explore/launch/explore.launch.py	2026-11-25 10:36:07.556296575 +0000
++++ b/maze_explore/launch/explore.launch.py	2026-11-25 10:36:07.559296575 +0000
+@@ -84,6 +84,18 @@
+     'plain': ('false', 'true: navigation only = scene_understanding, stairs, curtains and '
+                        'terrain all off, whatever their own arguments say'),
+     'v_max': ('0.20', 'top walking speed, m/s'),
++    'stair_rails': ('false', 'handrails must also show in the lidar'),
++    'ai_speed': ('0.5', 'walking speed on the stairs in AI mode, m/s'),
++    'stair_min_hits': ('5', 'stair check also passes with this many hits in the whole look'),
++    'stair_check_time': ('4.5', 'seconds the stair check looks'),
++    'ai_wz': ('0.0', 'most IMU yaw correction in the AI walk, rad/s (0 = none)'),
++    'ai_walk_cells': ('1.5', 'cells from the centre of the cell before to the border of the cell after'),
++    'ai_body_clear': ('0.35', 'm walked past that border before AI mode ends'),
++    'ai_distance': ('time', 'how the AI walk counts distance: time (speed x time) or leg (leg odometry)'),
++    'ai_wall_min': ('1.0', 'm walked before a wall just ahead ends the AI walk'),
++    'ai_auto': ('true', 'send AUTO after the AI gait so /cmd_vel drives the stairs'),
++    'ai_reanchor': ('true', 'after the stairs, move the cell grid to where the walk put the robot'),
++    'reanchor_min': ('0.15', 'm of pose error before the grid is re-anchored'),
+     'stand_height': ('0.30', 'base_link height used when the floor cannot be measured'),
+ }
+ 
+@@ -227,7 +239,19 @@
+                                   *unless_plain('qr')]), value_type=bool),
+                               'push_stop': val('push_stop', bool),
+                               'look_check': val('look_check', bool),
+-                              'v_max': val('v_max', float)}])),
++                              'v_max': val('v_max', float),
++                              'stair_rails': val('stair_rails', bool),
++                              'ai_auto': val('ai_auto', bool),
++                              'ai_speed': val('ai_speed', float),
++                              'ai_wz': val('ai_wz', float),
++                              'ai_walk_cells': val('ai_walk_cells', float),
++                              'ai_body_clear': val('ai_body_clear', float),
++                              'ai_distance': c['ai_distance'],
++                              'ai_wall_min': val('ai_wall_min', float),
++                              'ai_reanchor': val('ai_reanchor', bool),
++                              'reanchor_min': val('reanchor_min', float),
++                              'stair_min_hits': val('stair_min_hits', int),
++                              'stair_check_time': val('stair_check_time', float)}])),
+             RegisterEventHandler(OnProcessExit(target_action=explorer, on_exit=[
+                 EmitEvent(event=SignalProcess(signal_number=signal.SIGINT,
+                                               process_matcher=matches_action(qr)))])),
+diff -ru a/maze_explore/maze_explore/explorer.py b/maze_explore/maze_explore/explorer.py
+--- a/maze_explore/maze_explore/explorer.py	2026-11-25 10:36:07.555296575 +0000
++++ b/maze_explore/maze_explore/explorer.py	2026-11-25 10:36:07.558296575 +0000
+@@ -24,7 +24,7 @@
+ from rclpy.node import Node
+ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+ from rclpy.time import Time
+-from sensor_msgs.msg import CameraInfo, Image, PointCloud2
++from sensor_msgs.msg import CameraInfo, Image, Imu, PointCloud2
+ from std_msgs.msg import Bool, Empty, Float32, String
+ from tf2_ros import Buffer, TransformException, TransformListener
+ from transfer_interfaces.msg import MotionSimpleCMD
+@@ -134,7 +134,22 @@
+         self.look_hold = p('look_hold', 1.5).value
+         self.greet_hold = p('greet_hold', 2.0).value
+         self.cmd_gap = p('cmd_gap', 1.5).value         # s between mode requests
+-        self.ai_speed = p('ai_speed', 0.15).value
++        self.ai_speed = p('ai_speed', 0.5).value    # stairs copy: was 0.15 (Rey, 2026-11-25: 0.5)
++        self.ai_wz = p('ai_wz', 0.0).value          # stairs copy: IMU heading hold, off by default
++        # stairs copy (Rey, 2026-11-25): AI mode ends once the robot is in the cell after the
++        # stairs: 1.5 cells from the centre of the cell before = the border into the cell after,
++        # plus ai_body_clear so the hind legs are past it too.
++        self.ai_walk_cells = p('ai_walk_cells', 1.5).value
++        self.ai_body_clear = p('ai_body_clear', 0.35).value   # m, about half the body length
++        self.ai_distance = p('ai_distance', 'time').value   # stairs copy: 'time' or 'leg'
++        self.ai_wall_min = p('ai_wall_min', 1.0).value     # stairs copy: m before the wall stop
++        self.ai_walking = False                     # stairs copy: AI walk under way
++        self.ai_last_walked = 0.0                   # stairs copy: m of the last AI walk
++        self.ai_reanchor = p('ai_reanchor', True).value   # stairs copy: re-anchor the grid after
++        self.reanchor_min = p('reanchor_min', 0.15).value  # m off before it re-anchors
++        self.reanchor_fit = 0
++        self.imu_yaw = self.leg_vx = None           # stairs copy: body IMU yaw, leg-odometry speed
++        self.leg_time = 0.0
+         self.curtain_speed = p('curtain_speed', 0.20).value
+         self.pose_timeout = p('pose_timeout', 1.0).value
+         self.push_stop = p('push_stop', True).value    # obstacle stop also while pushing (a
+@@ -159,8 +174,10 @@
+         # stream is only subscribed while the robot stands still for the check: one raw depth
+         # subscriber slows every stream from the robot, lidar and its IMU included.
+         self.stair_check_on = p('stair_check', True).value and self.stairs_on
+-        self.stair_check_time = p('stair_check_time', 3.0).value     # s of looking
+-        self.stair_rails = p('stair_rails', True).value   # handrails must show in the lidar too
++        self.ai_auto = p('ai_auto', True).value     # stairs copy: AUTO after AI gait
++        self.stair_check_time = p('stair_check_time', 4.5).value     # s of looking (stairs copy: was 3.0)
++        self.stair_min_hits = p('stair_min_hits', 5).value   # stairs copy: or this many hits in the whole look
++        self.stair_rails = p('stair_rails', False).value   # stairs copy: was True (handrails in the lidar too)
+         self.stair_raise_min = p('stair_raise_min', 0.28).value   # m: lidar height in the next
+         #                                    cell from which it is looked at before walking in
+         self.stair_params = stair_levels.LevelParams(
+@@ -236,6 +253,11 @@
+         self.create_subscription(OccupancyGrid, '/map', self.on_map, latched)
+         self.create_subscription(PointCloud2, '/maze/cloud', self.on_cloud, qos_profile_sensor_data)
+         self.create_subscription(Odometry, '/odom', self.on_odom, 20)
++        # stairs copy: only when asked for (a 200 Hz IMU callback in Python costs CPU)
++        if self.ai_wz > 0:
++            self.create_subscription(Imu, '/imu/data', self.on_imu, qos_profile_sensor_data)
++        if self.ai_distance == 'leg':
++            self.create_subscription(Odometry, '/leg_odom2', self.on_leg, qos_profile_sensor_data)
+         self.create_subscription(Float32, '/maze/body_height',
+                                  lambda m: setattr(self, 'body_height', m.data), 5)
+         if self.cv_on:
+@@ -318,6 +340,13 @@
+         self.heights.add(x + c * pts[:, 0] - s * pts[:, 1], y + s * pts[:, 0] + c * pts[:, 1],
+                          pts[:, 2])
+ 
++    def on_imu(self, msg):                       # stairs copy
++        q = msg.orientation
++        self.imu_yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
++
++    def on_leg(self, msg):                       # stairs copy
++        self.leg_vx, self.leg_time = msg.twist.twist.linear.x, self.now()
++
+     def on_odom(self, msg):
+         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+         p, q = msg.pose.pose.position, msg.pose.pose.orientation
+@@ -335,7 +364,9 @@
+             # the lidar stream Fast-LIO catches up in one step (run3, 2026-11-24: 0.48 m in
+             # 0.40 s after a 1 s stall, pose fine afterwards), so one jump only pauses the
+             # robot. A runaway keeps jumping or goes far: that latches.
+-            if jump > 0.15 + 0.6 * dt:
++            if jump > 0.15 + 0.6 * dt and self.ai_walking:   # stairs copy: expected on the steps
++                self.odom_jumps = []
++            elif jump > 0.15 + 0.6 * dt:
+                 now = self.now()
+                 self.odom_jumps = [j for j in self.odom_jumps if now - j < 10.0] + [now]
+                 if now < self.odom_grace_until:     # depth stream on: the lidar feed is slow
+@@ -393,6 +424,7 @@
+         self.queue.clear()
+         self.act = None
+         self.curtain_blind = False
++        self.ai_walking = False               # stairs copy
+         self.state, self.why = state, why
+         (self.get_logger().error if state == 'FAULT' else self.get_logger().info)(f'{state}: {why}')
+ 
+@@ -439,8 +471,12 @@
+             return False
+         wide = not self.aligned
+         max_yaw, max_shift = (math.radians(30), 0.40) if wide else (math.radians(3), 0.08)
++        radius = 4.0
++        if self.reanchor_fit and not wide:   # stairs copy: just re-anchored after the stairs
++            max_yaw, max_shift, radius = math.radians(10), 0.25, 1.6
++            self.reanchor_fit -= 1
+         px, py = self.occ.occupied_points()
+-        near = np.hypot(px - self.pose[0], py - self.pose[1]) < 4.0
++        near = np.hypot(px - self.pose[0], py - self.pose[1]) < radius
+         g, q = fit_grid(self.grid, px[near], py[near], max_yaw, max_shift)
+         if g is None or q < 0.5:
+             how = 'too few wall points or further off than the limits' if g is None \
+@@ -467,6 +503,10 @@
+             self.get_logger().info(f'grid lined up with the walls: turned {turned:+.1f} deg, '
+                                    f'moved {moved:.2f} m (quality {q:.2f})')
+             return True
++        if radius < 4.0:
++            self.reanchor_fit = 0
++            self.event(f'stairs: grid fitted after the stairs: {turned:+.1f} deg, {moved:.2f} m '
++                       f'(quality {q:.2f})')
+         self.get_logger().info(f'grid corrected: {turned:+.1f} deg, {moved:.2f} m '
+                                f'(quality {q:.2f})', throttle_duration_sec=10.0)
+         return False
+@@ -499,6 +539,15 @@
+             k = 'blocked'
+         if checked is None and k == 'blocked' and self.stair_check_on:
+             k = 'stairs'
++        # stairs copy: our stairs often map as 'object'; check those too if stair-high
++        if checked is None and k == 'object' and self.stair_check_on and self.stairs_on \
++                and self.raised(cell, d):
++            k = 'stairs'
++        # stairs copy: never walk normally into a stair-high cell. If the depth check did not
++        # confirm stairs (or had no frames), a 'free' side that is stair-high counts as blocked
++        # (terrain is 0.25 m at most, stair_raise_min is 0.28 m). 2026-11-25: climbed in H-Step.
++        if checked in (False, 'lidar') and k == 'free' and self.stairs_on and self.raised(cell, d):
++            k = 'blocked'
+         if k == 'room' and any((b, e) in self.cv_curtains or (b, e) in self.curtain_latched
+                                for e in range(4)):
+             k = 'free'                # not a dead end: one of its "walls" is a curtain
+@@ -734,11 +783,44 @@
+                       ('event', f'stairs: AI mode, cell {a} side {d}')])
+             for code in robot.ai_enter_sequence():
+                 q.extend([('cmd', code), ('hold', self.cmd_gap)])
++            if self.ai_auto:                  # stairs copy: follow /cmd_vel in the AI gait
++                q.extend([('cmd', robot.AUTO), ('hold', self.cmd_gap)])
+             q.extend([('hold', 1.0), ('call', lambda: setattr(self, 'step', (a, d, c))),
+                       ('drive', cx, cy, h, 'ai'), ('hold', 1.0)])
+             for code in robot.ai_leave_sequence(self.gait):
+                 q.extend([('cmd', code), ('hold', self.cmd_gap)])
+-            q.extend([('event', f'stairs: crossed, {self.gait} again'), ('call', crossed)])
++            q.extend([('event', f'stairs: crossed, {self.gait} again'),
++                      ('call', lambda: self.reanchor(ax, ay, h)),    # stairs copy
++                      ('call', crossed)])
++
++    def reanchor(self, ax, ay, h):
++        """stairs copy: after the AI walk the lidar pose is off (Fast-LIO drifts or diverges
++        on the steps), so everything mapped from here on is shifted against the cells. The
++        robot really is where the walk put it: ai_last_walked straight on along h from the
++        centre of the cell before (ax, ay). Move and turn the grid by the difference between
++        that and the believed pose, so the cells line up with the walls again as they are now
++        mapped; then one medium wall fit near the robot (reanchor_fit) refines it."""
++        if not self.ai_reanchor or self.pose is None or self.grid is None:
++            return
++        w = self.ai_last_walked
++        ex, ey = ax + w * math.cos(h), ay + w * math.sin(h)
++        px, py, psi = self.pose
++        dth, shift = wrap(psi - h), math.hypot(px - ex, py - ey)
++        if shift < self.reanchor_min and abs(dth) < math.radians(4):
++            self.get_logger().info(f'after the stairs: pose {shift:.2f} m / '
++                                   f'{math.degrees(dth):+.1f} deg from expected, grid kept')
++            return
++        if abs(dth) > math.radians(30):      # the walk did not stay straight: don't guess
++            self.get_logger().warn(f'after the stairs: heading {math.degrees(dth):+.0f} deg off, '
++                                   'too far to re-anchor; grid kept')
++            return
++        c, s = math.cos(dth), math.sin(dth)
++        gx, gy = self.grid.x0 - ex, self.grid.y0 - ey
++        self.grid = Grid(px + c * gx - s * gy, py + s * gx + c * gy,
++                         wrap(self.grid.yaw + dth), self.grid.size)
++        self.reanchor_fit = 6                 # planning steps that may use the medium fit
++        self.event(f'stairs: grid re-anchored, pose was {shift:.2f} m / '
++                   f'{math.degrees(dth):+.1f} deg off the expected spot')
+ 
+     def do_cv_verify(self, cell, d, final=True):
+         """Standing still, facing side d of `cell` squarely: does the camera keep seeing a
+@@ -842,6 +924,8 @@
+                         mem['why'], seen = f'treads look like stairs but {mem["rails"]}', None
+                 mem['frames'] += 1
+                 mem['hits'] += seen is not None
++                if seen is not None:
++                    mem['last_seen'] = seen          # stairs copy
+                 found = mem['confirm'].add(now, seen)
+         waited = self.elapsed()
+         quick_no = mem['hits'] == 0 and mem['frames'] >= self.stair_quick_no   # close depth early
+@@ -852,6 +936,12 @@
+             return False
+         for sub in mem['subs']:
+             self.destroy_subscription(sub)
++        if found is None and mem['hits'] >= self.stair_min_hits and mem.get('last_seen') is not None:
++            # stairs copy: hits spread over the look (6 of 28 frames, run8, 2026-11-25) never
++            # made 3 of 5 in 1.2 s. The block obstacle gives 0 hits, so this many in one look
++            # still means stairs.
++            found = mem['last_seen']
++            mem['rails'] = f'{mem["hits"]} of {mem["frames"]} frames over the look'
+         if found is not None:
+             verdict = True
+             text = f'STAIRS: {found.summary()}; {mem["rails"]}'
+@@ -928,13 +1018,14 @@
+                     self.begin()
+         elif self.state == 'RUN':
+             age = max(self.now() - self.pose_time, self.now() - (self.cloud_time or 0.0))
+-            if self.now() < self.odom_hold_until:
++            if self.now() < self.odom_hold_until and not self.ai_walking:   # stairs copy
+                 self.send()
+                 self.why = 'odometry jumped: paused until it has held steady'
+                 self.act_t0 += 0.1
+                 if 't' in self.act_mem:
+                     self.act_mem['t'] += 0.1
+-            elif age > self.pose_timeout and not (self.act and self.act[0] == 'stair_check'):
++            elif age > self.pose_timeout and not self.ai_walking and \
++                    not (self.act and self.act[0] == 'stair_check'):
+                 self.send()
+                 self.why = f'pose / lidar {age:.1f} s old: standing still until it is fresh'
+                 self.act_t0 += 0.1                     # the action's clock stands still too
+@@ -1021,6 +1112,8 @@
+         return int(m.sum()) >= 6
+ 
+     def do_drive(self, tx, ty, heading, mode):
++        if mode == 'ai':
++            return self.do_ai_walk(tx, ty)
+         x, y, yaw = self.pose
+         dx, dy = tx - x, ty - y
+         c, s = math.cos(heading), math.sin(heading)
+@@ -1063,6 +1156,54 @@
+                   wz=clamp(1.5 * herr, -0.4, 0.4))
+         return False
+ 
++    def do_ai_walk(self, tx, ty):
++        """stairs copy: walk straight over the stairs in the AI gait, then return True so the
++        explorer's AI leave sequence (AI_OFF, MANUAL, MOVE, gait, AUTO) runs and exploring goes on.
++        The lidar pose is not used (Fast-LIO diverges on the steps, run7). Distance is counted
++        from the commanded speed and time (ai_distance:=leg counts leg odometry instead: in run9
++        it under-counted and the robot walked into the wall of the cell after). The walk also
++        ends early once the lidar sees a wall just ahead of the nose after ai_wall_min metres."""
++        now, mem = self.now(), self.act_mem
++        if 'dist' not in mem:
++            self.ai_walking = True
++            mem.update(dist=self.ai_walk_cells * self.cell_size + self.ai_body_clear, t0=now,
++                       last=now, walked=0.0, leg=0.0, wall=0, yaw0=self.imu_yaw)
++            mem['tmax'] = mem['dist'] / max(self.ai_speed, 0.05) * 2.5 + 5.0
++            self.get_logger().info(f'AI walk: {mem["dist"]:.2f} m at {self.ai_speed:.2f} m/s '
++                                   f'(by {self.ai_distance}, wall stop after {self.ai_wall_min:.1f} m)')
++        dt, mem['last'] = now - mem['last'], now
++        fresh = self.leg_vx is not None and now - self.leg_time < 0.5
++        if self.ai_distance == 'leg' and fresh:
++            mem['leg'] += max(0.0, self.leg_vx) * dt
++            mem['walked'] += max(0.0, self.leg_vx) * dt
++        else:
++            mem['walked'] += self.ai_speed * dt
++        why = None
++        if mem['walked'] >= mem['dist']:
++            why = 'distance reached'
++        elif mem['walked'] >= self.ai_wall_min and self.cloud is not None and self.front_blocked():
++            mem['wall'] += 1
++            if mem['wall'] >= 3:
++                why = 'wall ahead'
++        else:
++            mem['wall'] = 0
++        if why is None and now - mem['t0'] > mem['tmax']:
++            why = 'time limit'
++        if why is not None:
++            self.send()
++            self.ai_walking = False
++            self.ai_last_walked = mem['walked']
++            self.odom_jumps, self.odom_hold_until = [], 0.0
++            self.odom_grace_until = now + 3.0
++            self.get_logger().info(f'AI walk done ({why}): {mem["walked"]:.2f} of {mem["dist"]:.2f} m '
++                                   f'in {now - mem["t0"]:.1f} s')
++            return True
++        herr = 0.0
++        if self.ai_wz > 0 and mem['yaw0'] is not None and self.imu_yaw is not None:
++            herr = wrap(mem['yaw0'] - self.imu_yaw)
++        self.send(vx=self.ai_speed, wz=clamp(0.8 * herr, -self.ai_wz, self.ai_wz))
++        return False
++
+     def side_blocked(self, sign):
+         """Something from knee height up, 6-20 cm beside the body on the side it steps
+         towards (sign +1 = left), along the body's length."""
+@@ -1333,3 +1474,7 @@
+             pass
+         node.destroy_node()
+         rclpy.try_shutdown()
++
++
++if __name__ == '__main__':      # stairs copy: run as a script, not an entry point
++    main()
