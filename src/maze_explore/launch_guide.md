@@ -86,8 +86,9 @@ ros2 topic echo /explore/status --field data       # state, cell, job, action
 explore_stop                                       # zero velocity, stays stopped
 ```
 
-After `explore_go` the robot switches to the RUG gait and navigation mode, creeps 10 cm, lines
-itself up with the walls, then explores. `explore_go` after `explore_stop` carries on.
+After `explore_go` the robot switches to the H-Step gait and navigation mode, creeps 10 cm, lines
+itself up with the walls, then explores. `explore_go` after `explore_stop` carries on: it first sends Move, the gait and navigation mode
+again (about 4.5 s standing still), so after taking over with the controller you need no `lite3_auto`.
 Ctrl+C in Terminal 1 also stops it with a zero velocity. The handheld controller takes over
 at any time with `lite3_manual`.
 
@@ -98,7 +99,7 @@ at any time with `lite3_manual`.
 | `explore.launch.py drive:=false auto_start:=true` | **Dry run.** Everything live, nothing sent to the robot. The log shows what it sees around its cell and what it would do. Do this first in a new arena |
 | `explore.launch.py explore:=false` | Mapping only, for hand-driven runs (`rec_manual`) |
 | `explore.launch.py v_max:=0.15` | Slower walking (default 0.20 m/s) |
-| `explore.launch.py gait:=hstep` | H-Step gait instead of the default RUG general gear |
+| `explore.launch.py gait:=rug` | RUG general gear instead of the default H-Step gait |
 | `explore.launch.py auto_start:=true` | Starts without waiting for `/nav/start` |
 | `explore.launch.py stair_check:=false` | No depth-camera stair check; the lidar alone decides what is stairs |
 
@@ -124,6 +125,7 @@ at any time with `lite3_manual`.
 ```bash
 rec_test run1            # autonomous run. Ctrl+C stops; then Enter keeps the name
 rec_manual demo2         # hand-driven run with explore:=false
+rec_curtain curtain_t1   # curtain detection test by hand (curtain_node running)
 rec_last                 # topics and counts of the newest bag
 rec_rename run1_stairs   # rename the newest bag
 rec_list                 # what each one records
@@ -173,7 +175,63 @@ rec_last                                        # check topics and counts
 - For depth (for example the range to a curtain for the YOLO set), record a separate short
   bag **without** the mapping launch:
   `ros2 bag record -o <name> /camera/depth/image_raw /camera/depth/camera_info /camera/color/image_raw/compressed /camera/color/camera_info /tf_static`
-- Full details: `runs/ROS_bags/ROSBAG_GUIDE.md` section 2.6.
+- Full details: `runs/ROS_bags/ROSBAG_GUIDE.md` section 2.2.
+
+### Test curtain detection by hand (manual mode)
+
+The curtain model on its own: you drive with the handheld controller, `curtain_node` looks at
+every camera frame, and a bag keeps what it saw and what it said. No explorer, no driving
+by our code. The autonomous launch runs the same check by default (`curtain_cv:=false` turns it off).
+
+```bash
+# Terminal 1 (optional): mapping, if you want the robot's position in the bag as well
+explore_check                                   # must end with GO
+ros2 launch maze_explore explore.launch.py explore:=false
+
+# Terminal 2: the detector on every frame        (= ros2 run maze_explore curtain_node
+curtain_watch                                   #    --ros-args -p always:=true)
+
+# Terminal 3: record, BEFORE the robot moves; Ctrl+C stops, Enter keeps the name
+rec_curtain curtain_t1
+
+# Terminal 4, on a computer with a screen (ROS_DOMAIN_ID=4): the picture with the boxes
+curtain_view                                    # = rqt_image_view on /curtain/image
+ros2 topic echo /curtain/seen --field data      # or just the numbers
+```
+
+What to drive, keeping the robot in manual mode on the controller:
+
+1. Start about 2 m in front of the curtain, square on. Walk slowly up to 0.3 m. The model
+   is meant to find it from 1.5 m down to 0.3 m.
+2. The same at 30 to 45 degrees off, from both sides.
+3. From the centre of the cell before the curtain, stand still and face it for 5 s. This is
+   the view the explorer verifies from: it needs a box across the middle of the picture on
+   3 frames in 3 s.
+4. Negatives, each for a few seconds: a plain wall, an extrusion wall with its windows, the
+   stairs, the block field, a room with a poster, people. There should be no box.
+
+What to look for:
+
+- **In `curtain_view`:** a green box with its confidence on every curtain between 1.5 and
+  0.3 m, and `no curtain` in red everywhere else. Note where it misses and where it
+  boxes something that is not a curtain.
+- **In the log of Terminal 2:** `curtain seen: 0.87 at +3 deg` lines (confidence and
+  direction; + is left of the camera axis).
+- **In the recorder's summary:** `/curtain/seen` at about 3 Hz and the camera at 20 Hz or
+  more. A slow `/curtain/seen` means the node fell behind.
+
+Afterwards:
+
+```bash
+rec_last                                        # /curtain/seen and the camera have Count > 0
+nice -n 19 python3 ~/challenge_ws/datasets/extract_frames.py ~/challenge_ws/runs/ROS_bags/curtain_t1 --hz 3
+```
+
+Stop `curtain_watch` (Ctrl+C in Terminal 2) before any autonomous run: `explore_check`
+reports a leftover `curtain_node` as NO-GO. Watch `/curtain/image`, never
+`/camera/color/image_raw`: a raw colour viewer slows every stream from the robot. Depth is
+not recorded; for the range to the curtain record the separate depth bag described above,
+without the mapping launch.
 
 Save the map before stopping Terminal 1 if you want it as an image:
 
@@ -189,7 +247,9 @@ ros2 run nav2_map_server map_saver_cli -f ~/challenge_ws/maps/run1
 2. `ros2 node list` should show only `/lite3_domain_bridge_4`. Anything left over from the
    stack: close its terminal.
 3. Note what happened next to the bag name (where it stopped, what it misread). The `job:`
-   lines are in Terminal 1 and in `~/challenge_ws/logs/ros/`.
+   lines are in Terminal 1 and in that launch's folder: `~/challenge_ws/logs/ros/<date>-<time>-…/`
+   holds `launch.log` and one log per node (`maze_explorer.log`, `curtain_node.log`, …).
+   Newest launch: `ls -dt ~/challenge_ws/logs/ros/*/ | head -1`.
 
 ## 6. Watch a run in RViz
 
@@ -244,7 +304,7 @@ ros2 bag play ~/challenge_ws/runs/ROS_bags/run3 --clock \
 |---|---|
 | Stays at `WAIT ... waiting for /map` | Fast-LIO has no lidar: `explore_check`. `waiting for map -> base_level`: `/odom` missing |
 | `explore_go` does nothing | Status must be `READY`. In `FAULT`, relaunch |
-| Robot does not move after `explore_go` | Handheld controller still in control: the stack sends navigation mode once at the start; `lite3_auto` sends it again |
+| Robot does not move after `explore_go` | Handheld controller still in control. Every `explore_go` sends navigation mode (wait the 4.5 s); if it still does not move, `lite3_auto` |
 | Turns but will not walk | `way blocked` in the log: something within 20 cm ahead from 0.30 m up |
 | Stops at the stairs | `no progress on the stairs in AI mode`: take over (`lite3_ai_off`), walk it across, `explore_go` |
 | `rec_test: command not found` | `source ~/.bashrc` |

@@ -1,5 +1,5 @@
-# Copied unchanged from ~/stairs_detect/stair_levels.py (Rey, 2026-11-24) so that maze_explore
-# is self-contained. Change the detector there first, then copy it here again.
+# Copied unchanged from ~/stairs_detect/stair_levels.py (Rey, 2026-11-24) so that the workspace
+# is self-contained (package `stairs` since 2026-11-25; it was maze_explore/stair_levels.py). Change the detector there first, then copy it here again.
 """Stairs from the depth camera by their tread levels (numpy only, no ROS).
 
 The challenge stairs (Rey, 23 Nov 2026): up and over, 3 steps up, 12 cm rise, 20 cm tread,

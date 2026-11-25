@@ -158,13 +158,28 @@ been explored, and the robot ends the run standing in the final cell.
 - **Rooms**: not entered by default (`enter_rooms:=false`). From the cell before, the robot
   looks centre, 25° left and 25° right, holds 1.5 s each and publishes
   `room centre|left|right cell (i, j) side d` on `/explore/event`.
-- **Curtain**: square up on the cell's centre line, then push through at 0.20 m/s with
-  `/maze/blind` on. The crossing is remembered as a link so later routes can use it.
+- **Curtain**: square up on the cell's centre line, make a quarter turn on the spot, then
+  step **sideways** through it (user, 2026-11-25) at 0.10 m/s with `/maze/blind` on, all the
+  way to the centre of the cell behind, and there turn the quarter back on the spot. The crossing is remembered as a link so later routes can use it.
+  **Latched (2026-11-25):** once an edge reads `curtain` it stays a curtain on both sides, whatever the map shows later (swaying or parted fabric must not turn it into an open way or a plain wall). A failed crossing, or the first grid fit (the cells move), undoes it.
   **Off for now (user, 2026-11-23):** the obstacle stop stays on during the push
-  (`push_stop`, default true), so the fabric stops the robot and the side becomes a wall.
+  (`push_stop`, default true; launch `push_stop:=false` really goes through), so the fabric stops the robot and the side becomes a wall.
+- **Curtain seen by the camera (2026-11-25, ON by default since the same day, user; `curtain_cv:=false` = off)**:
+  `curtain_node` runs the v3 curtain YOLO model of branch `curtain_cv` (OpenVINO INT8
+  320x256, `src/maze_explore/models/`, about 10 ms a frame, no ultralytics) on the compressed
+  colour stream, 3 frames a second, only while the explorer runs and is NOT on a room /
+  object look (the camera then belongs to scene understanding and the QR scanner). It has
+  no depth: a box gives a direction. The explorer takes the first closed edge in that
+  direction (`edge_along`); after 3 frames in 3 s it is a candidate. From the centre of the
+  cell before it (or its own cell) the robot faces the edge for 3 s; a box across the middle
+  of the image on 3 frames makes that edge a `curtain`, **also where the map and the height
+  map call it a wall** (and the cell before it is then no longer a dead-end `room`). A push
+  that fails takes the claim back. The model is not accepted yet (val: 20 of 23 curtains,
+  false boxes on 2 of 51 frames without one). Do not merge `curtain_cv`: it deletes the
+  navigation code; bring files over one by one. Never run on the robot so far.
 - **Stair check (2026-11-24)**: before walking into an unvisited cell where the lidar shows
   something 0.28 m or higher, and before any stairs crossing, the robot squares up, stands
-  still and runs the teammates' depth-camera detector (`stair_levels.py`, copied from
+  still and runs the teammates' depth-camera detector (package `stairs`: `src/stairs/stairs/stair_levels.py`, copied from
   `~/stairs_detect`: treads at 12 / 24 / 36 cm, plus the triangle handrails in the lidar)
   for up to 3 s. Its verdict overrides the lidar's: `stairs` only when it confirms. Depth is
   subscribed only during the check, because one raw depth subscriber slows every stream
@@ -175,8 +190,22 @@ been explored, and the robot ends the run standing in the final cell.
   two cells (over the stair cell to the centre of the cell after) at 0.15 m/s, leave AI mode
   (AI off → manual → Move → gait → navigation mode). The stair cell is closed afterwards.
   This matches the one-cell-before, one-cell-after rule.
-- **Terrain**: no special handling. The RUG general gait (`gait:=rug`, default since 2026-11-24; `hstep` = H-Step) is used for the
-  whole run.
+- **Terrain (user, 2026-11-24; simulator only so far)**: a cell with uneven terrain is
+  entered **sideways**. Uneven = 15 or more 5 cm squares of the cell's interior at 0.06 m or
+  more above the floor, below object height (`Sense.rough`). In the cell before, the robot
+  turns on the spot until its body is square to the way in, then steps sideways to the next
+  centre at 0.10 m/s (`do_strafe`); the obstacle stop looks to that side. `terrain:=false`
+  walks in head first. The H-Step gait (`gait:=hstep`, default again since 2026-11-24, user; `rug` = RUG
+  general gear) is used for the whole run.
+  **Depth camera for the floor (user, 2026-11-25):** the lidar's lowest ray meets the floor
+  about 1.3 m ahead, so from the cell before, the next cell's floor is mostly unseen. When
+  fewer than 40 of its 121 squares have been seen (and the lidar does not already say
+  uneven), the standing depth check runs before walking in (`stair_check` action, stairs
+  only looked for when that check was due anyway). It bins the depth points of the next
+  cell into the same 5 cm squares, takes the median height per square, and calls it uneven
+  on the same 0.06 m / 15 squares rule, by majority over the frames. Its verdict beats the
+  lidar's; with too little seen the lidar's stands. Costs about 2-3 s standing and a short
+  raw-depth subscription per new cell. `terrain_depth:=false` (node parameter) turns it off.
 - **Exit**: found from the map (open edge, nothing beyond). The red line on the floor
   (`maze_info.md`) is not used.
 
@@ -189,7 +218,7 @@ Safety behaviour:
 | Something knee-high or taller 6–20 cm ahead while walking, and while pushing (`push_stop`) | stop; after 8 ticks give up the step |
 | No progress for 8 s (12 s in AI mode) | give up the step |
 | A step given up | the side becomes a wall, robot creeps back to the cell centre. In AI mode: `STOPPED`, take over by hand (`lite3_ai_off`), then `/nav/start` |
-| `/explore/stop` | `STOPPED`; `/nav/start` resumes |
+| `/explore/stop` | `STOPPED`; `/nav/start` resumes, and first sends Move → gait → navigation mode again (about 4.5 s standing), so a controller takeover or `lite3_ai_off` in between needs no `lite3_auto` (2026-11-25) |
 
 ### 3.7 Topics
 
@@ -197,9 +226,10 @@ Safety behaviour:
 |---|---|---|
 | `/nav/start`, `/explore/stop` | `std_msgs/Empty` | in |
 | `/explore/status` | `String` | `STATE cell=… job=[…] act=… why`, 10 Hz. States: `WAIT`, `READY`, `RUN`, `DONE`, `STOPPED`, `FAULT` |
-| `/explore/event` | `String` | `curtain …`, `room centre\|left\|right …`, `stairs: …`, `exit …`, each with cell and side. Meant for perception and logging |
+| `/explore/event` | `String` | `curtain …`, `room centre\|left\|right …`, `stairs: …`, `terrain: …`, `exit …`, each with cell and side. Meant for perception and logging |
 | `/explore/cells` | `MarkerArray` | visited cells and the kind of each side, frame `map` (RViz) |
 | `/maze/blind` | `Bool` | True while pushing through a curtain |
+| `/curtain/seen`, `/curtain/status` | `String` | `curtain_node` (on by default; `curtain_cv:=false` = off): JSON per camera frame with the curtain boxes and their direction; `UNAVAILABLE: why` / `IDLE` / `RUNNING` |
 | `/cmd_vel` | `Twist` | RELIABLE + TRANSIENT_LOCAL, 0.5 s lifespan. One zero, then silence, so teleop works again |
 | `/simple_cmd` | `MotionSimpleCMD` | mode and gait requests, 1.5 s apart |
 
@@ -229,6 +259,11 @@ ros2 topic pub --once /nav/start std_msgs/msg/Empty    # go
 ros2 topic pub --once /explore/stop  std_msgs/msg/Empty    # stop
 ```
 
+Navigation only: `plain:=true` = no scene understanding trigger (`junction_trigger`), no
+stairs (check and crossing; stairs are a blocked cell), curtains are walls, uneven cells are
+walked into head first. Single switches: `scene_understanding`, `stairs`, `curtains`,
+`terrain`. `plain` also turns `curtain_cv` (on by default) off. `task_reporter` keeps running (`report:=false` stops it).
+
 Other launch arguments: `auto_start`, `gait` (`hstep` / `rug`), `enter_rooms`, `v_max`,
 `stand_height`, `cloud_topic`, `fastlio`. Defaults are in `launch/explore.launch.py`.
 
@@ -253,7 +288,9 @@ Unit tests: `nice -n 19 python3 -m pytest src/<package>/test -q`. `team_percepti
 | Package | Nodes | State |
 |---|---|---|
 | `team_perception` | `depth_relay`, `qr_scanner`, `human_detector`, `poster_detector` | Guides: `launch_guide.md`, `perception_guide.md`, `data_required.md`. `challenge_ws` is the master copy; do not re-sync from Robot-Dog-Grp4 |
-| `scene_understanding` | `room_scene`, `task_reporter` | The VLM is **not wired** (`vlm` = `none`): rooms are saved and skipped by `task_reporter`. `task_reporter` (2026-11-24) maps results to the five fixed missions (`missions.py`). For now it only publishes the QR report (M04) on `/mission/task_completed` (`missions:=all`, `post:=true` + `group_id` turn the rest on) |
+| `scene_understanding` | `junction_trigger`, `room_scene` | **Connected to `maze_explore` (2026-11-24)**, started by `explore.launch.py`. `junction_trigger` takes the three views of each room / object look (compressed colour, subscribed only during the look), sends them as one 2 x 2 image with `LOOK_PROMPT` (scene type, hand tools, hazard, survivor; no QR) to the lab VLM (`192.168.10.141:8000`, images at most 1024 x 768, 2 s cooldown) and publishes `/scene/result`. `scene_understanding:=false` turns it off. `room_scene` is the old path, not started |
+| `task_reporter` (own package, user 2026-11-24) | `task_reporter` | Takes `/scene/result` (scene understanding) and `/qr/read` (`qr_scanner`), maps them to the five missions (`missions.py`), checks the format (`missions.check`) and POSTs each report as `group04_grp4` to `http://192.168.10.141:8001/task_report_B` (course B since 2026-11-25, user; practice mode, live since 2026-11-24; the reply carries the per-field evaluation). Every report carries `pos`, M04 too (user). `pos` is always the centre of the cell the robot is LOOKING AT (user, 2026-11-25), taken from the explorer's look events and from its status while the job is a look, so both coordinates are whole multiples of 1.02; never where the robot stands. One answer per mission: M01 only for the object the mission asks for (`m01_object`, default `hand_tools`; a setting because the missions may still change, user 2026-11-24), M02 for a hazard sign (`m02_hazard`, default any); the first sighting holds it. Everything else seen is recorded on `/mission/sightings`, not submitted. Imports nothing from the other packages. `report:=false` turns it off |
+| QR during looks | `qr_scanner` (in `team_perception`) | `explore.launch.py` starts one (`qr:=false` = off) with `on_demand`: its camera is subscribed, and every frame fully scanned, only while `/explore/status` shows a look job, the same moment scene understanding takes its views. Do not run `robot.launch.py` as well (a second scanner). It ends with `maze_explore` (user, 2026-11-24): the launch interrupts it when the `maze_explorer` process exits, and it stops itself when the launch dies in any way (`EXIT_WITH_PARENT`, plus a parent check every 2 s). 2026-11-24 10:54 frame: the code on the survivor poster was about 35 px wide from the cell before and the decoder did not even locate it |
 | `datasets/curtain` | one-class curtain YOLO set | See its `README.md` |
 
 **The gap to close.** These packages were written against the old explorer and still
@@ -263,10 +300,11 @@ listen to its topics, which nothing publishes now:
 |---|---|---|
 | `/maze/perceive`, `/maze/status` (`run_gate.py`) | when to run image work | `/explore/event`, `/explore/status` |
 | `/maze/grid` (`poster_detector`) | cell grid for survivor positions | nothing yet |
-| `/scene/capture` (`room_scene`, `task_reporter`) | room views to analyse | `room centre\|left\|right` events |
+| `/scene/capture` (`room_scene`) | room views to analyse | `room centre\|left\|right` events (used by `junction_trigger` and `task_reporter`) |
 | `/qr/unread`, `/perception/look_request` | asks the explorer to face something | not subscribed |
 
-Until this is bridged, a `maze_explore` run scores navigation points only.
+Scene understanding and reporting are bridged (table above). Still open: `poster_detector`
+and the `/qr/unread` / look-request path.
 
 Decisions from the user that still hold:
 
@@ -279,6 +317,9 @@ Decisions from the user that still hold:
   code. The survivor WITH the QR code is M03 and its decoded text is M04 (reported exactly
   as decoded, e.g. "Please help me."); the survivor WITHOUT one is M05. The QR text is no
   longer a hint to another survivor's room.
+  While no code has been read, `task_reporter` sends the first survivor found as M03 and
+  the second as M05 (user, 2026-11-25); a code read later puts M03 in its room and both go
+  out again.
 - Detect QR codes and survivors only at dead ends (rooms); plain QR reading may run always.
 - The exit is a plain opening, never a curtain or stairs.
 
@@ -300,10 +341,13 @@ Decisions from the user that still hold:
   `robot_challenge_workspace` is the main repo; PRs go to `main`.
 - Never commit bags (`*.db3`), `runs/`, `maps/`, `logs/`, `build/`, `install/`, `log/`.
 - Logs go to `~/challenge_ws/logs` (`ros/` through the `~/.ros/log` link). A daily cron job
-  deletes anything older than 7 days there, except `cpu/` and `junctions/`.
+  deletes anything older than 7 days there, except `cpu/` and `junctions/`. Since
+  2026-11-25 every `explore.launch.py` run has one folder, `logs/ros/<date>-<time>-…/`, with
+  `launch.log` and each node's log named after the node (`maze_explorer.log`, …). Logs of
+  nodes started with `ros2 run` stay at the top of `logs/ros/` as `<node>_<date-time>_<pid>.log`.
 - Bags: `runs/ROS_bags/ROSBAG_GUIDE.md`, aliases in `runs/ROS_bags/aliases.sh`. Hand-driven
   data run: `explore_check`, `explore.launch.py explore:=false`, then `rec_manual <name>`
-  (guide 2.6). The recorder checks sensor rates before and after, compresses with zstd, and
+  (guide 2.2). The recorder checks sensor rates before and after, compresses with zstd, and
   refuses depth.
 - Python on the robot: apt `cv2` 4.5.4 only (no pip OpenCV), numpy pinned to 1.24.4,
   OpenVINO 2024.6 for YOLO.

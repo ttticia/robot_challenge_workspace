@@ -21,6 +21,15 @@ source "$WS/install/local_setup.bash"
 export ROS_DOMAIN_ID=$DOMAIN ROS_LOCALHOST_ONLY=1
 export FASTRTPS_DEFAULT_PROFILES_FILE="$PKG/config/fastdds_udp.xml"
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+# The robot's own stack runs on this computer, and a simulator here takes the CPU it needs
+# (2026-11-25 07:26: a sim running through robot bag run5 left the camera at 12.6 Hz and the
+# lidar at 8.7 Hz, against 29.7 / 10 in run4). The sim never runs Fast-LIO (fastlio:=false),
+# so a fastlio_mapping process means a robot launch: do not start, and stop if one appears.
+robot_stack() { pgrep -x fastlio_mapping >/dev/null; }
+if robot_stack; then
+    echo "A robot launch is running (fastlio_mapping): not starting the simulator. Run it when the robot is done."
+    exit 4
+fi
 if [ -n "$(timeout 15 ros2 node list --no-daemon 2>/dev/null)" ]; then
     echo "ROS_DOMAIN_ID=$DOMAIN is busy: use another domain"; exit 3
 fi
@@ -45,7 +54,8 @@ RESULT=timeout
 while [ $SECONDS -lt $END ]; do
     sleep 5
     kill -0 $LAUNCH 2>/dev/null || { RESULT="launch died"; break; }
-    S=$(grep -aoE "\] (DONE|FAULT|STOPPED): .*" "$LOG/launch.log" | tail -1)
+    robot_stack && { RESULT="stopped: a robot launch started (fastlio_mapping)"; break; }
+    S=$(grep -aoE "\]:? (DONE|FAULT|STOPPED): .*" "$LOG/launch.log" | tail -1)
     [ -n "$S" ] && { RESULT="$S"; break; }
 done
 echo "result after ${SECONDS}s: $RESULT"

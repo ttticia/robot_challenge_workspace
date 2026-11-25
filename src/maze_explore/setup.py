@@ -13,6 +13,8 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
+        ('share/' + package_name + '/models/curtain_int8_320x256_openvino_model',
+         glob('models/curtain_int8_320x256_openvino_model/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -22,5 +24,6 @@ setup(
     entry_points={'console_scripts': [
         'wall_scan = maze_explore.wall_scan:main',
         'maze_explorer = maze_explore.explorer:main',
+        'curtain_node = maze_explore.curtain_node:main',
     ]},
 )

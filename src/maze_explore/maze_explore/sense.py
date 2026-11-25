@@ -110,7 +110,7 @@ class Sense:
         self.grid, self.occ, self.hm = grid, occ, heights
         p = dict(wall_frac=0.40, open_frac=0.15, seen_frac=0.70, curtain_frac=0.50,
                  blocked_frac=0.50, stair_top=(0.33, 0.60), stair_front=(0.08, 0.42),
-                 exit_depth=2.0, object_squares=8,
+                 exit_depth=2.0, object_squares=8, terrain_min=0.06, terrain_squares=15,
                  wall_top_min=0.50)
         p.update(params or {})
         self.p = p
@@ -147,6 +147,45 @@ class Sense:
         object_squares 5 cm squares of its interior were seen at object height."""
         x, y = self.grid.box(cell, d, INSIDE, INSIDE_DEPTH)
         return int(self.hm.obj_at(x, y).sum()) >= self.p['object_squares']
+
+    def floor_seen(self, cell, d):
+        """How many of the 5 cm squares that rough() looks at the lidar has seen at all."""
+        x, y = self.grid.box(cell, d, INSIDE, INSIDE_DEPTH)
+        return int(np.isfinite(self.hm.top_at(x, y)).sum())
+
+    def rough(self, cell, d):
+        """Uneven terrain in the neighbour on side d: at least terrain_squares 5 cm squares
+        of its interior stand terrain_min or more above the floor, below object height."""
+        x, y = self.grid.box(cell, d, INSIDE, INSIDE_DEPTH)
+        t = self.hm.top_at(x, y)
+        return int(((t >= self.p['terrain_min']) & (t < self.hm.obj)).sum()) >= self.p['terrain_squares']
+
+    def rough_from_points(self, cell, d, x, y, h, min_seen=40, min_points=3):
+        """Uneven terrain in the neighbour on side d, from dense points (the depth camera):
+        map-frame x, y and height above the floor h. Same squares and thresholds as rough(),
+        but each square takes the MEDIAN of its points (dense data: one stray point must not
+        decide). Returns (rough, squares seen); rough is None with fewer than min_seen squares."""
+        x, y, h = (np.asarray(v, float).ravel() for v in (x, y, h))
+        b = nb(cell, d)
+        bu, bv = b[0] * self.grid.size, b[1] * self.grid.size
+        u, v = self.grid.to_grid(x, y)
+        half = INSIDE[-1] + 0.025                  # the squares rough() samples, edge to edge
+        ok = (np.abs(u - bu) <= half) & (np.abs(v - bv) <= half) & np.isfinite(h)
+        if not ok.any():
+            return None, 0
+        iu = np.floor((u[ok] - bu + half) / 0.05).astype(int)
+        iv = np.floor((v[ok] - bv + half) / 0.05).astype(int)
+        key = iu * 1000 + iv
+        order = np.argsort(key)
+        key, hs = key[order], h[ok][order]
+        starts = np.r_[0, np.nonzero(np.diff(key))[0] + 1]
+        counts = np.diff(np.r_[starts, len(key)])
+        med = np.array([np.median(hs[s:s + n]) for s, n in zip(starts, counts)])
+        med = med[counts >= min_points]
+        if len(med) < min_seen:
+            return None, int(len(med))
+        n = int(((med >= self.p['terrain_min']) & (med < self.hm.obj)).sum())
+        return n >= self.p['terrain_squares'], int(len(med))
 
     def outside(self, cell, d):
         """Open edge with no walls for exit_depth beyond it, nor beside the next cell."""

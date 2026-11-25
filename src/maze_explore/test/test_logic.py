@@ -146,3 +146,73 @@ def test_terrain_and_walls_are_not_objects():
         for _ in range(5):
             s.hm.add(x.ravel(), y.ravel(), np.full(x.size, 0.53))
     assert s.kind((0, 0), 0, may_exit=False) == 'free'
+
+
+def test_uneven_cell_is_rough_and_flat_floor_is_not():
+    walls = [((0, 0), 1), ((0, 0), 3), ((0, 0), 2), ((1, 0), 1), ((1, 0), 3)]
+    g, s = world(walls)
+    cx, cy = g.centre((1, 0))
+    xs, ys = np.meshgrid(cx + np.arange(-0.45, 0.46, 0.05), cy + np.arange(-0.45, 0.46, 0.05))
+    s.hm.add(xs.ravel(), ys.ravel(), np.full(xs.size, 0.02))          # floor with height noise
+    for d in (1, 3):                                     # side walls, smeared 6 cm inwards
+        x, y = g.box((1, 0), d, np.linspace(-0.5, 0.5, 40), [-0.06, 0.0])
+        s.hm.add(x.ravel(), y.ravel(), np.full(x.size, 0.53))
+    assert not s.rough((0, 0), 0)
+    tx, ty = np.meshgrid(cx + np.arange(-0.2, 0.21, 0.05), cy + np.arange(-0.2, 0.21, 0.05))
+    s.hm.add(tx.ravel(), ty.ravel(), np.full(tx.size, 0.10))          # a 10 cm tile
+    assert s.rough((0, 0), 0)
+    assert s.kind((0, 0), 0, may_exit=False) == 'free'                # still walked into
+    assert not s.rough((0, 0), 1)                                     # nothing seen there
+
+
+def test_camera_sighting_is_placed_on_the_first_closed_edge():
+    from maze_explore.curtain_node import bearing, centred, decode, edge_along, watching
+    # a corridor along +x: cells (0,0) (1,0) (2,0), closed at the far end of (2,0)
+    walls = [((0, 0), 1), ((0, 0), 3), ((0, 0), 2), ((1, 0), 1), ((1, 0), 3),
+             ((2, 0), 1), ((2, 0), 3), ((2, 0), 0)]
+    g, s = world(walls)
+    assert edge_along(g, s, (0.0, 0.0, 0.0), 0.0, max_range=3.0) == ((2, 0), 0)   # straight ahead
+    assert edge_along(g, s, (1.02, 0.0, 0.0), 0.0) == ((2, 0), 0)                # from the cell before
+    assert edge_along(g, s, (0.0, 0.0, 0.0), np.pi / 2) == ((0, 0), 1)           # to the left
+    assert edge_along(g, s, (0.0, 0.0, 0.0), 0.0, max_range=1.0) is None         # too far to tell
+    assert bearing(0.5) == 0.0 and bearing(0.0) > 0.55 and bearing(1.0) < -0.55   # + = left
+    assert centred({'conf': 0.8, 'box': [0.2, 0.1, 0.7, 0.9]}, 0.5)
+    assert not centred({'conf': 0.8, 'box': [0.6, 0.1, 0.9, 0.9]}, 0.5)           # off to one side
+    assert not centred({'conf': 0.3, 'box': [0.2, 0.1, 0.7, 0.9]}, 0.5)
+    assert watching('RUN cell=(1, 0) job=[visit cell (1, 0) side 0 via 0 cells] act=drive ')
+    assert not watching('RUN cell=(1, 0) job=[look cell (1, 0) side 1 via 0 cells] act=hold ')
+    assert not watching('READY cell=None job=[] act=- send /nav/start')
+    # two overlapping boxes and a weak one -> the strong one, back in frame pixels
+    pred = np.array([[160, 162, 40], [128, 128, 30], [100, 104, 20], [80, 84, 20],
+                     [0.9, 0.6, 0.2]], np.float32)
+    out = decode(pred, 0.5, 0.5, 0, 8, (480, 640, 3))
+    assert len(out) == 1 and abs(out[0][1] - 0.9) < 1e-6
+    assert np.allclose(out[0][0], (220, 160, 420, 320), atol=1)
+
+
+def test_curtain_node_rests_while_the_explorer_turns():
+    from maze_explore.curtain_node import watching
+    assert not watching('RUN cell=(1, 0) job=[visit cell (1, 0) side 0 via 0 cells] act=turn ')
+    assert watching('RUN cell=(1, 0) job=[visit cell (1, 0) side 0 via 0 cells] act=cv_verify ')
+    # inside a look only for the explorer's own curtain check before the views
+    assert watching('RUN cell=(1, 0) job=[look cell (1, 0) side 1 via 0 cells] act=cv_verify ')
+    assert not watching('RUN cell=(1, 0) job=[look cell (1, 0) side 1 via 0 cells] act=stair_check ')
+
+
+def test_uneven_terrain_from_dense_depth_points():
+    walls = [((0, 0), 1), ((0, 0), 3), ((0, 0), 2), ((1, 0), 1), ((1, 0), 3)]
+    g, s = world(walls)
+    rng = np.random.default_rng(1)
+    cx, cy = g.centre((1, 0))
+    x, y = np.meshgrid(cx + np.arange(-0.45, 0.45, 0.01), cy + np.arange(-0.45, 0.45, 0.01))
+    x, y = x.ravel(), y.ravel()
+    floor = rng.normal(0.0, 0.01, x.size)                  # flat floor, 1 cm depth noise
+    floor[::200] = 0.09                                    # and a few stray points
+    rough, seen = s.rough_from_points((0, 0), 0, x, y, floor)
+    assert rough is False and seen >= 100
+    tile = floor.copy()
+    tile[(np.abs(x - cx) < 0.2) & (np.abs(y - cy) < 0.2)] += 0.10   # a 10 cm tile in the middle
+    assert s.rough_from_points((0, 0), 0, x, y, tile)[0] is True
+    few = slice(0, 300)                                    # only a strip seen: no verdict
+    assert s.rough_from_points((0, 0), 0, x[few], y[few], tile[few])[0] is None
+    assert s.floor_seen((0, 0), 0) == 0                    # the lidar has seen none of it

@@ -21,7 +21,13 @@ Put the robot in the start cell facing roughly into the maze. It may be off-cent
 about 0.3 m) and at an angle (up to about 30 degrees): the walls are used to line up.
 
 Useful launch arguments: `drive:=false` (decides and logs, sends nothing), `explore:=false`
-(mapping only, for hand-driven bags), `v_max:=0.15`, `gait:=hstep` (default is `rug`, the RUG general gear).
+(mapping only, for hand-driven bags), `v_max:=0.15`, `gait:=rug` (RUG general gear; the default is `hstep`, H-Step, since 2026-11-24).
+
+Navigation only: `plain:=true` turns off the scene understanding trigger, stairs, curtains and
+terrain handling in one go. Each also has its own switch: `scene_understanding:=false`,
+`stairs:=false` (no depth check, no AI mode; stairs are a blocked cell), `curtains:=false` (a
+curtain is a wall: not faced, not pushed), `terrain:=false` (uneven cells are walked into head
+first). `task_reporter` is not touched by `plain` (`report:=false` turns it off).
 
 Watch `ros2 topic echo /explore/status --field data` and the launch log (`job: ...` lines).
 RViz, live or on a replayed bag: `rviz2 -d config/explore.rviz` shows `/map` and `/explore/cells`
@@ -88,12 +94,12 @@ The start cell is closed as soon as the robot has left it.
   mark it a wall.
 - **Stair check**: before stepping into a cell where the lidar shows something 0.28 m or
   higher, and before crossing stairs, the robot stands still facing it and looks with the
-  depth camera for up to 3 s (`stair_levels.py`, the detector from `~/stairs_detect`: treads
+  depth camera for up to 3 s (`stair_levels.py` in the `stairs` package, `src/stairs`; the detector from `~/stairs_detect`: treads
   at 12 / 24 / 36 cm and the triangle handrails). Only a confirmed look makes it stairs.
   The depth stream is on only for those seconds, because it slows every other stream.
 - **Stairs**: square up, then manual mode -> AI state -> AI basic gait, walk two cells
   straight (over the stairs cell), then AI off -> manual -> move mode -> walking gait -> auto mode.
-- **Start**: move mode -> walking gait (RUG general by default) -> auto mode, creep 10 cm, line the grid up.
+- **Start**: move mode -> walking gait (H-Step by default) -> auto mode, creep 10 cm, line the grid up.
 
 ### 6. Safety stops
 - `/odom` jumping (0.4 m, or faster than 1.5 m/s): **FAULT**, latched until relaunch. This is
@@ -106,7 +112,22 @@ The start cell is closed as soon as the robot has left it.
 
 `explore.launch.py` starts the VLM observer by default during exploration.
 The observer uses the explorer's centre, left and right holds for room and
-object looks, stitches the RGB views left–centre–right and submits one prompt.
+object looks, puts the three RGB views into one 2 x 2 image (left | centre over
+right | empty, 1024 x 768, the server's limit) and submits one short prompt
+(`LOOK_PROMPT` in `scene_prompt.py`) that asks only for what the missions score:
+scene type, hand tools, hazard sign, survivor (no QR). The reported position is the
+cell the explorer says it looked into. Each view is taken 0.6 s into its hold.
+
+While the robot holds a look, `qr_scanner` (team_perception, started here, `qr:=false` =
+off) reads QR codes from the same camera at the same time; its camera subscription exists
+only during the look. Do not also run `team_perception`'s `robot.launch.py`.
+
+Each analysed look goes out on `/scene/result`. `task_reporter` (a package of its own,
+also started here, `report:=false` = off) turns those and the QR text on `/qr/read`
+into the five mission reports and POSTs each one, as `group_id`
+(`group04_grp4`), to `report_url` (default `http://192.168.10.141:8001/task_report_B`,
+course B). Every report has the seven keys and a position. The QR report needs no VLM.
+The server's reply, with its per-field evaluation, is printed in the launch terminal.
 Individual frames, the stitched JPEG and `results.jsonl` are saved below
 `~/challenge_ws/logs/scene/junctions_*`. Use `scene_understanding:=false` to
 run without the VLM or `scene_camera_topic:=...` to select another RGB topic.
@@ -142,4 +163,18 @@ terminal shows `Camera on for an explorer look` and `Camera off`.
 - The object rule looks at height only. Something lower than 0.38 m in a cell is walked into,
   and a person standing in a cell closes it.
 - Whether the Lite3 follows `/cmd_vel` in AI state is still unverified on the robot.
-- Terrain gets no special speed or gait.
+- **Curtain seen by the camera** (on by default since 2026-11-25; `curtain_cv:=false` = off): `curtain_node` runs the
+  curtain YOLO model (branch `curtain_cv`, `models/curtain_int8_320x256_openvino_model`) on the
+  colour camera outside room checks and publishes `/curtain/seen`. The explorer places each
+  sighting on the first closed edge in its direction, verifies it by facing that edge for 3 s
+  from a cell centre, and then treats the edge as a curtain even if it maps as a wall.
+- **Curtain edges are latched** (2026-11-25): once read as a curtain an edge stays one (both sides), even if the fabric later moves and the map shows it open or as a plain wall. A failed crossing or the first grid fit undoes it.
+- **Curtains are crossed sideways** (2026-11-25): quarter turn on the spot, sideways to the
+  centre of the cell behind, quarter turn back on the spot.
+- **Terrain** (2026-11-24, simulator only so far): a cell is uneven when 15 or more of the 5 cm
+  squares of its interior stand 0.06 m or more above the floor (below object height;
+  `terrain_min`, `terrain_squares`). The robot enters it **sideways**: at the centre of the cell
+  before it turns on the spot until its body is square to the way in (the nearer quarter turn),
+  then steps sideways to the next centre at 0.10 m/s (`side_speed`), with its length centred in
+  the opening (`side_offset`). The obstacle stop then looks to the side it steps towards.
+  It publishes `terrain: sideways into cell ...` on `/explore/event`. No special gait.

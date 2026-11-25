@@ -29,3 +29,5 @@ datasets/*.MOV
 
 # model weights and caches written at run time
 models/
+# ... except the curtain model the explorer stack ships (3.3 MB, from branch curtain_cv)
+!src/maze_explore/models/
