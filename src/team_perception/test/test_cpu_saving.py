@@ -99,3 +99,19 @@ def test_running_ignores_perceive():
     g.on_status('DEAD_END: holding')
     g.on_perceive(True)
     assert g.running and g.active
+
+
+def test_gate_follows_the_v2_explorer_looks():
+    g = RunGate(DEFAULT_PAUSE)
+    look = 'RUN cell=(1, 0) job=[look cell (1, 0) side 3 via 0 cells] act=hold '
+    g.on_explore_status('RUN cell=(0, 0) job=[visit cell (0, 0) side 0 via 0 cells] act=drive ')
+    assert g.perceive is False and not g.active        # known explorer, no look: off
+    g.on_explore_status('RUN cell=(0, 0) job=[look cell (1, 0) side 3 via 1 cells] act=drive ')
+    assert not g.active                                # still walking to the look
+    g.on_explore_status(look)
+    assert g.active
+    g.look_seen -= 10.0                                # the explorer went quiet mid-look
+    assert not g.active
+    g.on_explore_status(look)
+    g.on_explore_status('FAULT cell=(1, 0) job=[look cell (1, 0) side 3 via 0 cells] act=- x')
+    assert not g.active

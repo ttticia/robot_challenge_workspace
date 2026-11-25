@@ -85,6 +85,9 @@ class QrScanner(Node):
         #                                inside the dead-end window
         p('read_everywhere', True)     # outside the window still read codes (plain decodes)
         p('detect', False)             # QR detection (full scans, /qr/unread); off = read only
+        p('on_demand', False)          # camera subscribed only inside the gate's window
+        #                                (maze_explore: during a room / object look). Needs
+        #                                explore_status_topic (run_gate.py)
         p('roam_rate_hz', 5.0)         # ... at most this many frames a second (0 = rate_hz)
         p('full_scan_every', 5)        # every Nth decode also tries contrast boost + 2x
         #                                upscale (finds small/far codes, ~5x slower); 0 = never
@@ -131,13 +134,15 @@ class QrScanner(Node):
 
         if g('image_transport') == 'compressed':
             image_topic = g('image_topic').rstrip('/') + '/compressed'
-            self.create_subscription(CompressedImage, image_topic, self.on_image,
-                                     qos_profile_sensor_data)
+            self.camera = [(CompressedImage, image_topic, self.on_image)]
         else:
             image_topic = g('image_topic')
-            self.create_subscription(Image, image_topic, self.on_image, qos_profile_sensor_data)
-        self.create_subscription(CameraInfo, g('camera_info_topic'), self.on_info,
-                                 qos_profile_sensor_data)
+            self.camera = [(Image, image_topic, self.on_image)]
+        self.camera.append((CameraInfo, g('camera_info_topic'), self.on_info))
+        self.camera_subs = []
+        self.on_demand = bool(g('on_demand'))
+        if not self.on_demand:
+            self.open_camera()
         if self.use_depth:
             self.create_subscription(Image, g('depth_topic'), self.on_depth,
                                      qos_profile_sensor_data)
@@ -164,6 +169,12 @@ class QrScanner(Node):
 
         # gate.active: QR detection (dead-end window); gate.running: reading (run_gate.py)
         self.gate = run_gate.attach(self, 'qr_scanner detection')
+        if self.on_demand:
+            self.create_timer(0.2, self.follow_gate)
+            # Started by a launch file for one run: when that launch is gone (it failed or
+            # was killed) this node must not stay behind on the robot's ROS domain.
+            self.parent = os.getppid()
+            self.create_timer(2.0, self.check_parent)
 
         self.running = True
         self.worker = threading.Thread(target=self.decode_loop, daemon=True)
@@ -175,6 +186,29 @@ class QrScanner(Node):
     def detecting(self):
         """Dead-end window: full scans + /qr/unread (FACING_QR); never with detect off."""
         return self.detect_on and self.gate.active
+
+    def open_camera(self):
+        if not self.camera_subs:
+            self.camera_subs = [self.create_subscription(kind, topic, cb, qos_profile_sensor_data)
+                                for kind, topic, cb in self.camera]
+
+    def check_parent(self):
+        if os.getppid() != self.parent:
+            self.get_logger().warn('the launch that started this scanner is gone: stopping')
+            raise SystemExit(0)
+
+    def follow_gate(self):
+        """on_demand: the camera streams are ours only while the explorer is on a look."""
+        want = self.gate.perceive is not None and self.gate.active
+        if want and not self.camera_subs:
+            self.open_camera()
+            self.get_logger().info('camera on: reading QR codes during this look')
+        elif not want and self.camera_subs:
+            for sub in self.camera_subs:
+                self.destroy_subscription(sub)
+            self.camera_subs = []
+            self.latest_img = None
+            self.get_logger().info('camera off')
 
     def on_image(self, msg):
         if not self.detecting():
@@ -377,13 +411,31 @@ class QrScanner(Node):
         super().destroy_node()
 
 
+def exit_with_parent():
+    """EXIT_WITH_PARENT=<pid of the launch> (explore.launch.py): have the kernel send this
+    process SIGTERM when that parent dies, however it dies, so a scanner never outlives its
+    launch. Linux only; without the variable nothing changes."""
+    parent = os.environ.get('EXIT_WITH_PARENT', '')
+    if not parent.isdigit():
+        return
+    import ctypes
+    import signal
+    try:
+        ctypes.CDLL('libc.so.6', use_errno=True).prctl(1, signal.SIGTERM)   # PR_SET_PDEATHSIG
+    except OSError:
+        return
+    if os.getppid() != int(parent):          # it died before the line above
+        raise SystemExit('qr_scanner: the launch that started it is gone, not starting')
+
+
 def main():
+    exit_with_parent()
     cv2.setNumThreads(1)               # OpenCV's pool would spin on every core per frame
     rclpy.init()
     node = QrScanner()
     try:
         rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
+    except (KeyboardInterrupt, ExternalShutdownException, SystemExit):
         pass
     node.destroy_node()
     rclpy.try_shutdown()

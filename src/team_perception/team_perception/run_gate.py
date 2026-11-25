@@ -26,11 +26,22 @@ Two levels (user 2026-11-20, qr_scanner):
 
 Parameters (declared by attach()): status_topic, pause_states, perceive_topic ('' = ignore
 /maze/perceive: run everywhere but pause_states).
+
+maze_explore (the v2 explorer, 2026-11-24) has neither topic. With `explore_status_topic`
+set (/explore/status, "STATE cell=(i, j) job=[...] act=..."), the window is "the explorer is
+on a room / object look in the cell it stands in": the same moment scene understanding takes
+its three views, so both work on the room at the same time. The window closes
+EXPLORE_STALE s after the last status that showed a look (explorer stopped or gone).
 """
+import re
+import time
+
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
 
 DEFAULT_PAUSE = ['STARTING', 'STAIRS', 'AT_STAIRS', 'CURTAIN', 'AT_CURTAIN']
+EXPLORE_LOOK = re.compile(r'RUN .*job=\[look cell .* via 0 cells\]')
+EXPLORE_STALE = 3.0
 LATCHED = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
@@ -48,9 +59,12 @@ class RunGate:
         self.logger, self.name = logger, name
         self.state = None              # None = no status seen: run
         self.perceive = None           # None = no /maze/perceive seen: pause_states rule
+        self.look_seen = None          # monotonic time of the last look status (maze_explore)
 
     @property
     def active(self):
+        if self.look_seen is not None:
+            return bool(self.perceive) and time.monotonic() - self.look_seen <= EXPLORE_STALE
         if self.perceive is not None:
             return self.perceive
         return self.state is None or self.state not in self.pause
@@ -66,6 +80,16 @@ class RunGate:
         if self.logger is not None and self.active != was:
             self.logger.info(f'{self.name} {"ON" if self.active else "off"} '
                              '(/maze/perceive: dead ends only)')
+
+    def on_explore_status(self, status, now=None):
+        """One /explore/status line from maze_explore."""
+        look = EXPLORE_LOOK.match(str(status)) is not None
+        if look or self.look_seen is None:
+            self.look_seen = time.monotonic() if now is None else now
+        if look != bool(self.perceive) or self.perceive is None:
+            self.perceive = look
+            if self.logger is not None:
+                self.logger.info(f'{self.name} {"ON (explorer look)" if look else "off"}')
 
     def on_status(self, status):
         was = self.active
@@ -87,6 +111,10 @@ def attach(node, name='perception'):
     gate = RunGate(node.get_parameter('pause_states').value, node.get_logger(), name)
     if topic:
         node.create_subscription(String, topic, lambda m: gate.on_status(m.data), LATCHED)
+    node.declare_parameter('explore_status_topic', '')
+    explore = node.get_parameter('explore_status_topic').value
+    if explore:
+        node.create_subscription(String, explore, lambda m: gate.on_explore_status(m.data), 10)
     perceive = node.get_parameter('perceive_topic').value
     if perceive:
         node.create_subscription(Bool, perceive, lambda m: gate.on_perceive(m.data), LATCHED)

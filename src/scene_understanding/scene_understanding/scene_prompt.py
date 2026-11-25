@@ -73,6 +73,22 @@ Output only minified JSON. Use these required fields at the top level:
 {"direction":"right","status":"unknown","notes":""}],"mission_matches":[]}
 """
 
+# Prompt for the explorer's room / object looks. It asks only for what the five missions
+# score (scene type, objects, hazard sign, survivor) and for a four-key answer. All five
+# object labels are asked for, not only M01's hand_tools: the 10:54 run named a room
+# "clinic" from its medical equipment and yet recorded no object (user, 2026-11-24). (QR codes
+# are left to qr_scanner, which decodes them exactly; removed on the user's word 2026-11-24): the
+# reply time is mostly the length of the answer. Measured on the lab server 2026-11-24 on
+# the 10:03 run's frames: 2.4-9 s, against 18-22 s for SCENE_PROMPT with its path notes.
+LOOK_PROMPT = """The image is a grid of three views from a small robot's camera inside a search-and-rescue training arena: top left = looking left, top right = looking straight ahead, bottom left = looking right (bottom right is empty). The views overlap, so the same thing may appear twice. Props may be toys, miniatures or printed pictures: treat them as the real thing. Ignore everything outside the arena's low grey partition walls (the hall, real people, furniture behind the walls).
+Answer with minified JSON only, with exactly these keys:
+{"scene_type":"unknown","objects":[],"hazard":"","survivor":false}
+scene_type: the room that the props set up, one of kitchen (cooking or food-preparation equipment), market (displayed goods, produce, stalls, shelves of products), workshop (workbench, tools), clinic (medical equipment, bed), cleaning_room (cleaning supplies or equipment), clothes_shop (clothes on racks or hangers, mannequins), fitness_centre (exercise equipment), furniture_shop (sofas, beds, tables, chairs or cabinets on display). Use "unknown" if no such props are visible.
+objects: every kind of these that is visible, by exactly these names: medical_equipment (first aid kit, bandages, stethoscope, syringe, medicine, stretcher, wheelchair, hospital bed, drip stand), hand_tools (wrench, hammer, pliers, screwdriver, saw), food (fruit, bread, packaged or canned food), water (water bottles, jugs, dispensers), utensils (cutlery, ladle, spatula, pots, pans). [] if none.
+hazard: the symbol on a warning sign, one of high_voltage (lightning bolt), radioactive (trefoil), chemical (corrosion or flask), biological (biohazard), flammable (flame). Use "" if there is no warning sign or it shows another symbol.
+survivor: true if a photo, poster or cut-out showing a person is displayed inside the arena.
+"""
+
 # Competition reporting vocabulary (challenge booklet, task reporting section).
 ROOM_SCENE_TYPES = ('clothes_shop', 'fitness_centre', 'kitchen', 'market',
                     'workshop', 'clinic', 'cleaning_room', 'furniture_shop')
@@ -82,6 +98,7 @@ OBJECT_LABELS = ('medical_equipment', 'hand_tools', 'food', 'water',
                  'utensils')
 HAZARD_LABELS = ('high_voltage', 'radioactive', 'chemical', 'biological',
                  'flammable')
+M01_OBJECT = 'hand_tools'       # M01's target is fixed (booklet update 2026-11-24)
 # Allowed label per task_type ('' only for survivor and qr).
 TASK_LABELS = {
     'object': OBJECT_LABELS,
@@ -101,7 +118,7 @@ MISSIONS = {
 # Candidate task_ids per task_type (M03 / M05 are two different survivors).
 TASK_IDS = {'object': ('M01',), 'hazard': ('M02',),
             'survivor': ('M03', 'M05'), 'qr': ('M04',)}
-TASK_REPORT_URL = 'http://192.168.10.141:8001/task_report'
+TASK_REPORT_URL = 'http://192.168.10.141:8001/task_report_B'    # _B = course B
 # Arena grid: cell centres 1.02 m apart, (0, 0) = start cell centre, +x the
 # robot's initial forward direction, +y its left.
 CELL_SIZE = 1.02
@@ -127,6 +144,70 @@ def build_prompt(three_view=False):
             'Use all panels for mission evidence.\n' + SCENE_PROMPT
         )
     return SCENE_PROMPT
+
+
+def build_look_prompt():
+    """Prompt for a 2 x 2 grid of the explorer's left, centre and right views."""
+    return LOOK_PROMPT
+
+
+def extract_look_result(response):
+    """Unwrap the answer to LOOK_PROMPT into a scene observation.
+
+    Returns the four answers, cleaned to the booklet's vocabulary, plus the
+    `mission_matches` list that mission_reports() reads (and an empty `paths`,
+    which a look does not ask for). Raises ValueError for an unusable reply.
+    """
+    data = parse_scene_json(response)
+    if data is not None and data.get('success') is False:
+        raise ValueError('Lab VLM server reported failure')
+    if data is not None and 'result' in data:
+        data = parse_scene_json(data['result'])
+    if data is None or 'scene_type' not in data:
+        raise ValueError('VLM reply did not contain a look observation')
+
+    def flag(key):
+        value = data.get(key)
+        return value is True or str(value).strip().lower() == 'true'
+
+    scene_type = str(data.get('scene_type') or '').strip().lower()
+    hazard = str(data.get('hazard') or '').strip().lower()
+    seen = data.get('objects')
+    seen = [str(o).strip().lower() for o in seen] if isinstance(seen, list) else []
+    if flag('hand_tools'):                       # the earlier form of the answer
+        seen.append('hand_tools')
+    objects = [label for label in OBJECT_LABELS if label in seen]
+    scene = {
+        'scene_type': scene_type if scene_type in ROOM_SCENE_TYPES else 'unknown',
+        'objects': objects,
+        'hand_tools': 'hand_tools' in objects,
+        'hazard': hazard if hazard in HAZARD_LABELS else '',
+        'survivor': flag('survivor'),
+        'paths': [],
+        'mission_matches': [],
+    }
+    add = scene['mission_matches'].append
+    for label in objects:
+        add({'kind': 'object', 'label': label, 'evidence': label.replace('_', ' ') + ' seen',
+             'message': ''})
+    if scene['hazard']:
+        add({'kind': 'hazard', 'label': scene['hazard'], 'evidence': 'warning sign', 'message': ''})
+    if scene['survivor']:
+        add({'kind': 'survivor', 'label': '', 'evidence': 'picture of a person', 'message': ''})
+    return scene
+
+
+def look_cell(cell, side):
+    """The cell looked into from `cell` through `side` (0 = the start heading, 1 = left,
+    2 = back, 3 = right)."""
+    di, dj = ((1, 0), (0, 1), (-1, 0), (0, -1))[int(side) % 4]
+    return (int(cell[0]) + di, int(cell[1]) + dj)
+
+
+def look_cell_position(cell, side, cell_size=CELL_SIZE):
+    """Arena position [x, y] of that cell's centre, 2 decimals."""
+    i, j = look_cell(cell, side)
+    return [round(i * cell_size, 2), round(j * cell_size, 2)]
 
 
 def parse_scene_json(response):
@@ -199,7 +280,8 @@ def validate_scene_result(data):
     if kind == 'qr':
         if not data['message'].strip():
             return False, 'QR requires the decoded message'
-        # pos is "array [x, y] or null"; only the message is scored for QR.
+        # The format allows null here and only the message is scored; our reports
+        # always carry a position all the same (user, 2026-11-24).
         if pos is not None and not finite:
             return False, 'QR pos must be a finite [x, y] or null'
         return True, ''
@@ -322,8 +404,13 @@ def mission_reports(scene, pos):
             problems.append('pos')
         if kind == 'qr' and not message:
             problems.append('message')
+        task_ids = list(TASK_IDS[kind])
+        if kind == 'object' and label != M01_OBJECT:
+            # seen and recorded, but M01 asks for the hand tools only (booklet 2026-11-24)
+            task_ids = []
+            problems.append('no mission asks for this object')
         reports.append({
-            'task_type': kind, 'task_ids': list(TASK_IDS[kind]),
+            'task_type': kind, 'task_ids': task_ids,
             'scene_type': scene_type, 'label': label,
             'pos': list(pos) if pos is not None else None,
             'message': message, 'evidence': str(match.get('evidence') or ''),

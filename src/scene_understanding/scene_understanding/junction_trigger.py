@@ -46,8 +46,9 @@ from std_msgs.msg import Bool, String
 
 from scene_understanding.image_subscriber import ImageSubscriber
 from scene_understanding.scene_prompt import (
-    build_prompt, CELL_SIZE, cell_centre, extract_scene_result,
-    mission_reports, REPORT_CELLS, report_position, validate_group_id,
+    build_look_prompt, build_prompt, CELL_SIZE, cell_centre, extract_look_result,
+    extract_scene_result, look_cell, look_cell_position, mission_reports, REPORT_CELLS,
+    report_position, validate_group_id,
 )
 
 from scene_understanding.vlm_client import (
@@ -66,6 +67,18 @@ TRIGGER_MODES = (
     'rising_edge',
     'every_true',
 )
+
+
+def look_grid(left, centre, right):
+    """The three views of a look as one 2 x 2 image: left | centre over right | empty.
+
+    The server takes at most 1024 x 768. Three 640 x 480 views side by side shrink to
+    341 x 256 each; in this grid they stay 512 x 384, which is what makes a small warning
+    sign or a poster readable. Every view is kept whole: a version cropped to a seamless
+    panorama lost a sign that only one view showed in full.
+    """
+    return np.concatenate([np.concatenate([left, centre], axis=1),
+                           np.concatenate([right, np.zeros_like(right)], axis=1)])
 
 
 class TriggerLogic:
@@ -110,6 +123,7 @@ class JunctionTrigger(ImageSubscriber):
 
     on_demand = False             # camera subscribed only during explorer looks
     look_frame_window = 1.4
+    look_settle = 0.0
 
     def __init__(self):
         # With explorer looks the camera is subscribed only during a look (see
@@ -123,6 +137,9 @@ class JunctionTrigger(ImageSubscriber):
         # s after an explorer look event in which its frame must arrive (the
         # explorer holds each view 1.5 s)
         self.look_frame_window = float(self.declare_parameter('look_frame_window', 1.4).value)
+        # s after a look event before its frame is taken: the first frame after the
+        # turn is still motion-blurred (10:03 run, left view)
+        self.look_settle = float(self.declare_parameter('look_settle', 0.6).value)
         if self.on_demand:
             self.stop_stream()
         self.explore_pending = None
@@ -209,6 +226,9 @@ class JunctionTrigger(ImageSubscriber):
             5.0
         )
 
+        # Extra tries when the server answers 5xx or not at all (its own model
+        # call times out after 30 s: HTTP 504 "openai_timeout").
+        self.declare_parameter('vlm_retries', 1)
         self.declare_parameter('vlm_max_width', MAX_WIDTH)
         self.declare_parameter('vlm_max_height', MAX_HEIGHT)
 
@@ -325,6 +345,10 @@ class JunctionTrigger(ImageSubscriber):
             self.get_parameter('result_topic').value,
             10
         )
+        # One message per analysed look, in the form task_reporter reads (it turns them
+        # into the mission reports and posts them). '' = off.
+        room_topic = self.declare_parameter('room_result_topic', '/scene/result').value
+        self.room_pub = self.create_publisher(String, room_topic, 10) if room_topic else None
 
         # ============================================================
         # Internal state
@@ -518,7 +542,7 @@ class JunctionTrigger(ImageSubscriber):
         if self.explore_pending is None or self.latest_receive_time is None:
             return
         view, triggered_at = self.explore_pending
-        if self.latest_receive_time <= triggered_at:
+        if self.latest_receive_time <= triggered_at + self.look_settle:
             return
         self.explore_pending = None
         if self.latest_receive_time - triggered_at > self.look_frame_window:
@@ -548,7 +572,7 @@ class JunctionTrigger(ImageSubscriber):
         }}
         self.trigger_count += 1
         self.explore_work.put((
-            np.concatenate(frames, axis=1), self.explore_views['centre'][1], self.trigger_count,
+            look_grid(*frames), self.explore_views['centre'][1], self.trigger_count,
             None, self.explore_started, metadata, self.explore_centre_pose, frames,
         ))
         self.explore_key = None
@@ -747,6 +771,13 @@ class JunctionTrigger(ImageSubscriber):
         if three_view:
             record['explore_look'] = explore_look
             record['view_layout'] = ['left', 'center', 'right']
+            record['image_layout'] = 'grid: left | center / right | empty'
+            # The explorer names the cell it stands in and the side it looks through, on
+            # its own wall-fitted grid: that gives the looked-at cell exactly, wherever the
+            # robot happens to stand.
+            record['pos'] = look_cell_position(explore_look['cell'], explore_look['side'],
+                                               self.cell_size)
+            record['report_cell'] = 'explorer look'
         scan_error = None
         try:
             if self.scan is not None:
@@ -850,10 +881,26 @@ class JunctionTrigger(ImageSubscriber):
                     'sending frame to Lab 6 VLM...'
                 )
 
-                result = (
-                    self.vlm.describe(frame, prompt=build_prompt(three_view=True))
-                    if three_view else self.vlm.describe(frame)
-                )
+                if explore_look is not None:
+                    prompt = build_look_prompt()
+                elif three_view:
+                    prompt = build_prompt(three_view=True)
+                else:
+                    prompt = None
+                for attempt in range(1 + max(0, int(self.get_parameter('vlm_retries').value))):
+                    # the server refuses a request inside its cooldown (2 s per group)
+                    wait = self.vlm.retry_not_before - time.monotonic()
+                    if 0 < wait <= 15:
+                        time.sleep(wait + 0.2)
+                    result = self.vlm.describe(frame, prompt=prompt)
+                    error = str(result.get('error') or '')
+                    if result['ok'] or not re.search(
+                            r'HTTP 5\d\d|HTTP 429|did not answer|timed out', error):
+                        break
+                    record.setdefault('failed_attempts', []).append(
+                        {'error': error, 'latency_sec': result.get('latency_sec')})
+                    self.get_logger().warning(
+                        f'Junction #{index}: VLM attempt {attempt + 1} failed ({error[:80]})')
 
                 # Copy VLM fields into our record.
                 record.update(
@@ -862,7 +909,8 @@ class JunctionTrigger(ImageSubscriber):
 
                 if result['ok']:
                     response = result['response']
-                    scene = extract_scene_result(response)
+                    scene = (extract_look_result(response) if explore_look is not None
+                             else extract_scene_result(response))
                     # Every result carries the reported cell position.
                     scene['pos'] = record['pos']
                     scene['robot_position'] = record['robot_position']
@@ -946,11 +994,30 @@ class JunctionTrigger(ImageSubscriber):
                     f'Could not publish result: {e}'
                 )
 
+            if record.get('ok') and explore_look is not None and self.room_pub is not None:
+                scene = record['scene']
+                self.room_pub.publish(String(data=json.dumps({
+                    'cell': list(look_cell(explore_look['cell'], explore_look['side'])),
+                    'cell_centre': record['pos'],
+                    'scene_type': scene['scene_type'],
+                    'objects': scene['objects'],
+                    'hazards': [scene['hazard']] if scene['hazard'] else [],
+                    'humans': scene['survivor'],
+                    'vlm': 'lab', 'look': explore_look['kind'], 'junction': index,
+                })))
+
             # ========================================================
             # STEP 6: TERMINAL LOG
             # ========================================================
 
-            if record.get('ok'):
+            if record.get('ok') and explore_look is not None:
+                scene = record['scene']
+                found = [m['label'] or m['kind'] for m in scene['mission_matches']]
+                self.get_logger().info(
+                    f'Junction #{index}: {explore_look["kind"]} look at cell pos {record["pos"]}: '
+                    f'scene {scene["scene_type"]}, found {", ".join(found) or "nothing"} '
+                    f'({record.get("latency_sec")}s VLM, {record["total_latency_sec"]}s total)')
+            elif record.get('ok'):
                 summary = ', '.join(
                     f'{path["direction"]}={path["status"]}'
                     for path in record['scene']['paths']

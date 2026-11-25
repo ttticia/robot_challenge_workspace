@@ -120,7 +120,9 @@ def test_explorer_stitches_only_matching_views(monkeypatch):
         node.explore_event_callback(SimpleNamespace(data=f'room {view} cell (4, 0) side 1'))
         node.image_callback(value)
     stitched, stamp, _, _, _, metadata, _, frames = node.explore_work.get_nowait()
-    assert stitched[0, ::3, 0].tolist() == [1, 2, 3]
+    assert stitched.shape == (4, 6, 3)                 # 2 x 2 grid of 2 x 3 frames
+    assert stitched[0, ::3, 0].tolist() == [1, 2]      # left | centre
+    assert stitched[2, ::3, 0].tolist() == [3, 0]      # right | empty
     assert stamp.sec == 2
     assert metadata['cell'] == [4, 0]
     assert len(frames) == 3
