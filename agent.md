@@ -149,10 +149,15 @@ it is rebuilt from `curtain CV/`. Steps, each a tool in `src/maze_nav/tools/` un
    the images (`fliplr=0.5`); the copies doubled the epoch time for little gain. Keep the
    laptop awake (Windows: never sleep on power): sleep paused a run for over an hour.
 6. **Evaluate:** `eval_curtain_yolo.py <dataset> [--list split_test.txt] [--cv]`: per
-   recording, curtain frames found in range (box on the image centre column and `ahead_m` 0.3-
-   1.5 m), out of range, unknown range, and negatives with a false box, at conf 0.25 and 0.5.
-   The headline mAP / recall count far curtains the robot ignores; the in-range score is the
-   acceptance number.
+   recording, curtain frames DETECTED in range (label box on the image centre column and
+   `ahead_m` 0.3-1.5 m), out of range and unknown range, at conf 0.25 and 0.5, plus false
+   boxes: on negatives, and off-curtain boxes on curtain frames. Scored by detection, not box
+   overlap (since 2026-11-25): a frame counts when a model box lies on the curtain (≥ half of
+   the box inside a label box; `--on`), because the robot only needs to know a curtain is there.
+   A box on one curtain half counts; the old IoU ≥ 0.5 count is printed next to it. The headline
+   mAP / recall count far curtains the robot ignores; the in-range detection score is the
+   acceptance number. Review sheets of each missed / false frame: `curtain_v3/review/
+   make_review.py` on the dev laptop (same rule).
 7. **Export and compare:** `bench_curtain_export.py <dataset>` (OpenVINO FP16 / INT8 with the
    camera's 4:3 shape, timing and the step 6 scores for each). Run it in `~/venvs/yolo-export`
    (section 5).

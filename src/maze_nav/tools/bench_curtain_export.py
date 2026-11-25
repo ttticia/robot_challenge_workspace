@@ -59,15 +59,16 @@ def bench(path, imgsz, frames):
 def summary(root, path, images, imgsz, ahead, label):
     res = E.score(root, path, images, [0.25, 0.5], 0.3, 1.5, imgsz, ahead)
     for conf, bags in sorted(res.items()):
-        tot = {k: [0, 0, 0] for k in E.KEYS + ('neg',)}
+        tot = {k: [0, 0, 0, 0] for k in E.KEYS + ('neg', 'off')}
         for k in bags.values():
             for key in tot:
                 for i, v in enumerate(k[key]):
                     tot[key][i] += v
         found = sum(tot[k][1] for k in E.KEYS)
         n = sum(tot[k][0] for k in E.KEYS)
-        parts = [f'{k} {tot[k][1]}/{tot[k][0]}' for k in E.KEYS if tot[k][0]]
-        print(f'{label} conf {conf:.2f}: curtain frames {found}/{n} | ' + ' | '.join(parts) +
+        parts = [f'{k} {tot[k][1]}/{tot[k][0]} (iou {tot[k][2]})' for k in E.KEYS if tot[k][0]]
+        print(f'{label} conf {conf:.2f}: curtain frames detected {found}/{n} | ' +
+              ' | '.join(parts) + f' | off-curtain box {tot["off"][1]}/{tot["off"][0]}'
               f' | negatives with a box {tot["neg"][1]}/{tot["neg"][0]}', flush=True)
 
 
