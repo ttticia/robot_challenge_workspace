@@ -1,0 +1,6 @@
+path: /home/ngtri/robot_challenge_workspace/src/challenge_files/datasets/curtain_v3
+train: split_train.txt
+val: split_val.txt
+test: split_test.txt
+names:
+  0: curtain
