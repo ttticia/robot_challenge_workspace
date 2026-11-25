@@ -24,7 +24,7 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
-from sensor_msgs.msg import CameraInfo, Image, PointCloud2
+from sensor_msgs.msg import CameraInfo, Image, Imu, PointCloud2
 from std_msgs.msg import Bool, Empty, Float32, String
 from tf2_ros import Buffer, TransformException, TransformListener
 from transfer_interfaces.msg import MotionSimpleCMD
@@ -72,6 +72,12 @@ class Explorer(Node):
         # counts when the box lies across the middle of the image on cv_verify_hits frames.
         # A verified edge is a curtain (passable) even where the map and the height map call
         # it a wall.
+        # With curtain_cv on, the lidar's curtain (tall returns along the edge, sense.py) is a
+        # CANDIDATE only (user, 2026-11-25): no push until the camera has confirmed it. An
+        # aluminium-frame wall reads as a curtain to the lidar (bag stairs10, 23.4 s: 0.84 m
+        # high, zero curtain boxes on 81 frames). The camera gets two looks at a candidate:
+        # while the robot greets it (a miss there is not final) and just before the push (a
+        # miss there makes the edge a wall). No camera frames at all = not confirmed either.
         self.cv_on = p('curtain_cv', True).value and self.curtains_on   # on by default (user, 2026-11-25)
         self.cv_conf = p('cv_conf', 0.5).value
         self.cv_hits = p('cv_hits', 3).value                 # frames, within cv_window s
@@ -110,12 +116,64 @@ class Explorer(Node):
         self.terrain_seen_min = p('terrain_seen_min', 40).value
         self.rough_checked = {}       # (cell, d) -> True | False | None (camera saw too little)
         self.look_angle = math.radians(p('look_angle', 25.0).value)
+        # QR approach (user, 2026-11-25). From the cell before, a code on a side wall is
+        # seen about 60 deg off square and cannot be decoded (10:54 run, 11-24: 34 x 68 px).
+        # Scene understanding (the VLM) can SEE it, though. After the three views of a look
+        # the robot waits for that answer; with a code in the left or right view it turns
+        # qr_angle towards that side and steps into the looked-at cell with its body kept
+        # at that angle (so it goes in almost sideways, the camera sweeping that wall from
+        # close up), then steps back out. A code read at any moment ends the move.
+        self.qr_approach = p('qr_approach', False).value
+        self.qr_wait = p('qr_wait', 8.0).value             # s for the VLM answer after the views
+        self.qr_angle = math.radians(p('qr_angle', 75.0).value)
+        self.qr_speed = p('qr_speed', 0.08).value          # m/s while stepping in and out
+        self.qr_hold = p('qr_hold', 1.5).value             # s standing at the far end
+        self.scene_results = {}       # looked-at cell -> the /scene/result for it
+        self.qr_read_t = -1e9         # time of the last /qr/read
+        self.qr_t0 = 0.0              # start of the look under way
         self.look_hold = p('look_hold', 1.5).value
         self.greet_hold = p('greet_hold', 2.0).value
         self.cmd_gap = p('cmd_gap', 1.5).value         # s between mode requests
-        self.ai_speed = p('ai_speed', 0.15).value
+        self.ai_speed = p('ai_speed', 0.5).value    # stairs copy: was 0.15 (Rey, 2026-11-25: 0.5)
+        self.ai_wz = p('ai_wz', 0.0).value          # stairs copy: IMU heading hold, off by default
+        # stairs copy (Rey, 2026-11-25): AI mode ends once the robot is in the cell after the
+        # stairs: 1.5 cells from the centre of the cell before = the border into the cell after,
+        # plus ai_body_clear so the hind legs are past it too.
+        self.ai_walk_cells = p('ai_walk_cells', 1.5).value
+        self.ai_body_clear = p('ai_body_clear', 0.35).value   # m, about half the body length
+        self.ai_distance = p('ai_distance', 'time').value   # stairs copy: 'time' or 'leg'
+        self.ai_wall_min = p('ai_wall_min', 1.0).value     # stairs copy: m before the wall stop
+        self.ai_walking = False                     # stairs copy: AI walk under way
+        self.ai_last_walked = 0.0                   # stairs copy: m of the last AI walk
+        self.ai_reanchor = p('ai_reanchor', True).value   # stairs copy: re-anchor the grid after
+        self.reanchor_min = p('reanchor_min', 0.15).value  # m off before it re-anchors
+        self.reanchor_fit = 0
+        self.imu_yaw = self.leg_vx = None           # stairs copy: body IMU yaw, leg-odometry speed
+        self.leg_time = 0.0
         self.curtain_speed = p('curtain_speed', 0.20).value
         self.pose_timeout = p('pose_timeout', 1.0).value
+        # A curtain the CAMERA has confirmed is pushed through with the obstacle stop off
+        # (2026-11-25): the fabric itself is 'something beside the body', so with the stop
+        # on the robot gave up 3 cm into the step (10:42 run, cell (2, 2) side 0, confirmed
+        # on 9 of 9 frames) and the curtain became a wall. push_stop still rules a curtain
+        # only the lidar has seen (curtain_cv off). No progress for 8 s still ends a push.
+        self.push_sure = False
+        # Stall stop (user, 2026-11-25): during a push the lidar is under the fabric, so the
+        # guard is whether the robot MOVES. Fabric gives way, a wall or a prop does not.
+        # Movement is read from the robot's own leg odometry (/leg_odom2 pose; Fast-LIO is
+        # not to be trusted with the lidar covered), subscribed only during the push (it
+        # is a 200 Hz stream across the bridge). Commanded for push_stall_grace +
+        # push_stall_time s and moved less than push_stall_min in the last push_stall_time
+        # s = something solid: the push is given up (the side becomes a wall). On the bags
+        # the leg pose follows Fast-LIO at about 0.85 of its distance while walking and
+        # moves 0-2 cm in 1.5 s standing. Not yet seen: what it reads while the robot is
+        # pressed against something (feet slipping). No leg data = the 8 s rule alone.
+        self.push_stall = p('push_stall', True).value
+        self.push_stall_time = p('push_stall_time', 1.5).value
+        self.push_stall_grace = p('push_stall_grace', 0.7).value
+        self.push_stall_min = p('push_stall_min', 0.03).value
+        self.leg_topic = p('leg_odom_topic', '/leg_odom2').value
+        self.leg, self.leg_sub = deque(maxlen=200), None
         self.push_stop = p('push_stop', True).value    # obstacle stop also while pushing (a
         #                                                real curtain then stops the push too)
         # Body outline from base_link, m. The rear is the 0.37 m body plus 0.05 m for the bent
@@ -138,8 +196,10 @@ class Explorer(Node):
         # stream is only subscribed while the robot stands still for the check: one raw depth
         # subscriber slows every stream from the robot, lidar and its IMU included.
         self.stair_check_on = p('stair_check', True).value and self.stairs_on
-        self.stair_check_time = p('stair_check_time', 3.0).value     # s of looking
-        self.stair_rails = p('stair_rails', True).value   # handrails must show in the lidar too
+        self.ai_auto = p('ai_auto', True).value     # stairs copy: AUTO after AI gait
+        self.stair_check_time = p('stair_check_time', 4.5).value     # s of looking (stairs copy: was 3.0)
+        self.stair_min_hits = p('stair_min_hits', 5).value   # stairs copy: or this many hits in the whole look
+        self.stair_rails = p('stair_rails', False).value   # stairs copy: was True (handrails in the lidar too)
         self.stair_raise_min = p('stair_raise_min', 0.28).value   # m: lidar height in the next
         #                                    cell from which it is looked at before walking in
         self.stair_params = stair_levels.LevelParams(
@@ -169,6 +229,9 @@ class Explorer(Node):
         self.grid = None
         self.aligned = False          # the grid has been lined up with the walls once
         self.heights = HeightMap()
+        self.heights_turn_max = p('heights_turn_max', 0.2).value   # rad/s: faster = no heights
+        self.heights_settle = p('heights_settle', 0.3).value       # s after the turning stops
+        self.turned_at, self.last_yaw = -1e9, None
         self.occ = None
         self.pose = None              # x, y, yaw in map
         self.pose_time = None
@@ -176,6 +239,10 @@ class Explorer(Node):
         self.cloud_time = None
         self.last_odom = None
         self.blind_until = 0.0        # curtain over the lidar: its returns are not walls
+        # True from the start of a curtain crossing until its last turn is done (user,
+        # 2026-11-25): the fabric can lie over the lidar all that time, so /maze/blind is held
+        # on (no /scan to SLAM, no height-map updates) and odometry jumps don't count to FAULT.
+        self.curtain_blind = False
         self.queue = deque()
         self.act = None
         self.act_t0 = 0.0
@@ -208,10 +275,19 @@ class Explorer(Node):
         self.create_subscription(OccupancyGrid, '/map', self.on_map, latched)
         self.create_subscription(PointCloud2, '/maze/cloud', self.on_cloud, qos_profile_sensor_data)
         self.create_subscription(Odometry, '/odom', self.on_odom, 20)
+        # stairs copy: only when asked for (a 200 Hz IMU callback in Python costs CPU)
+        if self.ai_wz > 0:
+            self.create_subscription(Imu, '/imu/data', self.on_imu, qos_profile_sensor_data)
+        if self.ai_distance == 'leg':
+            self.create_subscription(Odometry, '/leg_odom2', self.on_leg, qos_profile_sensor_data)
         self.create_subscription(Float32, '/maze/body_height',
                                  lambda m: setattr(self, 'body_height', m.data), 5)
         if self.cv_on:
             self.create_subscription(String, '/curtain/seen', self.on_curtain_seen, 10)
+        if self.qr_approach:
+            self.create_subscription(String, '/scene/result', self.on_scene_result, 10)
+            self.create_subscription(String, '/qr/read',
+                                     lambda m: setattr(self, 'qr_read_t', self.now()), 10)
         self.create_subscription(Empty, '/nav/start', lambda m: self.begin(), 1)
         self.create_subscription(Empty, '/explore/stop', lambda m: self.halt('STOPPED', 'stop asked'), 1)
         self.create_timer(0.1, self.tick)
@@ -220,6 +296,13 @@ class Explorer(Node):
     # ---- inputs -------------------------------------------------------------------------
     def now(self):
         return self.get_clock().now().nanoseconds * 1e-9
+
+    def on_scene_result(self, msg):
+        try:
+            r = json.loads(msg.data)
+            self.scene_results[tuple(r['cell'])] = r
+        except (ValueError, KeyError, TypeError):
+            pass
 
     def on_curtain_seen(self, msg):
         """One camera frame from curtain_node (it only works outside room checks)."""
@@ -242,6 +325,13 @@ class Explorer(Node):
                     or self.kinds.get(edge) == 'curtain' \
                     or edge in self.links:
                 continue
+            if sense.low_wall(*edge):
+                # an ordinary wall, and the camera sees over it: the curtain hangs somewhere
+                # behind. It is found when the robot gets to its open side.
+                self.get_logger().info(
+                    f'camera: curtain seen over the wall of cell {edge[0]} side {edge[1]}: '
+                    'it is behind that wall, not on it; ignored', throttle_duration_sec=5.0)
+                continue
             times = [t for t in self.cv_seen.get(edge, []) if now - t <= self.cv_window] + [now]
             self.cv_seen[edge] = times
             if len(times) >= self.cv_hits:
@@ -260,15 +350,34 @@ class Explorer(Node):
         self.clouds.append(pts)
         if self.pose is None or not len(pts) or self.now() < self.blind_until:
             return
+        # Not while the robot turns: the pose used here is the last tick's, a little older
+        # than the cloud, and at turning speed that swings the walls of the next cell into
+        # its middle. On 2026-11-25 10:02 that made the terrain cell ahead of the start an
+        # 'object' during the first turn (bag explore_20261125_100238, 17.9 s) and set off
+        # a look and scene understanding there. Replayed: 12 squares as it was, 0 with this.
+        if self.now() - self.turned_at < self.heights_settle:
+            return
         x, y, yaw = self.pose
         c, s = math.cos(yaw), math.sin(yaw)
         self.heights.add(x + c * pts[:, 0] - s * pts[:, 1], y + s * pts[:, 0] + c * pts[:, 1],
                          pts[:, 2])
 
+    def on_imu(self, msg):                       # stairs copy
+        q = msg.orientation
+        self.imu_yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+
+    def on_leg(self, msg):                       # stairs copy
+        self.leg_vx, self.leg_time = msg.twist.twist.linear.x, self.now()
+
     def on_odom(self, msg):
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
         self.odom_rot = stair_levels.quat_to_matrix(q.x, q.y, q.z, q.w)
+        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        if self.last_yaw is not None and t > self.last_yaw[0] and \
+                abs(wrap(yaw - self.last_yaw[1])) / (t - self.last_yaw[0]) > self.heights_turn_max:
+            self.turned_at = self.now()
+        self.last_yaw = (t, yaw)
         if self.last_odom is not None:
             t0, x0, y0 = self.last_odom
             jump = math.hypot(p.x - x0, p.y - y0)
@@ -277,7 +386,9 @@ class Explorer(Node):
             # the lidar stream Fast-LIO catches up in one step (run3, 2026-11-24: 0.48 m in
             # 0.40 s after a 1 s stall, pose fine afterwards), so one jump only pauses the
             # robot. A runaway keeps jumping or goes far: that latches.
-            if jump > 0.15 + 0.6 * dt:
+            if jump > 0.15 + 0.6 * dt and self.ai_walking:   # stairs copy: expected on the steps
+                self.odom_jumps = []
+            elif jump > 0.15 + 0.6 * dt:
                 now = self.now()
                 self.odom_jumps = [j for j in self.odom_jumps if now - j < 10.0] + [now]
                 if now < self.odom_grace_until:     # depth stream on: the lidar feed is slow
@@ -334,6 +445,9 @@ class Explorer(Node):
         self.send()
         self.queue.clear()
         self.act = None
+        self.curtain_blind = False
+        self.leg_watch(False)
+        self.ai_walking = False               # stairs copy
         self.state, self.why = state, why
         (self.get_logger().error if state == 'FAULT' else self.get_logger().info)(f'{state}: {why}')
 
@@ -380,8 +494,12 @@ class Explorer(Node):
             return False
         wide = not self.aligned
         max_yaw, max_shift = (math.radians(30), 0.40) if wide else (math.radians(3), 0.08)
+        radius = 4.0
+        if self.reanchor_fit and not wide:   # stairs copy: just re-anchored after the stairs
+            max_yaw, max_shift, radius = math.radians(10), 0.25, 1.6
+            self.reanchor_fit -= 1
         px, py = self.occ.occupied_points()
-        near = np.hypot(px - self.pose[0], py - self.pose[1]) < 4.0
+        near = np.hypot(px - self.pose[0], py - self.pose[1]) < radius
         g, q = fit_grid(self.grid, px[near], py[near], max_yaw, max_shift)
         if g is None or q < 0.5:
             how = 'too few wall points or further off than the limits' if g is None \
@@ -402,9 +520,16 @@ class Explorer(Node):
             self.looked.clear()
             self.curtain_latched.clear()      # same: they name cells of the unfitted grid
             self.cv_curtains.clear()
+            self.cv_rejected.clear()
+            self.cv_pending.clear()
+            self.cv_seen.clear()
             self.get_logger().info(f'grid lined up with the walls: turned {turned:+.1f} deg, '
                                    f'moved {moved:.2f} m (quality {q:.2f})')
             return True
+        if radius < 4.0:
+            self.reanchor_fit = 0
+            self.event(f'stairs: grid fitted after the stairs: {turned:+.1f} deg, {moved:.2f} m '
+                       f'(quality {q:.2f})')
         self.get_logger().info(f'grid corrected: {turned:+.1f} deg, {moved:.2f} m '
                                f'(quality {q:.2f})', throttle_duration_sec=10.0)
         return False
@@ -421,8 +546,8 @@ class Explorer(Node):
         if (cell, d) in self.curtain_latched and self.curtains_on:
             return 'curtain'          # read as a curtain before: stays one
         k = sense.kind(cell, d, may_exit=cell != self.start)
-        if k == 'curtain' and not self.curtains_on:
-            k = 'wall'
+        if k == 'curtain' and (not self.curtains_on or (cell, d) in self.cv_rejected):
+            k = 'wall'                # off, or a lidar candidate the camera turned down
         if k == 'curtain':
             self.curtain_latched.update({(cell, d), (b, opp(d))})
             self.get_logger().info(f'curtain latched: cell {cell} side {d} (and cell {b} side {opp(d)})')
@@ -433,13 +558,29 @@ class Explorer(Node):
         checked = self.stairs_checked.get((cell, d))
         if checked is True:
             return 'stairs'
-        if checked is False and k == 'stairs':
-            k = 'blocked'
+        if checked is False and k in ('stairs', 'blocked'):
+            # Looked at and not stairs: then it is something standing in that cell, a prop.
+            # It gets a look (scene understanding) like any object cell and is not entered.
+            # 11:41 run, 2026-11-25: the prop room (0, 1) read as possible stairs, was put
+            # off to the end with the stairs, and would have ended as 'blocked', unseen.
+            k = 'object'
         if checked is None and k == 'blocked' and self.stair_check_on:
             k = 'stairs'
+        # stairs copy: our stairs often map as 'object'; check those too if stair-high
+        if checked is None and k == 'object' and self.stair_check_on and self.stairs_on \
+                and self.raised(cell, d):
+            k = 'stairs'
+        # stairs copy: never walk normally into a stair-high cell. If the depth check did not
+        # confirm stairs (or had no frames), a 'free' side that is stair-high counts as blocked
+        # (terrain is 0.25 m at most, stair_raise_min is 0.28 m). 2026-11-25: climbed in H-Step.
+        if checked in (False, 'lidar') and k == 'free' and self.stairs_on and self.raised(cell, d):
+            k = 'blocked'
         if k == 'room' and any((b, e) in self.cv_curtains or (b, e) in self.curtain_latched
                                for e in range(4)):
             k = 'free'                # not a dead end: one of its "walls" is a curtain
+        if self.exit_cell is not None and (cell, d) == (self.exit_cell, self.exit_d) and k != 'exit':
+            self.exit_cell = self.exit_d = None       # seen better since: not the way out
+            self.event(f'exit withdrawn: cell {cell} side {d} is {k}')
         if k == 'exit' and self.exit_cell is None:
             self.exit_cell, self.exit_d = cell, d
             self.event(f'exit seen from cell {cell} side {d}')
@@ -499,9 +640,24 @@ class Explorer(Node):
                 h = self.grid.heading(d)
                 self.queue.extend([('turn', h, 2.0), ('hold', 0.5), ('cv_verify', a, d)])
                 return
+        # Possible stairs beside this cell are checked NOW, with the depth camera, not at
+        # the end with the crossings: what is not stairs is a prop to look at (kind()).
+        if self.stair_check_on:
+            for d in range(4):
+                if self.kinds.get((cur, d)) == 'stairs' and (cur, d) not in self.stairs_checked:
+                    h = self.grid.heading(d)
+                    self.queue.extend([('drive', cx, cy, h, 'square'), ('turn', h, 2.0),
+                                       ('hold', 0.5), ('stair_check', cur, d)])
+                    return
         facing = self.grid.nearest_dir(self.pose[2])
+        # how closed the cell behind each open way already looks (dead ends go first)
+        sense, beyond = self.sense(), {}
+        for (c, d), k in self.kinds.items():
+            b = nb(c, d)
+            if k == 'free' and b not in self.visited:
+                beyond[(c, d)] = sum(sense.edge(b, e)[0] == 'wall' for e in range(4) if e != opp(d))
         j = next_job(self.kinds, self.visited, self.closed, self.links, cur, facing,
-                     self.looked, self.greeted, self.exit_cell, self.enter_rooms)
+                     self.looked, self.greeted, self.exit_cell, self.enter_rooms, beyond)
         job = f"{j['job']} cell {j['cell']} side {j['d']} via {len(j['path'])} cells"
         if job != self.job:
             here = ' '.join(self.kinds.get((cur, k), '-') for k in range(4))
@@ -515,23 +671,42 @@ class Explorer(Node):
             return
         c, d, h = j['cell'], j['d'], None if self.grid is None else self.grid.heading(j['d'])
         if j['job'] == 'greet':
-            q.extend([('turn', h, 2.0), ('event', f'curtain cell {c} side {d}'),
-                      ('hold', self.greet_hold), ('call', lambda: self.greeted.add((c, d)))])
+            q.extend([('turn', h, 2.0), ('event', f'curtain cell {c} side {d}')])
+            if self.cv_on and (c, d) not in self.cv_curtains:
+                # facing it squarely anyway: the camera's first look at the candidate
+                q.extend([('hold', 0.5), ('cv_verify', c, d, False)])
+            else:
+                q.append(('hold', self.greet_hold))
+            q.append(('call', lambda: self.greeted.add((c, d))))
         elif j['job'] == 'visit':
             self.go(c, d, 'walk')
         elif j['job'] == 'look' and self.look_check(c, d, h):
             pass                              # the check is queued; the look is planned again after it
         elif j['job'] == 'look':
+            if self.qr_approach:
+                q.append(('call', lambda: (self.scene_results.pop(nb(c, d), None),
+                                           setattr(self, 'qr_t0', self.now()))))
             for name, off in (('centre', 0.0), ('left', self.look_angle), ('right', -self.look_angle)):
                 what = 'object' if self.kinds.get((c, d)) == 'object' else 'room'
                 q.extend([('turn', wrap(h + off), 3.0), ('event', f'{what} {name} cell {c} side {d}'),
                           ('hold', self.look_hold)])
+            if self.qr_approach and self.qr_read_t < 0:       # the one code is not read yet
+                q.append(('qr_wait', c, d))
             q.append(('call', lambda: self.looked.add((c, d))))
         elif j['job'] in ('curtain', 'stairs'):
             self.go(c, d, j['job'])
         elif j['job'] == 'exit':
-            q.extend([('turn', self.grid.heading(self.exit_d), 3.0),
-                      ('event', f'exit: stopped in the last cell {c}'),
+            # Stop in the MIDDLE of the last cell, facing out (user, 2026-11-25; "inside the
+            # final cell" = all four legs in it, nothing touching the frame). The body is
+            # centred, not base_link: 0.27 m ahead of it and 0.42 m behind, so base_link
+            # ends side_offset ahead of the cell centre and both ends are 0.165 m inside.
+            h = self.grid.heading(self.exit_d)
+            cx, cy = self.grid.centre(c)
+            tx, ty = cx + self.side_offset * math.cos(h), cy + self.side_offset * math.sin(h)
+            q.extend([('turn', h, 3.0), ('drive', tx, ty, h, 'square'),
+                      ('drive', tx, ty, h, 'creep'), ('drive', tx, ty, h, 'square'),
+                      ('turn', h, 2.0),
+                      ('event', f'exit: stopped in the middle of the last cell {c}'),
                       ('call', lambda: self.halt('DONE', 'in the last cell'))])
         else:
             self.halt('DONE', 'nothing left to explore and no exit seen')
@@ -549,6 +724,8 @@ class Explorer(Node):
             if edge in self.cv_curtains or edge in self.curtain_latched or edge in self.cv_rejected \
                     or edge in self.links:
                 edge = None
+            elif edge is not None and self.sense().low_wall(*edge):
+                edge = None               # an ordinary wall: nothing for the camera to check
         self.look_checked.add((c, d))
         if not stairs and edge is None:
             return False
@@ -602,22 +779,45 @@ class Explorer(Node):
             q.extend([('turn', h, 4.0), ('call', lambda: setattr(self, 'step', (a, d, b))),
                       ('drive', bx, by, h, 'normal'),
                       ('call', lambda: (self.walked.update({(a, d), (b, opp(d))}), self.arrive(b)))])
+        elif how == 'curtain' and self.cv_on and (a, d) not in self.cv_curtains \
+                and (a, d) not in self.links:
+            # A lidar candidate: the camera has the last word before any push. Confirmed ->
+            # the next plan pushes; not confirmed -> the edge is a wall (kind()).
+            q.extend([('drive', ax, ay, h, 'square'), ('turn', h, 2.0), ('hold', 0.5),
+                      ('event', f'curtain: camera check before the push, cell {a} side {d}'),
+                      ('cv_verify', a, d, True)])
         elif how == 'curtain':
             bx, by = self.grid.centre(b)
 
             def crossed():
                 self.links[(a, d)], self.links[(b, opp(d))] = ('curtain', b), ('curtain', a)
                 self.arrive(b)
+            def blind(on):
+                self.curtain_blind = on
+                self.push_sure = bool(on and self.cv_on and (a, d) in self.cv_curtains)
+                if not on:
+                    self.leg_watch(False)
+                if self.push_sure:
+                    self.event(f'curtain: confirmed by the camera, obstacle stop off for '
+                               f'this push, cell {a} side {d}')
             # Sideways (user, 2026-11-25): square up on the centre line facing the curtain,
             # make the nearer quarter turn on the spot, step sideways through it all the way
-            # to the centre of the cell behind, and there turn the quarter back on the spot
-            # (about that centre), so the robot faces the way it came through.
+            # to the centre of the cell behind. There, on the spot about that centre: 180 deg
+            # to the RIGHT (two quarter turns, so do_turn cannot take the short way round
+            # to the left), then 90 deg to the LEFT. The lidar counts as covered by the
+            # fabric from the first step until the last of these turns is done.
             body = min((wrap(h + math.pi / 2), wrap(h - math.pi / 2)),
                        key=lambda t: abs(wrap(t - self.pose[2])))
+            right1, right2 = wrap(body - math.pi / 2), wrap(body - math.pi)
             q.extend([('drive', ax, ay, h, 'square'), ('turn', body, 2.0),
                       ('event', f'curtain: going through sideways, cell {a} side {d}'),
                       ('call', lambda: setattr(self, 'step', (a, d, b))),
-                      ('strafe', bx, by, h, body, 'push'), ('turn', h, 3.0),
+                      ('call', lambda: blind(True)),
+                      ('strafe', bx, by, h, body, 'push'),
+                      ('turn', right1, 3.0), ('turn', right2, 3.0),     # 180 to the right
+                      ('turn', right1, 3.0),                            # 90 back to the left
+                      ('call', lambda: blind(False)),
+                      ('event', f'curtain: through, cell {b}; turned 180 right, 90 left'),
                       ('call', crossed)])
         elif how == 'stairs':
             c = nb(b, d)
@@ -631,29 +831,84 @@ class Explorer(Node):
                       ('event', f'stairs: AI mode, cell {a} side {d}')])
             for code in robot.ai_enter_sequence():
                 q.extend([('cmd', code), ('hold', self.cmd_gap)])
+            if self.ai_auto:                  # stairs copy: follow /cmd_vel in the AI gait
+                q.extend([('cmd', robot.AUTO), ('hold', self.cmd_gap)])
             q.extend([('hold', 1.0), ('call', lambda: setattr(self, 'step', (a, d, c))),
                       ('drive', cx, cy, h, 'ai'), ('hold', 1.0)])
             for code in robot.ai_leave_sequence(self.gait):
                 q.extend([('cmd', code), ('hold', self.cmd_gap)])
-            q.extend([('event', f'stairs: crossed, {self.gait} again'), ('call', crossed)])
+            q.extend([('event', f'stairs: crossed, {self.gait} again'),
+                      ('call', lambda: self.reanchor(ax, ay, h)),    # stairs copy
+                      ('call', crossed)])
 
-    def do_cv_verify(self, cell, d):
+    def reanchor(self, ax, ay, h):
+        """stairs copy: after the AI walk the lidar pose is off (Fast-LIO drifts or diverges
+        on the steps), so everything mapped from here on is shifted against the cells. The
+        robot really is where the walk put it: ai_last_walked straight on along h from the
+        centre of the cell before (ax, ay). Move and turn the grid by the difference between
+        that and the believed pose, so the cells line up with the walls again as they are now
+        mapped; then one medium wall fit near the robot (reanchor_fit) refines it."""
+        if not self.ai_reanchor or self.pose is None or self.grid is None:
+            return
+        w = self.ai_last_walked
+        ex, ey = ax + w * math.cos(h), ay + w * math.sin(h)
+        px, py, psi = self.pose
+        dth, shift = wrap(psi - h), math.hypot(px - ex, py - ey)
+        if shift < self.reanchor_min and abs(dth) < math.radians(4):
+            self.get_logger().info(f'after the stairs: pose {shift:.2f} m / '
+                                   f'{math.degrees(dth):+.1f} deg from expected, grid kept')
+            return
+        if abs(dth) > math.radians(30):      # the walk did not stay straight: don't guess
+            self.get_logger().warn(f'after the stairs: heading {math.degrees(dth):+.0f} deg off, '
+                                   'too far to re-anchor; grid kept')
+            return
+        c, s = math.cos(dth), math.sin(dth)
+        gx, gy = self.grid.x0 - ex, self.grid.y0 - ey
+        self.grid = Grid(px + c * gx - s * gy, py + s * gx + c * gy,
+                         wrap(self.grid.yaw + dth), self.grid.size)
+        self.reanchor_fit = 6                 # planning steps that may use the medium fit
+        self.event(f'stairs: grid re-anchored, pose was {shift:.2f} m / '
+                   f'{math.degrees(dth):+.1f} deg off the expected spot')
+
+    def do_cv_verify(self, cell, d, final=True):
         """Standing still, facing side d of `cell` squarely: does the camera keep seeing a
-        curtain straight ahead? Yes = that edge is a curtain, also where it reads as a wall."""
+        curtain straight ahead? Yes = that edge is a curtain, also where it reads as a wall.
+        No and `final` = not a curtain: a lidar candidate there becomes a wall. No and not
+        final (the greet) = it stays a candidate, looked at again before the push."""
         self.send()
         if self.elapsed() < self.cv_verify_time:
             return False
         frames = [hit for t, hit in self.cv_frames if t >= self.act_t0]
-        b = nb(cell, d)
-        if sum(frames) >= self.cv_verify_hits:
-            self.cv_curtains.update({(cell, d), (b, opp(d))})
-            self.forced_wall.difference_update({(cell, d), (b, opp(d))})
+        b, hits = nb(cell, d), sum(frames)
+        both = {(cell, d), (b, opp(d))}
+        if hits >= self.cv_verify_hits and self.sense().low_wall(cell, d):
+            # the camera looks over a 0.53 m wall at a curtain further back
+            self.cv_rejected.update(both)
+            self.cv_pending.difference_update(both)
+            self.event(f'curtain check cell {cell} side {d}: the camera sees a curtain '
+                       f'({hits} of {len(frames)} frames) but an ordinary wall stands here: '
+                       'the curtain is behind it; this edge stays a wall')
+            return True
+        if hits >= self.cv_verify_hits:
+            self.cv_curtains.update(both)
+            self.forced_wall.difference_update(both)
             self.event(f'curtain: seen by the camera, cell {cell} side {d} '
-                       f'({sum(frames)} of {len(frames)} frames): passable')
-        else:
-            self.cv_rejected.add((cell, d))
-            self.event(f'curtain check cell {cell} side {d}: not confirmed by the camera '
-                       f'({sum(frames)} of {len(frames)} frames)')
+                       f'({hits} of {len(frames)} frames): passable')
+            return True
+        why = f'{hits} of {len(frames)} frames'
+        if not frames:
+            why = 'no camera frames: is curtain_node running? see /curtain/status'
+            self.get_logger().warn(f'curtain check cell {cell} side {d}: {why}')
+        if not final:
+            self.event(f'curtain check cell {cell} side {d}: not confirmed by the camera yet '
+                       f'({why}); looked at again before the push')
+            return True
+        lidar = (cell, d) in self.curtain_latched
+        self.cv_rejected.update(both)
+        self.cv_pending.difference_update(both)
+        self.curtain_latched.difference_update(both)
+        self.event(f'curtain check cell {cell} side {d}: not confirmed by the camera '
+                   f'({why})' + ('; the lidar curtain is a wall now' if lidar else ''))
         return True
 
     def raised(self, cell, d):
@@ -717,6 +972,8 @@ class Explorer(Node):
                         mem['why'], seen = f'treads look like stairs but {mem["rails"]}', None
                 mem['frames'] += 1
                 mem['hits'] += seen is not None
+                if seen is not None:
+                    mem['last_seen'] = seen          # stairs copy
                 found = mem['confirm'].add(now, seen)
         waited = self.elapsed()
         quick_no = mem['hits'] == 0 and mem['frames'] >= self.stair_quick_no   # close depth early
@@ -727,6 +984,12 @@ class Explorer(Node):
             return False
         for sub in mem['subs']:
             self.destroy_subscription(sub)
+        if found is None and mem['hits'] >= self.stair_min_hits and mem.get('last_seen') is not None:
+            # stairs copy: hits spread over the look (6 of 28 frames, run8, 2026-11-25) never
+            # made 3 of 5 in 1.2 s. The block obstacle gives 0 hits, so this many in one look
+            # still means stairs.
+            found = mem['last_seen']
+            mem['rails'] = f'{mem["hits"]} of {mem["frames"]} frames over the look'
         if found is not None:
             verdict = True
             text = f'STAIRS: {found.summary()}; {mem["rails"]}'
@@ -789,6 +1052,9 @@ class Explorer(Node):
     # ---- actions ------------------------------------------------------------------------
     def tick(self):
         have = self.read_pose()
+        if self.curtain_blind:
+            self.blind_pub.publish(Bool(data=True))
+            self.blind_until = self.odom_grace_until = self.now() + 1.5
         if self.state == 'WAIT':
             miss = [n for n, ok in (('/map', self.occ is not None), ('map -> base_level', have),
                                     ('/maze/cloud', self.cloud is not None)) if not ok]
@@ -800,13 +1066,14 @@ class Explorer(Node):
                     self.begin()
         elif self.state == 'RUN':
             age = max(self.now() - self.pose_time, self.now() - (self.cloud_time or 0.0))
-            if self.now() < self.odom_hold_until:
+            if self.now() < self.odom_hold_until and not self.ai_walking:   # stairs copy
                 self.send()
                 self.why = 'odometry jumped: paused until it has held steady'
                 self.act_t0 += 0.1
                 if 't' in self.act_mem:
                     self.act_mem['t'] += 0.1
-            elif age > self.pose_timeout and not (self.act and self.act[0] == 'stair_check'):
+            elif age > self.pose_timeout and not self.ai_walking and \
+                    not (self.act and self.act[0] == 'stair_check'):
                 self.send()
                 self.why = f'pose / lidar {age:.1f} s old: standing still until it is fresh'
                 self.act_t0 += 0.1                     # the action's clock stands still too
@@ -893,6 +1160,8 @@ class Explorer(Node):
         return int(m.sum()) >= 6
 
     def do_drive(self, tx, ty, heading, mode):
+        if mode == 'ai':
+            return self.do_ai_walk(tx, ty)
         x, y, yaw = self.pose
         dx, dy = tx - x, ty - y
         c, s = math.cos(heading), math.sin(heading)
@@ -921,7 +1190,8 @@ class Explorer(Node):
         if abs(herr) > math.radians(25):
             self.send(wz=math.copysign(max(self.min_spin, min(self.w_max, 1.5 * abs(herr))), herr))
             return False
-        checked = mode in ('normal', 'creep') or (mode == 'push' and self.push_stop)
+        checked = mode in ('normal', 'creep') or (mode == 'push' and self.push_stop
+                                                  and not self.push_sure)
         if checked and along > 0.10 and self.front_blocked():
             self.send()
             mem['blocked'] = mem.get('blocked', 0) + 1
@@ -933,6 +1203,54 @@ class Explorer(Node):
         top = {'ai': self.ai_speed, 'push': self.curtain_speed, 'creep': 0.10}.get(mode, self.v_max)
         self.send(vx=clamp(1.0 * along, 0.08, top), vy=clamp(0.8 * lat, -0.10, 0.10),
                   wz=clamp(1.5 * herr, -0.4, 0.4))
+        return False
+
+    def do_ai_walk(self, tx, ty):
+        """stairs copy: walk straight over the stairs in the AI gait, then return True so the
+        explorer's AI leave sequence (AI_OFF, MANUAL, MOVE, gait, AUTO) runs and exploring goes on.
+        The lidar pose is not used (Fast-LIO diverges on the steps, run7). Distance is counted
+        from the commanded speed and time (ai_distance:=leg counts leg odometry instead: in run9
+        it under-counted and the robot walked into the wall of the cell after). The walk also
+        ends early once the lidar sees a wall just ahead of the nose after ai_wall_min metres."""
+        now, mem = self.now(), self.act_mem
+        if 'dist' not in mem:
+            self.ai_walking = True
+            mem.update(dist=self.ai_walk_cells * self.cell_size + self.ai_body_clear, t0=now,
+                       last=now, walked=0.0, leg=0.0, wall=0, yaw0=self.imu_yaw)
+            mem['tmax'] = mem['dist'] / max(self.ai_speed, 0.05) * 2.5 + 5.0
+            self.get_logger().info(f'AI walk: {mem["dist"]:.2f} m at {self.ai_speed:.2f} m/s '
+                                   f'(by {self.ai_distance}, wall stop after {self.ai_wall_min:.1f} m)')
+        dt, mem['last'] = now - mem['last'], now
+        fresh = self.leg_vx is not None and now - self.leg_time < 0.5
+        if self.ai_distance == 'leg' and fresh:
+            mem['leg'] += max(0.0, self.leg_vx) * dt
+            mem['walked'] += max(0.0, self.leg_vx) * dt
+        else:
+            mem['walked'] += self.ai_speed * dt
+        why = None
+        if mem['walked'] >= mem['dist']:
+            why = 'distance reached'
+        elif mem['walked'] >= self.ai_wall_min and self.cloud is not None and self.front_blocked():
+            mem['wall'] += 1
+            if mem['wall'] >= 3:
+                why = 'wall ahead'
+        else:
+            mem['wall'] = 0
+        if why is None and now - mem['t0'] > mem['tmax']:
+            why = 'time limit'
+        if why is not None:
+            self.send()
+            self.ai_walking = False
+            self.ai_last_walked = mem['walked']
+            self.odom_jumps, self.odom_hold_until = [], 0.0
+            self.odom_grace_until = now + 3.0
+            self.get_logger().info(f'AI walk done ({why}): {mem["walked"]:.2f} of {mem["dist"]:.2f} m '
+                                   f'in {now - mem["t0"]:.1f} s')
+            return True
+        herr = 0.0
+        if self.ai_wz > 0 and mem['yaw0'] is not None and self.imu_yaw is not None:
+            herr = wrap(mem['yaw0'] - self.imu_yaw)
+        self.send(vx=self.ai_speed, wz=clamp(0.8 * herr, -self.ai_wz, self.ai_wz))
         return False
 
     def side_blocked(self, sign):
@@ -968,11 +1286,20 @@ class Explorer(Node):
             self.send()
             self.get_logger().warn(f'sideways step: no progress, {along:.2f} m short')
             return self.stuck(mode, along)
+        if mode == 'push' and self.push_stall:
+            self.leg_watch(True)
+            if abs(herr) > math.radians(25):
+                mem.pop('pushing', None)             # not stepping sideways just now
+            elif self.push_stalled(mem):
+                self.send()
+                self.leg_watch(False)
+                return self.stuck(mode, along)
         if abs(herr) > math.radians(25):         # knocked round: turn back first, on the spot
             self.send(wz=math.copysign(max(self.min_spin, min(self.w_max, 1.5 * abs(herr))), herr))
             return False
         side = 1.0 if math.sin(wrap(travel - body)) > 0 else -1.0     # +1: stepping to the left
-        if (mode != 'push' or self.push_stop) and along > 0.10 and self.side_blocked(side):
+        if (mode != 'push' or (self.push_stop and not self.push_sure)) and along > 0.10 \
+                and self.side_blocked(side):
             self.send()
             mem['blocked'] = mem.get('blocked', 0) + 1
             if mem['blocked'] >= 8:
@@ -988,6 +1315,169 @@ class Explorer(Node):
                   wz=clamp(1.5 * herr, -0.4, 0.4))
         return False
 
+    # ---- QR approach ---------------------------------------------------------------------
+    def qr_got(self):
+        """A QR code has been read since this look began."""
+        return self.qr_read_t >= self.qr_t0
+
+    def do_qr_wait(self, c, d):
+        """After the three views: stand until scene understanding has answered for this
+        look. A QR code seen in the left or right view queues the approach."""
+        self.send()
+        if self.qr_got():
+            return True
+        r = self.scene_results.get(nb(c, d))
+        if r is None:
+            if self.elapsed() < self.qr_wait:
+                return False
+            self.get_logger().info(f'look cell {c} side {d}: no scene answer in '
+                                   f'{self.qr_wait:.0f} s, moving on')
+            return True
+        view = r.get('qr_view') if r.get('qr') else None
+        if view not in ('left', 'right'):
+            if r.get('qr'):
+                self.event(f'qr: code seen {view or "somewhere"}, cell {c} side {d}: no approach '
+                           '(only for the left / right view)')
+            return True
+        sign = 1.0 if view == 'left' else -1.0
+        h = self.grid.heading(d)
+        body = wrap(h + sign * self.qr_angle)
+        bx, by = self.grid.centre(nb(c, d))
+        self.step = None                      # not a step between cells: nothing becomes a wall
+        self.queue.extendleft(reversed([
+            ('event', f'qr: code seen in the {view} view, cell {c} side {d}: turning '
+                      f'{math.degrees(self.qr_angle):.0f} deg and stepping in'),
+            ('qr_turn', body),
+            ('qr_step', bx, by, h, body, True),
+            ('qr_hold',),
+            ('qr_back', c, d, sign)]))
+        return True
+
+    def do_qr_turn(self, body):
+        if self.qr_got():
+            self.send()
+            return True
+        return self.do_turn(body, 3.0)
+
+    def do_qr_hold(self):
+        self.send()
+        return self.qr_got() or self.elapsed() >= self.qr_hold
+
+    def do_qr_back(self, c, d, sign):
+        """Out again, to the centre of the cell the look was made from: body square to the
+        way back (15 deg more), then purely sideways, so nothing is driven backwards."""
+        ax, ay = self.grid.centre(c)
+        self.event(f'qr: {"code read" if self.qr_got() else "not read"}, cell {c} side {d}')
+        if math.hypot(ax - self.pose[0], ay - self.pose[1]) > 0.08:
+            h = self.grid.heading(d)
+            body = wrap(h + sign * math.pi / 2)
+            self.queue.extendleft(reversed([('turn', body, 3.0),
+                                            ('qr_step', ax, ay, wrap(h + math.pi), body, False)]))
+        return True
+
+    def travel_blocked(self, direction):
+        """Something from knee height up within 6-20 cm of the body, the way it is moving
+        (`direction`: map heading of the motion). Works for any body angle: a point counts
+        if moving the body 6-20 cm that way would put it inside the body's outline."""
+        p = self.cloud
+        p = p[(p[:, 2] > 0.30) & (p[:, 2] < 1.0)]
+        if len(p) == 0:
+            return False
+        a = wrap(direction - self.pose[2])
+        ux, uy = math.cos(a), math.sin(a)
+        hit = np.zeros(len(p), bool)
+        for s in (0.06, 0.10, 0.15, 0.20):
+            x, y = p[:, 0] - s * ux, p[:, 1] - s * uy
+            hit |= (x > -self.fp_rear + 0.03) & (x < self.fp_front - 0.03) & \
+                   (np.abs(y) < self.fp_half_width - 0.03)
+        inside = (p[:, 0] > -self.fp_rear) & (p[:, 0] < self.fp_front) & \
+                 (np.abs(p[:, 1]) < self.fp_half_width)          # the robot itself
+        return int((hit & ~inside).sum()) >= 6
+
+    def do_qr_step(self, tx, ty, travel, body, reading):
+        """Move to (tx, ty) along `travel` with the body held at `body`. The base_link line
+        is side_offset towards the nose (as in do_strafe), which centres the body in the way
+        through. Ends at the target, when something is in the way, after 6 s without
+        progress, or (reading) as soon as a QR code is read. Never makes a wall of it."""
+        if reading and self.qr_got():
+            self.send()
+            return True
+        x, y, yaw = self.pose
+        c, s = math.cos(travel), math.sin(travel)
+        if reading:
+            tx, ty = tx + self.side_offset * math.cos(body), ty + self.side_offset * math.sin(body)
+        dx, dy = tx - x, ty - y
+        along, lat, herr = dx * c + dy * s, -dx * s + dy * c, wrap(body - yaw)
+        mem = self.act_mem
+        if along <= 0.03:
+            self.send()
+            return True
+        mem.setdefault('best', along)
+        if along < mem['best'] - 0.05:
+            mem['best'], mem['t'] = along, self.now()
+        if self.now() - mem.setdefault('t', self.now()) > 6.0:
+            self.send()
+            self.get_logger().info(f'qr step: no progress, {along:.2f} m short: ending it')
+            return True
+        if abs(herr) > math.radians(20):         # knocked round: turn back first, on the spot
+            self.send(wz=math.copysign(max(self.min_spin, min(self.w_max, 1.5 * abs(herr))), herr))
+            return False
+        if self.travel_blocked(travel):
+            self.send()
+            mem['blocked'] = mem.get('blocked', 0) + 1
+            if mem['blocked'] >= 5:
+                self.get_logger().info(f'qr step: something in the way {along:.2f} m short: '
+                                       'ending it')
+                return True
+            return False
+        mem['blocked'] = 0
+        v, w = clamp(1.0 * along, 0.05, self.qr_speed), clamp(0.8 * lat, -0.08, 0.08)
+        wx, wy = v * c - w * s, v * s + w * c
+        self.send(vx=wx * math.cos(yaw) + wy * math.sin(yaw),          # send() never lets
+                  vy=-wx * math.sin(yaw) + wy * math.cos(yaw),         # vx go backwards
+                  wz=clamp(1.5 * herr, -0.4, 0.4))
+        return False
+
+    def leg_watch(self, on):
+        """Listen to the leg odometry only while pushing through a curtain."""
+        if on and self.leg_sub is None:
+            self.leg.clear()
+            self.leg_sub = self.create_subscription(Odometry, self.leg_topic, self.on_leg,
+                                                    qos_profile_sensor_data)
+        elif not on and self.leg_sub is not None:
+            self.destroy_subscription(self.leg_sub)
+            self.leg_sub = None
+
+    def on_leg(self, msg):
+        now, p = self.now(), msg.pose.pose.position
+        if self.leg and now - self.leg[-1][0] < 0.05:
+            return                               # 20 a second is plenty
+        if self.leg and math.hypot(p.x - self.leg[-1][1], p.y - self.leg[-1][2]) > 0.5:
+            self.leg.clear()                     # its pose jumps now and then (bags): start over
+        self.leg.append((now, p.x, p.y))
+
+    def push_stalled(self, mem):
+        """Pushing for long enough, and the legs say the robot has hardly moved."""
+        now = self.now()
+        since = mem.setdefault('pushing', now)
+        if now - since < self.push_stall_grace + self.push_stall_time:
+            return False
+        if not self.leg or now - self.leg[-1][0] > 0.5:
+            if not mem.get('no_leg'):
+                mem['no_leg'] = True
+                self.get_logger().warn(f'push: no {self.leg_topic}: no stall stop, the 8 s rule only')
+            return False
+        old = [s for s in self.leg if s[0] <= now - self.push_stall_time]
+        if not old or old[-1][0] < since:
+            return False                         # not a full window of pushing on record yet
+        moved = math.hypot(self.leg[-1][1] - old[-1][1], self.leg[-1][2] - old[-1][2])
+        if moved >= self.push_stall_min:
+            return False
+        self.get_logger().warn(f'push stalled: {moved * 100:.0f} cm in {self.push_stall_time:.1f} s '
+                               'by the legs while stepping: something solid, giving it up')
+        self.event(f'curtain: push stalled ({moved * 100:.0f} cm in {self.push_stall_time:.1f} s), given up')
+        return True
+
     def stuck(self, mode, along):
         """A drive that cannot go on. Returns True (the action is over)."""
         if mode == 'ai':
@@ -998,6 +1488,9 @@ class Explorer(Node):
             return True
         a, d, b = self.step
         self.queue.clear()
+        self.curtain_blind = False      # the crossing is over, whichever way
+        self.push_sure = False
+        self.leg_watch(False)
         cur = self.cur_cell()
         self.step = None
         if cur == b and along < 0.35:           # far enough in: count the cell as reached
@@ -1081,3 +1574,7 @@ def main():
             pass
         node.destroy_node()
         rclpy.try_shutdown()
+
+
+if __name__ == '__main__':      # stairs copy: run as a script, not an entry point
+    main()

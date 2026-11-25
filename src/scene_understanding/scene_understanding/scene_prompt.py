@@ -82,11 +82,13 @@ Output only minified JSON. Use these required fields at the top level:
 # the 10:03 run's frames: 2.4-9 s, against 18-22 s for SCENE_PROMPT with its path notes.
 LOOK_PROMPT = """The image is a grid of three views from a small robot's camera inside a search-and-rescue training arena: top left = looking left, top right = looking straight ahead, bottom left = looking right (bottom right is empty). The views overlap, so the same thing may appear twice. Props may be toys, miniatures or printed pictures: treat them as the real thing. Ignore everything outside the arena's low grey partition walls (the hall, real people, furniture behind the walls).
 Answer with minified JSON only, with exactly these keys:
-{"scene_type":"unknown","objects":[],"hazard":"","survivor":false}
+{"scene_type":"unknown","objects":[],"hazard":"","survivor":false,"qr":false,"qr_view":""}
 scene_type: the room that the props set up, one of kitchen (cooking or food-preparation equipment), market (displayed goods, produce, stalls, shelves of products), workshop (workbench, tools), clinic (medical equipment, bed), cleaning_room (cleaning supplies or equipment), clothes_shop (clothes on racks or hangers, mannequins), fitness_centre (exercise equipment), furniture_shop (sofas, beds, tables, chairs or cabinets on display). Use "unknown" if no such props are visible.
 objects: every kind of these that is visible, by exactly these names: medical_equipment (first aid kit, bandages, stethoscope, syringe, medicine, stretcher, wheelchair, hospital bed, drip stand), hand_tools (wrench, hammer, pliers, screwdriver, saw), food (fruit, bread, packaged or canned food), water (water bottles, jugs, dispensers), utensils (cutlery, ladle, spatula, pots, pans). [] if none.
 hazard: the symbol on a warning sign, one of high_voltage (lightning bolt), radioactive (trefoil), chemical (corrosion or flask), biological (biohazard), flammable (flame). Use "" if there is no warning sign or it shows another symbol.
 survivor: true if a photo, poster or cut-out showing a person is displayed inside the arena.
+qr: true if a QR code (a square black-and-white matrix barcode, however small) is visible inside the arena.
+qr_view: the view that shows it best, one of left, ahead, right; "" if none.
 """
 
 # Competition reporting vocabulary (challenge booklet, task reporting section).
@@ -172,6 +174,8 @@ def extract_look_result(response):
 
     scene_type = str(data.get('scene_type') or '').strip().lower()
     hazard = str(data.get('hazard') or '').strip().lower()
+    qr_view = str(data.get('qr_view') or '').strip().lower()
+    qr_view = {'centre': 'ahead', 'center': 'ahead', 'straight ahead': 'ahead'}.get(qr_view, qr_view)
     seen = data.get('objects')
     seen = [str(o).strip().lower() for o in seen] if isinstance(seen, list) else []
     if flag('hand_tools'):                       # the earlier form of the answer
@@ -183,6 +187,10 @@ def extract_look_result(response):
         'hand_tools': 'hand_tools' in objects,
         'hazard': hazard if hazard in HAZARD_LABELS else '',
         'survivor': flag('survivor'),
+        # A QR code the VLM can SEE (it cannot read it): the explorer then moves the robot
+        # closer for the decoder, and with a survivor the room is M03 (user, 2026-11-25).
+        'qr': flag('qr'),
+        'qr_view': qr_view if flag('qr') and qr_view in ('left', 'ahead', 'right') else '',
         'paths': [],
         'mission_matches': [],
     }

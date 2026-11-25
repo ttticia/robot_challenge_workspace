@@ -132,7 +132,7 @@ rec_list                 # what each one records
 ```
 
 - Start the recording after Terminal 1 says `ready` and **before** `explore_go`.
-- Both run `explore_check` first and ask before recording on a NO-GO.
+- They start recording at once, with no `explore_check` first.
 - Bags go to `~/challenge_ws/runs/ROS_bags/<name>/`.
 - `rec_test` records: transforms, compressed colour, Fast-LIO's cloud, `/odom`, `/scan`,
   `/map`, the commands sent (`/cmd_vel`, `/simple_cmd`), and the explorer's
@@ -181,7 +181,10 @@ rec_last                                        # check topics and counts
 
 The curtain model on its own: you drive with the handheld controller, `curtain_node` looks at
 every camera frame, and a bag keeps what it saw and what it said. No explorer, no driving
-by our code. The autonomous launch runs the same check by default (`curtain_cv:=false` turns it off).
+by our code. The autonomous launch runs the same check by default (`curtain_cv:=false` turns it off),
+and there it decides every push: a curtain the lidar finds is only pushed once the camera has
+confirmed it (a box across the middle of the picture on 3 frames in 3 s, standing in the cell
+before). So if `curtain_node` is not running or misses, the curtain is treated as a wall.
 
 ```bash
 # Terminal 1 (optional): mapping, if you want the robot's position in the bag as well

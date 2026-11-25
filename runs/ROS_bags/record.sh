@@ -29,8 +29,8 @@
 #
 # manual, explore and curtain bags are zstd-compressed message by message (about half the size; plain
 # .db3 file, read with ros2 bag / rosbag2_py as usual). REC_COMPRESS=0 turns it off.
-# They also run the sensor-rate check
-# (src/maze_explore/preflight.sh) first and ask before recording on a NO-GO; REC_CHECK=0 skips it.
+# No sensor-rate check before recording (run explore_check yourself if you want one); the
+# stream rates are printed after Ctrl+C.
 
 set -euo pipefail
 
@@ -66,6 +66,11 @@ preset_topics() {
     # explorer decided and sent.
     # Left out on purpose: raw lidar, /imu/data, /leg_odom2, /handle_state, camera_info.
     explore)    echo "$A /camera/color/image_raw/compressed /cloud_registered_body $E /simple_cmd /cmd_vel /explore/status /explore/event /explore/cells /maze/body_height" ;;
+    # As explore, without the camera: NOTHING here costs a copy of a heavy stream across the
+    # bridge (2026-11-25; /tf carries the robot's own small transforms too). For runs where
+    # the lidar feed must not be touched at all; scene images are still saved by
+    # junction_trigger in logs/scene.
+    lean)       echo "$A /cloud_registered_body $E /simple_cmd /cmd_vel /explore/status /explore/event /explore/cells /maze/body_height /scene/result /qr/read /mission/task_completed" ;;
     # Curtain detection test by hand: what the camera saw and what curtain_node said about
     # each frame (boxes, confidence, direction), so misses and false boxes can be found
     # afterwards. /curtain/image is NOT recorded: it is raw (2.7 MB/s) and makes the node
@@ -77,8 +82,8 @@ preset_topics() {
     *)          return 1 ;;
   esac
 }
-PRESETS="manual explore curtain img"
-checked() { [[ "$PRESET" == manual || "$PRESET" == explore || "$PRESET" == curtain ]]; }
+PRESETS="manual explore lean curtain img"
+checked() { [[ "$PRESET" == manual || "$PRESET" == explore || "$PRESET" == lean || "$PRESET" == curtain ]]; }
 
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -229,22 +234,6 @@ if checked; then
       [[ "${ALLOW_HEAVY:-0}" == 1 ]] || exit 1
     fi
   done
-  PREFLIGHT="$HOME/challenge_ws/src/maze_explore/preflight.sh"
-  if [[ "${REC_CHECK:-1}" == 1 && $DRY_RUN == 0 && -x "$PREFLIGHT" ]]; then
-    echo "Checking sensor rates (about 30 s; REC_CHECK=0 skips this)..."
-    # curtain_node is part of a curtain test, not a leftover stack
-    [[ "$PRESET" == curtain ]] && export EXPLORE_CHECK_ALLOW=curtain_node
-    if ! "$PREFLIGHT"; then
-      echo "NO-GO: with a slow /livox/imu the bag's /odom, /map and tf will be wrong, and" \
-           "Fast-LIO cannot be re-run from it. Camera and raw lidar are still recorded." >&2
-      if [[ -t 0 ]]; then
-        read -r -p "Record anyway? [y/N] " ans || ans=n
-        [[ "$ans" == [yY]* ]] || exit 1
-      else
-        exit 1
-      fi
-    fi
-  fi
 fi
 
 # Topics a manual bag is useless without. Checked before (published?) and after (count).

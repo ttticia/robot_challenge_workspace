@@ -82,9 +82,18 @@ def test_stairs_starting_at_the_border_are_not_a_wall():
     assert s.kind((0, 0), 0) == 'stairs'
 
 
-def test_exit_is_an_opening_with_nothing_beyond():
+def test_exit_is_the_far_side_of_a_cell_that_sticks_out():
+    # (0,0) -> (1,0): the last cell (1,0) is walled left and right, the open hall beyond it
+    g, s = world([((0, 0), 1), ((0, 0), 3), ((0, 0), 2), ((1, 0), 1), ((1, 0), 3)])
+    assert s.kind((1, 0), 0) == 'exit'
+    assert s.kind((0, 0), 0, may_exit=False) == 'free'      # the way into the last cell
+    # Open floor alone is no exit (09:38 run, 11-25): this cell is open to the left with
+    # nothing for 2 m that way, but it is not walled on both sides of that way.
+    g, s = world([((0, 0), 2), ((0, 0), 3)])
+    assert s.outside((0, 0), 1) and s.kind((0, 0), 1) == 'free'
+    # nor is a cell that cannot have been entered from behind
     g, s = world([((0, 0), 1), ((0, 0), 3), ((0, 0), 2)])
-    assert s.kind((0, 0), 0) == 'exit'
+    assert s.kind((0, 0), 0) == 'free'
 
 
 def test_nearest_first_then_curtain_then_exit():
@@ -95,13 +104,18 @@ def test_nearest_first_then_curtain_then_exit():
     j = next_job(kinds, {a}, cur=a, facing=0, looked=set(), greeted=set(), **args)
     assert (j['job'], j['cell'], j['d']) == ('visit', a, 0)
     j = next_job(kinds, {a, b}, cur=b, facing=0, looked=set(), greeted=set(), **args)
-    assert j['job'] == 'greet'                                       # face the curtain first
-    j = next_job(kinds, {a, b}, cur=b, facing=0, looked=set(), greeted={(b, 0)}, **args)
-    assert j['job'] in ('visit', 'look') and j['cell'] == b          # then the nearest thing
+    assert (j['job'], j['d']) == ('look', 3)          # the room first, not the curtain ahead
+    j = next_job(kinds, {a, b}, cur=b, facing=0, looked={(b, 3)}, greeted=set(), **args)
+    assert (j['job'], j['d']) == ('visit', 1)         # then the way on; the curtain waits
     kinds.update({(c, 0): 'wall', (c, 1): 'wall', (c, 2): 'wall', (c, 3): 'free'})
     done = dict(looked={(b, 3)}, greeted={(b, 0)})
     j = next_job(kinds, {a, b, c}, cur=c, facing=1, **done, **args)
     assert (j['job'], j['cell'], j['d'], len(j['path'])) == ('curtain', b, 0, 1)   # only now
+    # everything explored and standing beside a curtain not faced yet: face it, then cross
+    j = next_job(kinds, {a, b, c}, cur=b, facing=0, looked={(b, 3)}, greeted=set(), **args)
+    assert (j['job'], j['d']) == ('greet', 0)
+    j = next_job(kinds, {a, b, c}, cur=b, facing=0, looked={(b, 3)}, greeted={(b, 0)}, **args)
+    assert (j['job'], j['d']) == ('curtain', 0)
     links = {(b, 0): ('curtain', nb(b, 0)), (nb(b, 0), 2): ('curtain', b)}
     j = next_job(kinds, {a, b, c}, closed={a}, links=links, exit_cell=b, cur=c, facing=1, **done)
     assert j['job'] == 'exit' and len(j['path']) == 1
@@ -216,3 +230,57 @@ def test_uneven_terrain_from_dense_depth_points():
     few = slice(0, 300)                                    # only a strip seen: no verdict
     assert s.rough_from_points((0, 0), 0, x[few], y[few], tile[few])[0] is None
     assert s.floor_seen((0, 0), 0) == 0                    # the lidar has seen none of it
+
+
+def test_a_curtain_seen_over_an_ordinary_wall_is_not_that_wall():
+    # start cell closed on the left by a 0.53 m wall; a curtain hangs one cell further left
+    walls = [((0, 0), 1), ((0, 0), 3), ((0, 0), 2), ((0, 1), 1), ((1, 0), 0)]
+    g, s = world(walls, curtain=((0, 1), 1))
+    assert not s.low_wall((0, 0), 1)                 # height not measured yet: cannot say
+    x, y = g.box((0, 0), 1, np.linspace(-0.5, 0.5, 60), [0.0])
+    for _ in range(3):
+        s.hm.add(x.ravel(), y.ravel(), np.full(60, 0.53))
+    assert s.low_wall((0, 0), 1)                     # an ordinary wall: the camera sees over it
+    assert not s.low_wall((0, 1), 1)                 # the curtain itself is tall
+    assert not s.low_wall((0, 0), 0)                 # an open edge is no wall
+    # one stray tall return (a person's arm over the wall) does not change it
+    s.hm.add(x.ravel()[:2], y.ravel()[:2], np.full(2, 0.9))
+    s.hm.add(x.ravel()[:2], y.ravel()[:2], np.full(2, 0.9))
+    assert s.low_wall((0, 0), 1)
+    # a curtain the lidar sees only in part (under the 50 % that makes it a lidar curtain)
+    x2, y2 = g.box((1, 0), 0, np.linspace(-0.5, 0.5, 60), [0.0])
+    for _ in range(3):
+        s.hm.add(x2.ravel(), y2.ravel(), np.where(np.arange(60) < 22, 0.8, 0.5))
+    assert s.kind((1, 0), 0) == 'wall' and not s.low_wall((1, 0), 0)   # the camera may claim it
+
+
+def test_a_look_beside_the_cell_comes_before_walking_on():
+    # 11:41 run, 2026-11-25: in cell (1, 2) the way ahead was free and a room lay BEHIND;
+    # the robot walked on (no turning needed) and had to come back for the room.
+    a = (1, 2)
+    kinds = {(a, 0): 'free', (a, 1): 'wall', (a, 2): 'room', (a, 3): 'free'}
+    args = dict(closed=set(), links={}, exit_cell=None, greeted=set())
+    j = next_job(kinds, {a, (1, 1)}, cur=a, facing=0, looked=set(), **args)
+    assert (j['job'], j['d']) == ('look', 2)
+    j = next_job(kinds, {a, (1, 1)}, cur=a, facing=0, looked={(a, 2)}, **args)
+    assert (j['job'], j['d']) == ('visit', 0)            # the room is done: now walk on
+    # a look one cell away does not beat a visit from here
+    b = (2, 2)
+    kinds = {(a, 0): 'free', (a, 1): 'wall', (a, 2): 'wall', (a, 3): 'free',
+             (b, 0): 'wall', (b, 1): 'room', (b, 2): 'free', (b, 3): 'wall'}
+    j = next_job(kinds, {a, b}, cur=a, facing=0, looked=set(), **args)
+    assert (j['job'], j['cell'], j['d']) == ('visit', a, 3)
+
+
+def test_between_two_ways_on_the_dead_end_goes_first():
+    a = (1, 1)
+    kinds = {(a, 0): 'free', (a, 1): 'free', (a, 2): 'free', (a, 3): 'wall'}
+    args = dict(closed=set(), links={}, exit_cell=None, greeted=set(), looked=set())
+    # straight on needs no turn, but the cell to the left already shows walls on all its
+    # other sides: finish that one first
+    j = next_job(kinds, {a, (0, 1)}, cur=a, facing=0, walls_beyond={(a, 0): 0, (a, 1): 3}, **args)
+    assert (j['job'], j['d']) == ('visit', 1)
+    j = next_job(kinds, {a, (0, 1)}, cur=a, facing=0, walls_beyond={(a, 0): 2, (a, 1): 2}, **args)
+    assert (j['job'], j['d']) == ('visit', 0)          # no difference: least turning decides
+    j = next_job(kinds, {a, (0, 1)}, cur=a, facing=0, **args)
+    assert (j['job'], j['d']) == ('visit', 0)          # nothing known: as before

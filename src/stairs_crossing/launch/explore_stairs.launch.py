@@ -22,12 +22,15 @@ Start it with the robot standing still, centred in the start cell, facing into t
 The explorer waits for:  ros2 topic pub --once /nav/start std_msgs/msg/Empty
 """
 import os
+import re
 import signal
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandler
-from launch.event_handlers import OnProcessExit
+import launch.logging
+from launch.actions import (DeclareLaunchArgument, EmitEvent, OpaqueFunction,
+                            RegisterEventHandler, SetEnvironmentVariable)
+from launch.event_handlers import OnProcessExit, OnShutdown
 from launch.events import matches_action
 from launch.events.process import SignalProcess
 from launch.conditions import IfCondition
@@ -65,6 +68,10 @@ ARGS = {
     'qr': ('true', 'qr_scanner (team_perception): reads QR codes while the robot holds a room '
                    'or object look, at the same time as scene understanding; the text goes '
                    'to task_reporter'),
+    'qr_approach': ('true', 'when scene understanding sees a QR code in the left / right '
+                            'view of a look: turn 75 deg to that side, step into the cell '
+                            'sideways until the code is read, step back (needs '
+                            'scene_understanding and qr)'),
     'scene_image_transport': ('compressed', 'compressed = <scene_camera_topic>/compressed '
                                             '(JPEG); raw only where no compressed topic exists'),
     'enter_rooms': ('false', 'walk into rooms instead of looking in from the cell before'),
@@ -76,18 +83,46 @@ ARGS = {
     'terrain': ('true', 'false: uneven cells are walked into head first, not sideways'),
     'push_stop': ('true', 'obstacle stop stays on while going through a curtain: the fabric '
                           'then stops the robot. false = really go through'),
-    'curtain_cv': ('false', 'true: curtain_node looks for curtains in the colour camera '
+    'look_check': ('true', 'before a room / object look: check for stairs (and, with '
+                           'curtain_cv, a curtain) and call the look off if one is verified'),
+    'curtain_cv': ('true', 'true: curtain_node looks for curtains in the colour camera '
                             'outside room checks; the explorer verifies each sighting and '
                             'then takes that edge as a curtain even if it maps as a wall'),
     'plain': ('false', 'true: navigation only = scene_understanding, stairs, curtains and '
                        'terrain all off, whatever their own arguments say'),
     'v_max': ('0.20', 'top walking speed, m/s'),
     'stair_rails': ('false', 'stairs copy: handrails must also show in the lidar'),
-    'ai_speed': ('0.25', 'stairs copy: walking speed on the stairs in AI mode, m/s'),
-    'ai_wz': ('0.15', 'stairs copy: most yaw correction in the AI walk, rad/s (0 = none)'),
+    'ai_speed': ('0.5', 'stairs copy: walking speed on the stairs in AI mode, m/s'),
+    'stair_min_hits': ('5', 'stairs copy: stair check also passes with this many hits in the whole look'),
+    'stair_check_time': ('4.5', 'stairs copy: seconds the stair check looks'),
+    'ai_wz': ('0.0', 'stairs copy: most IMU yaw correction in the AI walk, rad/s (0 = none)'),
+    'ai_walk_cells': ('1.5', 'stairs copy: cells from the centre of the cell before to the border of the cell after'),
+    'ai_body_clear': ('0.35', 'stairs copy: m walked past that border before AI mode ends'),
+    'ai_distance': ('time', 'stairs copy: how the AI walk counts distance: time (speed x time) or leg (leg odometry)'),
+    'ai_wall_min': ('1.0', 'stairs copy: m walked before a wall just ahead ends the AI walk'),
     'ai_auto': ('true', 'stairs copy: send AUTO after the AI gait so /cmd_vel drives the stairs'),
+    'ai_reanchor': ('true', 'stairs copy: after the stairs, move the cell grid to where the walk put the robot'),
+    'reanchor_min': ('0.15', 'stairs copy: m of pose error before the grid is re-anchored'),
     'stand_height': ('0.30', 'base_link height used when the floor cannot be measured'),
 }
+
+
+def name_node_logs(log_dir):
+    """Rename <exe>_<pid>_<ms>.log in log_dir after the node that pid belongs to, from the
+    'process started with pid' lines of launch.log. Open files can be renamed on Linux."""
+    try:
+        text = open(os.path.join(log_dir, 'launch.log'), errors='replace').read()
+        pids = {pid: re.sub(r'\.py$', '', name) for name, pid in re.findall(
+            r'\[([^\]]+?)-\d+\]: process started with pid \[(\d+)\]', text)}
+        for f in os.listdir(log_dir):
+            m = re.fullmatch(r'.+?_(\d+)_\d{13}\.log', f)
+            if m and m.group(1) in pids:
+                new = os.path.join(log_dir, pids[m.group(1)] + '.log')
+                if not os.path.exists(new):
+                    os.rename(os.path.join(log_dir, f), new)
+    except OSError:
+        pass                          # never let tidying the logs stop a shutdown
+    return []
 
 
 def generate_launch_description():
@@ -117,8 +152,15 @@ def generate_launch_description():
 
     def feature(name):
         return ParameterValue(PythonExpression(unless_plain(name)), value_type=bool)
+    # One folder per launch (user, 2026-11-25): every node writes its log into this launch's
+    # own folder (~/challenge_ws/logs/ros/<date>-<time>-...), next to launch.log, and at the
+    # end the files are renamed after the node (python3_34638_....log -> maze_explorer.log).
+    log_dir = launch.logging.launch_config.log_dir
     return LaunchDescription(
         [DeclareLaunchArgument(k, default_value=v, description=d) for k, (v, d) in ARGS.items()] + [
+            SetEnvironmentVariable('ROS_LOG_DIR', log_dir),
+            RegisterEventHandler(OnShutdown(on_shutdown=[
+                OpaqueFunction(function=lambda context: name_node_logs(log_dir))])),
             Node(package='fast_lio', executable='fastlio_mapping', output='screen',
                  condition=IfCondition(c['fastlio']),
                  parameters=[os.path.join(config, 'fastlio_mid360.yaml')],
@@ -199,12 +241,25 @@ def generate_launch_description():
                               'stairs': feature('stairs'), 'curtains': feature('curtains'),
                               'terrain': feature('terrain'),
                               'curtain_cv': feature('curtain_cv'),
+                              'qr_approach': ParameterValue(PythonExpression([
+                                  *unless_plain('qr_approach'), ' and ',
+                                  *unless_plain('scene_understanding'), ' and ',
+                                  *unless_plain('qr')]), value_type=bool),
                               'push_stop': val('push_stop', bool),
+                              'look_check': val('look_check', bool),
                               'v_max': val('v_max', float),
                               'stair_rails': val('stair_rails', bool),
                               'ai_auto': val('ai_auto', bool),
                               'ai_speed': val('ai_speed', float),
-                              'ai_wz': val('ai_wz', float)}])),
+                              'ai_wz': val('ai_wz', float),
+                              'ai_walk_cells': val('ai_walk_cells', float),
+                              'ai_body_clear': val('ai_body_clear', float),
+                              'ai_distance': c['ai_distance'],
+                              'ai_wall_min': val('ai_wall_min', float),
+                              'ai_reanchor': val('ai_reanchor', bool),
+                              'reanchor_min': val('reanchor_min', float),
+                              'stair_min_hits': val('stair_min_hits', int),
+                              'stair_check_time': val('stair_check_time', float)}])),
             RegisterEventHandler(OnProcessExit(target_action=explorer, on_exit=[
                 EmitEvent(event=SignalProcess(signal_number=signal.SIGINT,
                                               process_matcher=matches_action(qr)))])),

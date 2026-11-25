@@ -21,8 +21,9 @@ correct response", and the server keeps only the latest report per task_id). So:
     2026-11-24). Other objects seen (say medical_equipment in a clinic) are recorded in
     `seen` and never submitted.
   - M02 answers for a hazard sign: any label, or only `m02_hazard` when that is set.
-  - Survivors: the room the QR code is read in is M03 and the other survivor M05. While
-    no code has been read, the first survivor found is M03 and the second M05 (user,
+  - Survivors: the room the QR code is read in is M03 and the other survivor M05. Next
+    best: the room where scene understanding saw a survivor AND a QR code (seen, not
+    read) is M03 at once. With neither, the first survivor found is M03 and the second M05 (user,
     2026-11-25; on 2026-11-24 10:54 a lone survivor went out as M05 and scored 0).
   - The first sighting holds the mission. The same target seen again elsewhere does not
     replace it. A report is sent again only when the SAME finding is known better (its
@@ -97,13 +98,18 @@ class Missions:
         self.qr_text = None
         self.qr_cell = None    # the room the code was read in (this is what makes M03)
         self.qr_near = None    # where the robot stood at the read: only M04's position
+        self.qr_seen = None    # room where a survivor AND a QR code were seen (not read)
         self.sent = {}         # task_id -> last payload handed out
         self.seen = {}         # (cell, 'object' | 'hazard' | 'survivor', label) -> first time
 
     # ---- observations ---------------------------------------------------------------------
-    def scene(self, cell, scene_type, objects=(), hazards=(), humans=False, now=0.0):
-        """One analysed room. Returns notes about anything left out."""
+    def scene(self, cell, scene_type, objects=(), hazards=(), humans=False, now=0.0,
+              qr=False):
+        """One analysed room. Returns notes about anything left out.
+        qr = a QR code was SEEN there (by the VLM; not read)."""
         cell, notes = tuple(cell), []
+        if qr and humans and self.qr_seen is None:
+            self.qr_seen = cell            # survivor + code in one room: the M03 survivor
         if scene_type in SCENE_TYPES:
             self.scenes[cell] = scene_type
         else:
@@ -195,6 +201,10 @@ class Missions:
         if self.qr_cell is not None:                   # the QR code marks the M03 survivor
             with_qr = self.qr_cell
             others = [c for c in self.survivors if c != self.qr_cell]
+            without_qr = others[0] if others else None
+        elif self.qr_seen is not None:                 # code seen beside a survivor (user,
+            with_qr = self.qr_seen                     # 2026-11-25): M03 at once, no wait
+            others = [c for c in self.survivors if c != self.qr_seen]
             without_qr = others[0] if others else None
         else:                                          # no QR placed (yet)
             settled = [c for c, t in self.survivors.items() if now - t >= self.qr_wait]

@@ -157,3 +157,22 @@ def test_positions_are_the_looked_at_cell_in_whole_cells_of_1_02():
     assert got['M03'] == [2.04, -2.04] and got['M04'] == [2.04, -2.04]
     for i in range(-6, 7):                           # every cell: an exact multiple, 2 decimals
         assert m.pos((i, -i)) == [float(f'{i * 1.02:.2f}'), float(f'{-i * 1.02:.2f}')]
+
+
+def test_survivor_with_a_qr_code_seen_is_m03_at_once():
+    m = Missions('g', qr_wait=15.0)
+    m.scene((1, 2), 'clinic', humans=True, now=0.0)          # found first, no code
+    m.scene((0, 1), 'workshop', humans=True, now=1.0, qr=True)
+    r = by_task(m.reports(now=2.0))                          # no wait, no code read yet
+    assert r['M03']['pos'] == [0.0, 1.02] and r['M05']['pos'] == [1.02, 2.04]
+    assert 'M04' not in r
+    m.qr('Please help me.', (0, 1))
+    r = by_task(m.reports(now=3.0))
+    assert set(r) == {'M04'} and r['M04']['message'] == 'Please help me.'
+
+
+def test_a_qr_code_seen_without_a_survivor_changes_nothing():
+    m = Missions('g', qr_wait=1.0)
+    m.scene((0, 1), 'workshop', qr=True, now=0.0)
+    m.scene((1, 2), 'clinic', humans=True, now=0.0)
+    assert set(by_task(m.reports(now=5.0))) == {'M03'}

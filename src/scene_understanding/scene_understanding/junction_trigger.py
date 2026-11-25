@@ -1003,7 +1003,15 @@ class JunctionTrigger(ImageSubscriber):
                     'objects': scene['objects'],
                     'hazards': [scene['hazard']] if scene['hazard'] else [],
                     'humans': scene['survivor'],
+                    'qr': bool(scene.get('qr')), 'qr_view': scene.get('qr_view', ''),
                     'vlm': 'lab', 'look': explore_look['kind'], 'junction': index,
+                })))
+            elif explore_look is not None and self.room_pub is not None:
+                # No answer for this look: say so, so that the explorer (which waits for
+                # the answer before it moves on) and task_reporter need not wait it out.
+                self.room_pub.publish(String(data=json.dumps({
+                    'cell': list(look_cell(explore_look['cell'], explore_look['side'])),
+                    'vlm': 'none', 'look': explore_look['kind'], 'junction': index,
                 })))
 
             # ========================================================

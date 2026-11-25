@@ -180,7 +180,8 @@ class TaskReporter(Node):
                                    'report')
             return
         for note in self.missions.scene(cell, r.get('scene_type'), r.get('objects'),
-                                        r.get('hazards'), r.get('humans'), time.monotonic()):
+                                        r.get('hazards'), r.get('humans'), time.monotonic(),
+                                        qr=bool(r.get('qr'))):
             self.get_logger().warn(note)
         # everything seen so far, submitted or not (latched: a late listener gets it too)
         self.seen_pub.publish(String(data=json.dumps(self.missions.sightings())))

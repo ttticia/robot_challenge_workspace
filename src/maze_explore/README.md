@@ -168,6 +168,11 @@ terminal shows `Camera on for an explorer look` and `Camera off`.
   colour camera outside room checks and publishes `/curtain/seen`. The explorer places each
   sighting on the first closed edge in its direction, verifies it by facing that edge for 3 s
   from a cell centre, and then treats the edge as a curtain even if it maps as a wall.
+- **The camera confirms before every push** (user, 2026-11-25): with `curtain_cv` on, a lidar
+  curtain is only a candidate (an aluminium-frame wall looks the same to the lidar). It is
+  checked during the greet (a miss there is not final) and again just before the push from the
+  cell before; not confirmed there, or no camera frames at all, = a wall. The simulator has no
+  camera: use `curtain_cv:=false` there to test crossings.
 - **Curtain edges are latched** (2026-11-25): once read as a curtain an edge stays one (both sides), even if the fabric later moves and the map shows it open or as a plain wall. A failed crossing or the first grid fit undoes it.
 - **Curtains are crossed sideways** (2026-11-25): quarter turn on the spot, sideways to the
   centre of the cell behind, quarter turn back on the spot.

@@ -98,8 +98,7 @@ Recorded: `/tf`, `/tf_static`, `/rosout`, compressed colour + `camera_info`, `/c
 when the mapping launch or the controller is on. No depth. `/curtain/image` is not recorded:
 it is raw, and the boxes can be drawn again from `/curtain/seen`.
 
-It warns if `curtain_node` is not running, runs `explore_check` (with `curtain_node`
-allowed), and after Ctrl+C prints the rates of the camera and of `/curtain/seen` (about 3 a
+It warns if `curtain_node` is not running, and after Ctrl+C prints the rates of the camera and of `/curtain/seen` (about 3 a
 second). The whole procedure is in `src/maze_explore/launch_guide.md`, "Test curtain
 detection by hand".
 
@@ -114,8 +113,9 @@ sensor check, about 1 MB per second. Use it for dataset frames (section 4).
 
 ### 2.5 What `rec_test`, `rec_manual` and `rec_curtain` check for you
 
-- **Before:** they run `explore_check` and ask before recording on a NO-GO (`REC_CHECK=0`
-  skips it). `rec_manual` also warns when the mapping launch or a needed topic is missing.
+- **Before:** no sensor-rate check (run `explore_check` yourself if you want one).
+  `rec_manual` warns when the mapping launch or a needed topic is missing, `rec_curtain`
+  when `curtain_node` is not running.
 - **After:** they print each stream's average rate and longest gap, and mark slow ones
   `SLOW`. A slow `/livox/imu` (needs about 200 Hz) means `/odom`, `/map` and the transforms
   in the bag are wrong; the camera frames and raw lidar are still good. Bag `demo`
@@ -200,7 +200,6 @@ The robot computer has no screen.
 | Problem | Fix |
 |---|---|
 | `rec_test: command not found` | `source ~/challenge_ws/runs/ROS_bags/aliases.sh` (section 1) |
-| `explore_check` prints `NOTICE the explore launch is already running` and asks `Proceed? [y/N]` | Normal for `rec_test`: it checks while the launch is up, and lists the launch's own nodes (`qr_scanner`, `task_reporter`, `junction_trigger`, `curtain_node`). Type `y` to record. If you meant to start a new run, answer `n` and stop the old launch first |
 | `explore_check` says NO-GO | Do not start a run. Slow streams come from the robot or bridge side; "other nodes on domain 4" means a leftover node (find it with `ros2 node list`, stop that process) |
 | A topic has `Count: 0` | It was not published: wrong name, driver or launch not running. Check with `ros2 topic list` |
 | `/map` or `/tf_static` has `Count: 0` | Recorded by hand without `--qos-profile-overrides-path` (section 3), or SLAM was not running |

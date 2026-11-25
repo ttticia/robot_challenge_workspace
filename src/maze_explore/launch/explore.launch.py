@@ -61,6 +61,10 @@ ARGS = {
     'qr': ('true', 'qr_scanner (team_perception): reads QR codes while the robot holds a room '
                    'or object look, at the same time as scene understanding; the text goes '
                    'to task_reporter'),
+    'qr_approach': ('true', 'when scene understanding sees a QR code in the left / right '
+                            'view of a look: turn 75 deg to that side, step into the cell '
+                            'sideways until the code is read, step back (needs '
+                            'scene_understanding and qr)'),
     'scene_image_transport': ('compressed', 'compressed = <scene_camera_topic>/compressed '
                                             '(JPEG); raw only where no compressed topic exists'),
     'enter_rooms': ('false', 'walk into rooms instead of looking in from the cell before'),
@@ -80,6 +84,18 @@ ARGS = {
     'plain': ('false', 'true: navigation only = scene_understanding, stairs, curtains and '
                        'terrain all off, whatever their own arguments say'),
     'v_max': ('0.20', 'top walking speed, m/s'),
+    'stair_rails': ('false', 'handrails must also show in the lidar'),
+    'ai_speed': ('0.5', 'walking speed on the stairs in AI mode, m/s'),
+    'stair_min_hits': ('5', 'stair check also passes with this many hits in the whole look'),
+    'stair_check_time': ('4.5', 'seconds the stair check looks'),
+    'ai_wz': ('0.0', 'most IMU yaw correction in the AI walk, rad/s (0 = none)'),
+    'ai_walk_cells': ('1.5', 'cells from the centre of the cell before to the border of the cell after'),
+    'ai_body_clear': ('0.35', 'm walked past that border before AI mode ends'),
+    'ai_distance': ('time', 'how the AI walk counts distance: time (speed x time) or leg (leg odometry)'),
+    'ai_wall_min': ('1.0', 'm walked before a wall just ahead ends the AI walk'),
+    'ai_auto': ('true', 'send AUTO after the AI gait so /cmd_vel drives the stairs'),
+    'ai_reanchor': ('true', 'after the stairs, move the cell grid to where the walk put the robot'),
+    'reanchor_min': ('0.15', 'm of pose error before the grid is re-anchored'),
     'stand_height': ('0.30', 'base_link height used when the floor cannot be measured'),
 }
 
@@ -217,9 +233,25 @@ def generate_launch_description():
                               'stairs': feature('stairs'), 'curtains': feature('curtains'),
                               'terrain': feature('terrain'),
                               'curtain_cv': feature('curtain_cv'),
+                              'qr_approach': ParameterValue(PythonExpression([
+                                  *unless_plain('qr_approach'), ' and ',
+                                  *unless_plain('scene_understanding'), ' and ',
+                                  *unless_plain('qr')]), value_type=bool),
                               'push_stop': val('push_stop', bool),
                               'look_check': val('look_check', bool),
-                              'v_max': val('v_max', float)}])),
+                              'v_max': val('v_max', float),
+                              'stair_rails': val('stair_rails', bool),
+                              'ai_auto': val('ai_auto', bool),
+                              'ai_speed': val('ai_speed', float),
+                              'ai_wz': val('ai_wz', float),
+                              'ai_walk_cells': val('ai_walk_cells', float),
+                              'ai_body_clear': val('ai_body_clear', float),
+                              'ai_distance': c['ai_distance'],
+                              'ai_wall_min': val('ai_wall_min', float),
+                              'ai_reanchor': val('ai_reanchor', bool),
+                              'reanchor_min': val('reanchor_min', float),
+                              'stair_min_hits': val('stair_min_hits', int),
+                              'stair_check_time': val('stair_check_time', float)}])),
             RegisterEventHandler(OnProcessExit(target_action=explorer, on_exit=[
                 EmitEvent(event=SignalProcess(signal_number=signal.SIGINT,
                                               process_matcher=matches_action(qr)))])),

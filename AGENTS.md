@@ -121,7 +121,7 @@ sending `/scan`, because the fabric lies over the lidar and SLAM would match aga
 | `wall` | wall-high obstacle on the edge | ≥ 40 % of the edge occupied in `/map` |
 | `curtain` | as a wall, but it carries on above wall height | tall returns (≥ 0.65 m) along ≥ 50 % of the edge |
 | `unknown` | edge not seen well enough | resolved by facing it; still unknown = wall |
-| `exit` | open, and no walls for 2 m beyond | never from the start cell |
+| `exit` | open, no walls for 2 m beyond, and the cell is the last cell: a stub that sticks out of the maze, walled on both sides of the way out and not walled behind (user, 2026-11-25; open floor alone read as an exit in the 09:38 run) | never from the start cell. An exit that later stops reading as one is withdrawn |
 | `object` | open, something taller than terrain stands inside the cell behind (toy set, prop) | height map: ≥ 8 squares of the interior (0.25 m clear of the borders) at ≥ 0.38 m, each seen 3 times. Checked before `room` |
 | `room` | open, the cell behind is closed on its other three sides (dead end) | |
 | `stairs` | open, the cell behind is blocked by something that rises like steps | height map: top 0.33–0.60 m, front 0.08–0.42 m; then confirmed by the depth-camera stair check (section 3.6) |
@@ -130,11 +130,21 @@ sending `/scan`, because the fabric lies over the lidar and SLAM would match aga
 
 ### 3.5 Job order (`plan.py`)
 
-1. **greet**: a curtain beside the current cell, not faced yet: face it squarely, publish an
-   event, hold 2 s.
-2. **visit / look**: the nearest unexplored thing: an open way into an unvisited cell, or a
-   room or object cell not looked into yet (an object cell is never entered). Nearest = fewest cells to walk, then least turning.
-3. **curtain / stairs**: only when nothing in 2 is left: the nearest one not crossed yet.
+Order set by the user on 2026-11-25: explore everything reachable first, dead ends first;
+curtains and stairs last. Cells are plain, uneven terrain, dead ends / rooms, curtain,
+stairs, start and the last cell.
+
+1. **visit / look**: the nearest unexplored thing: an open way into an unvisited cell (plain
+   or uneven terrain), or a room or object cell not looked into yet (an object cell is never
+   entered). Nearest = fewest cells to walk, then looks before visits (every room / prop
+   beside a cell is looked at before the robot walks on; 11:41 run, two rooms were passed
+   and the robot had to come back), then the way that looks most like a dead end (most walls
+   already seen around the cell behind it), then least turning.
+   Possible stairs beside the current cell are checked with the depth camera at once, before any other job (a check, not a crossing): confirmed = `stairs` (crossed last), not stairs = a prop = `object` (looked at, never entered). Before, such a cell ended as `blocked` and was never shown to scene understanding.
+2. **greet**: only when nothing in 1 is left: a curtain beside the current cell, not faced
+   yet: face it squarely, publish an event, first camera look (3 s). Until 2026-11-25 this
+   came first, as soon as the robot stood beside a curtain.
+3. **curtain / stairs**: only when nothing in 1 is left: the nearest one not crossed yet.
 4. **exit**: nothing left at all: go to the cell that has the way out, face out, stop (`DONE`).
 5. **done**: no exit known either: stop.
 
@@ -158,12 +168,25 @@ been explored, and the robot ends the run standing in the final cell.
 - **Rooms**: not entered by default (`enter_rooms:=false`). From the cell before, the robot
   looks centre, 25° left and 25° right, holds 1.5 s each and publishes
   `room centre|left|right cell (i, j) side d` on `/explore/event`.
+- **QR approach (user, 2026-11-25; `qr_approach:=false` = off; never run on the robot)**:
+  from the cell before, a code on a side wall is seen about 60° off square and cannot be
+  decoded (10:54 run, 11-24: 34 x 68 px). The VLM can see it, though: the look prompt also
+  asks `qr` / `qr_view` (left, ahead, right), passed on in `/scene/result`. After the three
+  views the robot stands up to 8 s (`qr_wait`) for that answer. With a code in the left or
+  right view it turns 75° (`qr_angle`) towards that side at the cell centre, then moves
+  into the looked-at cell with its body kept at that angle (almost sideways, camera
+  sweeping that wall from close up) at 0.08 m/s, up to that cell's centre or until
+  something is 6-20 cm in its way, holds 1.5 s, turns 15° more and steps back out purely
+  sideways. A code read (`/qr/read`) at any moment ends the move and the robot goes back.
+  Nothing becomes a wall because of it. The scanner stays on throughout (the job is still
+  the look). A code in the `ahead` view gets no approach. Skipped once the code is read.
+  Simulated only (`test/test_qr_approach.py`; rendered views decode from 0.65 m in).
 - **Curtain**: square up on the cell's centre line, make a quarter turn on the spot, then
   step **sideways** through it (user, 2026-11-25) at 0.10 m/s with `/maze/blind` on, all the
   way to the centre of the cell behind, and there turn the quarter back on the spot. The crossing is remembered as a link so later routes can use it.
   **Latched (2026-11-25):** once an edge reads `curtain` it stays a curtain on both sides, whatever the map shows later (swaying or parted fabric must not turn it into an open way or a plain wall). A failed crossing, or the first grid fit (the cells move), undoes it.
-  **Off for now (user, 2026-11-23):** the obstacle stop stays on during the push
-  (`push_stop`, default true; launch `push_stop:=false` really goes through), so the fabric stops the robot and the side becomes a wall.
+  **Obstacle stop during the push:** off for a curtain the camera has confirmed (2026-11-25; with the stop on, the fabric itself stopped the step 3 cm in and the curtain became a wall: 10:42 run, cell (2, 2) side 0). For a curtain only the lidar has seen (`curtain_cv:=false`) `push_stop` still rules (default true = the fabric stops the robot, user 2026-11-23; `push_stop:=false` goes through). No progress for 8 s still ends any push.
+  **Stall stop (user, 2026-11-25; unit-tested only):** the lidar is under the fabric during a push, so the guard is whether the robot moves. The explorer listens to the leg odometry (`/leg_odom2` pose, only during the push: it is a 200 Hz stream) and gives the push up (side = wall) when, after 2.2 s of stepping, the legs report under 3 cm in the last 1.5 s (`push_stall`, `push_stall_time`, `push_stall_grace`, `push_stall_min`). On the bags the leg pose follows Fast-LIO at about 0.85 of its distance while walking and moves 0-2 cm in 1.5 s standing; what it reads while the robot presses on something (feet slipping) has not been recorded. No leg data = the 8 s rule alone.
 - **Curtain seen by the camera (2026-11-25, ON by default since the same day, user; `curtain_cv:=false` = off)**:
   `curtain_node` runs the v3 curtain YOLO model of branch `curtain_cv` (OpenVINO INT8
   320x256, `src/maze_explore/models/`, about 10 ms a frame, no ultralytics) on the compressed
@@ -175,7 +198,21 @@ been explored, and the robot ends the run standing in the final cell.
   of the image on 3 frames makes that edge a `curtain`, **also where the map and the height
   map call it a wall** (and the cell before it is then no longer a dead-end `room`). A push
   that fails takes the claim back. The model is not accepted yet (val: 20 of 23 curtains,
-  false boxes on 2 of 51 frames without one). Do not merge `curtain_cv`: it deletes the
+  false boxes on 2 of 51 frames without one).
+  **Not over a wall (user, 2026-11-25).** The camera sees a curtain OVER a 0.53 m wall and
+  has no depth, so such a sighting used to be pinned on that wall (09:42 run: cell (0, 0)
+  side 1). An edge that is an ordinary wall (`Sense.low_wall`: wall in the map, its top
+  measured along at least half of it, under 20 % of it curtain-high) collects no sightings,
+  is not queued for a check, and camera hits there do not make it a curtain. An edge whose
+  height is not known yet can still be claimed. Same code in the stairs copy
+  (`src/stairs_crossing/patches/low_wall.patch`).
+  **The camera confirms before every push (user, 2026-11-25).** With `curtain_cv` on, a
+  lidar `curtain` (tall returns) is only a candidate: an aluminium-frame wall reads the same
+  (bag `stairs10`, 23.4 s: 0.84 m high, no curtain box on 81 frames). The camera looks at it
+  twice: during the greet (3 s instead of the 2 s hold; a miss there is not final) and,
+  squared up in the cell before, just before the push. Not confirmed there, or no camera
+  frames at all (`curtain_node` down), = the edge is a wall for good. `curtain_cv:=false`
+  = the lidar decides alone, as before. Do not merge `curtain_cv`: it deletes the
   navigation code; bring files over one by one. Never run on the robot so far.
 - **Stair check (2026-11-24)**: before walking into an unvisited cell where the lidar shows
   something 0.28 m or higher, and before any stairs crossing, the robot squares up, stands
@@ -206,7 +243,7 @@ been explored, and the robot ends the run standing in the final cell.
   on the same 0.06 m / 15 squares rule, by majority over the frames. Its verdict beats the
   lidar's; with too little seen the lidar's stands. Costs about 2-3 s standing and a short
   raw-depth subscription per new cell. `terrain_depth:=false` (node parameter) turns it off.
-- **Exit**: found from the map (open edge, nothing beyond). The red line on the floor
+- **Exit**: found from the map (the far side of the last cell, section 3.4). The robot stops in the MIDDLE of that cell facing out (user, 2026-11-25): squares up on its centre line, creeps until the body (not base_link) is centred, base_link 0.075 m ahead of the cell centre, so both ends are 0.165 m inside. The red line on the floor
   (`maze_info.md`) is not used.
 
 Safety behaviour:
@@ -262,7 +299,7 @@ ros2 topic pub --once /explore/stop  std_msgs/msg/Empty    # stop
 Navigation only: `plain:=true` = no scene understanding trigger (`junction_trigger`), no
 stairs (check and crossing; stairs are a blocked cell), curtains are walls, uneven cells are
 walked into head first. Single switches: `scene_understanding`, `stairs`, `curtains`,
-`terrain`. `plain` also turns `curtain_cv` (on by default) off. `task_reporter` keeps running (`report:=false` stops it).
+`terrain`, `qr_approach` (needs `scene_understanding` and `qr`). `plain` also turns `curtain_cv` (on by default) off. `task_reporter` keeps running (`report:=false` stops it).
 
 Other launch arguments: `auto_start`, `gait` (`hstep` / `rug`), `enter_rooms`, `v_max`,
 `stand_height`, `cloud_topic`, `fastlio`. Defaults are in `launch/explore.launch.py`.
@@ -278,7 +315,9 @@ exits 0 when the explorer reports `DONE`. Mazes are in `maze_examples/sim/`
 (`challenge_a*.json`, `challenge_b*.json`, `maze_curtains.json`, `maze_stairs.json`,
 `curtain_maze.json`, `extru_maze.json`, …). Logs: `launch.log`, `sim.log`, `status.log`,
 `events.log` in the log directory. The docstring in `fake_maze_lite3.py` still names
-`maze_nav` paths.
+`maze_nav` paths. The simulator has no colour camera, so with `curtain_cv` on (the default)
+no curtain is ever confirmed and every curtain becomes a wall: pass `curtain_cv:=false` to
+test curtain crossings there.
 
 Unit tests: `nice -n 19 python3 -m pytest src/<package>/test -q`. `team_perception` and
 `scene_understanding` have tests; `maze_explore` has `test/test_logic.py`.
@@ -317,9 +356,9 @@ Decisions from the user that still hold:
   code. The survivor WITH the QR code is M03 and its decoded text is M04 (reported exactly
   as decoded, e.g. "Please help me."); the survivor WITHOUT one is M05. The QR text is no
   longer a hint to another survivor's room.
-  While no code has been read, `task_reporter` sends the first survivor found as M03 and
-  the second as M05 (user, 2026-11-25); a code read later puts M03 in its room and both go
-  out again.
+  While no code has been read: a room where the VLM saw a survivor AND a QR code is M03 at
+  once; failing that, the first survivor found is M03 and the second M05 (user,
+  2026-11-25). A code read later puts M03 in its room and both go out again.
 - Detect QR codes and survivors only at dead ends (rooms); plain QR reading may run always.
 - The exit is a plain opening, never a curtain or stairs.
 
@@ -347,7 +386,7 @@ Decisions from the user that still hold:
   nodes started with `ros2 run` stay at the top of `logs/ros/` as `<node>_<date-time>_<pid>.log`.
 - Bags: `runs/ROS_bags/ROSBAG_GUIDE.md`, aliases in `runs/ROS_bags/aliases.sh`. Hand-driven
   data run: `explore_check`, `explore.launch.py explore:=false`, then `rec_manual <name>`
-  (guide 2.2). The recorder checks sensor rates before and after, compresses with zstd, and
+  (guide 2.2). The recorder prints sensor rates after recording (no check before), compresses with zstd, and
   refuses depth.
 - Python on the robot: apt `cv2` 4.5.4 only (no pip OpenCV), numpy pinned to 1.24.4,
   OpenVINO 2024.6 for YOLO.
@@ -387,6 +426,13 @@ Sensors and odometry:
 - Fast-LIO with `blind: 0.5` lost walls closer than 0.5 m and its odometry jumped. Keep
   `blind: 0.3` (`config/fastlio_mid360.yaml`).
 - Near lidar returns from the robot's own body show up as obstacles. Crop them.
+- **No height-map updates while the robot turns (2026-11-25).** The explorer places each
+  cloud with its last tick's pose, a little older than the cloud; at turning speed that
+  swings the walls of the next cell into its middle. 10:02 run: the terrain cell ahead of
+  the start (real heights 0.2-0.3 m) read as an `object` during the first turn and set off
+  a look and scene understanding in the first cell. Clouds are skipped while /odom turns
+  faster than 0.2 rad/s and for 0.3 s after (`heights_turn_max`, `heights_settle`).
+  Replayed on bag `explore_20261125_100238`: 12 object squares before, 0 after.
 - Fast-LIO z drifts slowly; do not trust odometry height over a long run without
   re-measuring the floor.
 - **Never do a blocking TF lookup in a callback.** A 0.1 s blocking lookup once left a node
@@ -423,8 +469,8 @@ Measuring:
 - [ ] Wire the VLM into `room_scene`. `task_reporter` follows the 2026-11-24 report format but
       has never posted to the real server: test it against `192.168.10.141:8001` with our
       `group_id`.
-- [ ] Decide whether the curtain YOLO model confirms a curtain before the robot pushes
-      (today the height map alone decides).
+- [x] Decide whether the curtain YOLO model confirms a curtain before the robot pushes:
+      yes, with `curtain_cv` on (user, 2026-11-25; section 3.6).
 - [ ] `/livox/imu` reaches this computer at 10-20 Hz instead of 200 (2026-11-23 afternoon,
       nothing subscribed). Robot or bridge side; no mapping or autonomous run until
       `explore_check` says GO.
