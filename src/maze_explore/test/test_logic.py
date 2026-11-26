@@ -339,6 +339,19 @@ def test_a_room_with_nothing_taller_than_its_walls_is_empty():
     for _ in range(3):
         s.hm.add(x.ravel(), y.ravel(), np.full(x.size, 0.95))
     assert s.tall_inside((0, 0), 0)[0] == 0
+    # something tall OUTSIDE the cell does not make it a room with something in it (user,
+    # 2026-11-26): a prop standing just behind the back wall, and one just beyond a side wall
+    g, s = world(walls)
+    for cell, d, depth in (((1, 0), 0, [0.08, 0.12]), ((1, 0), 1, [0.06, 0.10])):
+        x, y = g.box(cell, d, np.linspace(-0.3, 0.3, 20), depth)
+        for _ in range(3):
+            s.hm.add(x.ravel(), y.ravel(), np.full(x.size, 0.9))
+    assert s.tall_inside((0, 0), 0)[0] == 0
+    # the same prop inside, against the back wall, counts
+    x, y = g.box((1, 0), 0, np.linspace(-0.3, 0.3, 20), [-0.04, -0.08])
+    for _ in range(3):
+        s.hm.add(x.ravel(), y.ravel(), np.full(x.size, 0.9))
+    assert s.tall_inside((0, 0), 0)[0] >= 4
 
 
 def test_stairs_ahead_are_not_kept_waiting_by_curtains_at_the_sides():

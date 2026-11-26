@@ -94,7 +94,7 @@ The start cell is closed as soon as the robot has left it.
   mark it a wall.
 - **Stair check**: before stepping into a cell where the lidar shows something 0.28 m or
   higher, and before crossing stairs, the robot stands still facing it and looks with the
-  depth camera for up to 3 s (`stair_levels.py` in the `stairs` package, `src/stairs`; the detector from `~/stairs_detect`: treads
+  depth camera for up to 3 s (`stair_levels.py` in the `stairs` package, `src/stairs`; the detector from `archive/stairs_detect` (was `~/stairs_detect`): treads
   at 12 / 24 / 36 cm and the triangle handrails). Only a confirmed look makes it stairs.
   The depth stream is on only for those seconds, because it slows every other stream.
 - **Stairs**: square up, then manual mode -> AI state -> AI basic gait, walk two cells

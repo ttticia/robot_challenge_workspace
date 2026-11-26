@@ -231,7 +231,12 @@ class Sense:
         or more), and whether the far wall's top was measured along at least half of it
         (so 'nothing tall' means looked and found nothing, not 'not seen'). The four
         corners of the cell are left out."""
-        along, depth = np.arange(-0.55, 0.551, 0.05), np.arange(0.10, 1.121, 0.05)
+        # Only what is IN the cell counts (user, 2026-11-26): the squares up to the cell's own
+        # borders (its walls stand on them, 0.51 m from the centre line, 1.02 m deep) and
+        # nothing beyond. Until then the box reached 4 cm past the side borders and 10 cm
+        # past the far one, so something tall just behind a wall, in the next cell, made
+        # this cell a 'room with something in it'.
+        along, depth = np.arange(-0.50, 0.501, 0.05), np.arange(0.05, 1.001, 0.05)
         x, y = self.grid.box(cell, d, along, depth)
         # Not the corners (0.2 m): a curtain or a frame wall on a NEIGHBOUR's edge ends at
         # the corner post and reads tall there (simulator, 2026-11-26: the empty room

@@ -4,7 +4,7 @@ Read this before changing anything here. It records the current strategy for the
 how the code is laid out, how to build and test it, and what the old stack taught us about
 the robot and the arena.
 
-Last updated 2026-11-26. Competition day is **27 November 2026**. Keep this file current
+Last updated 2026-11-26 (evening). Competition day is **27 November 2026**. Keep this file current
 when the strategy or the interfaces change.
 
 - Robot: DEEP Robotics **Lite3** quadruped, Livox **Mid-360** lidar (tilted 15°), Orbbec
@@ -20,16 +20,21 @@ On 2026-11-23 the exploration stack was restarted from scratch on branch `explor
 |---|---|
 | New stack | `src/maze_explore` (v2), on branch `exploration-v2`. |
 | Old stack | `maze_nav` (slam_toolbox + Nav2 + frontier explorer). Removed here in `044e17c`; still on branch `navigation` (`4303e33`) with its docs (`agent.md`, `skills.md`, `src/bt.md`, `src/to_do.md`). Use it for reference only. |
-| Kept | `src/team_perception`, `src/scene_understanding`, `datasets/curtain`, `runs/ROS_bags` tools, booklet, `robot_info.md`, `maze_info.md`, `maze_examples/`. |
+| Kept | `src/team_perception`, `src/scene_understanding`, `runs/ROS_bags` tools, booklet, `robot_info.md`, `maze_info.md`, `maze_examples/`. |
 
-State of the new stack, as found when this file was written:
+State on the evening of 2026-11-26 (the day before the competition):
 
-- Per `src/maze_explore/README.md`: one dry run on the robot (no driving) and one simulated
-  run. **It has not driven the real robot.** Treat curtain and stairs handling as untested.
-- The only robot bag with this stack, `runs/ROS_bags/demo` (hand-driven, 2026-11-23), has
-  good camera frames but a useless map and pose: the lidar IMU arrived at 8 Hz instead of
-  200 and Fast-LIO ran away (section 7, "The bridge").
-- Perception is **not connected** to the new explorer (section 5).
+- The stack drives the real robot. Best run so far, 05:57 on 2026-11-26: stairs, one
+  curtain and several uneven cells crossed, the last row reached, two possible exits found;
+  it ended in an odometry `FAULT` before the end cell.
+- **Every robot run of 2026-11-26 ended in an odometry fault or was stopped by hand.** Each
+  jump followed a late sensor feed (section 3.6, safety table). Unproven suspects: the
+  flat -> H-Step gait switch just before a sideways step onto uneven floor (three runs),
+  and speeds above 0.25 m/s.
+- Most of what was added on 2026-11-26 is unit-tested only; each entry in section 3.6 says
+  so. Simulated end to end that day: the end stop, the gait switch, a curtain crossing.
+- Scene understanding, QR reading and mission reports are connected to the explorer
+  (section 5). `poster_detector` is not.
 
 ## 2. What scores (short form of the booklet)
 
@@ -61,7 +66,8 @@ Rules that shape the design:
   the start heading, +Y to the robot's left, cell centres 1.02 m apart. A position counts if
   it is within 0.5 m of the true cell centre on both axes. The latest valid report per
   `task_id` is the one scored.
-- Reports go by HTTP POST to `http://192.168.10.141:8001/task_report` (booklet section E).
+- Reports go by HTTP POST to `http://192.168.10.141:8001/task_report_A` or `..._B` (booklet
+  section E): the course follows `maze_side`, L = A, R = B (section 5).
 
 ## 3. Current strategy: `maze_explore`
 
@@ -193,12 +199,19 @@ been explored, and the robot ends the run standing in the final cell.
   base_link, **0.42 m behind** (0.37 m body + 0.05 m for the bent hind legs), 0.23 m to
   each side; the rear corner sweeps 0.48 m, against 0.485 m from a cell centre to its
   walls, so a turn made off-centre has less room than that.
-- **Walking**: turn to the heading, drive straight to the next centre. Top speed 0.20 m/s
-  (team limit 0.25). Sideways and heading corrections on the way. **Never backwards**
+- **Walking**: turn to the heading, drive straight to the next centre. Top speed `v_max` in
+  `config/speeds.yaml` (team limit 0.25 m/s). Sideways and heading corrections on the way. **Never backwards**
   (`linear.x` is clamped at 0: nothing looks behind).
 - **Rooms**: not entered by default (`enter_rooms:=false`). From the cell before, the robot
-  looks centre, 30° left and 30° right (`look_angle`; 25° until 2026-11-26, user), holds 1.5 s each and publishes
-  `room centre|left|right cell (i, j) side d` on `/explore/event`.
+  looks centre, 45° left and 45° right (`look_angle`; user, 2026-11-26: 25°, then 30°, then 45°), holds 1.5 s each and publishes
+  `room centre|left|right cell (i, j) side d` on `/explore/event`. For the look it first walks
+  up to the room (user, 2026-11-26; unit-tested only): forward until its nose is 0.10 m
+  (`look_gap`) before the edge shared with the room, base_link 0.14 m ahead of the cell
+  centre; not from an uneven cell (turns there are made at the centre only). A negative
+  `look_gap` = from the cell centre. Before the look the depth stair check and the camera
+  curtain check run, without a terrain verdict for that cell (`look_depth:=false` = no
+  depth check). Only what is IN the cell makes it a room with something in it
+  (`Sense.tall_inside` stops at the cell's own borders, walls included).
 - **Empty rooms (user, 2026-11-26; unit-tested only)**: at the third view of a look
   (`do_look_last`) a dead end with nothing taller than an ordinary wall in it
   (`Sense.tall_inside`: under 4 squares at 0.65 m or more in the cell and on its walls, far
@@ -275,7 +288,7 @@ been explored, and the robot ends the run standing in the final cell.
 - **Stair check (2026-11-24)**: before walking into an unvisited cell where the lidar shows
   something 0.28 m or higher, and before any stairs crossing, the robot squares up, stands
   still and runs the teammates' depth-camera detector (package `stairs`: `src/stairs/stairs/stair_levels.py`, copied from
-  `~/stairs_detect`: treads at 12 / 24 / 36 cm, plus the triangle handrails in the lidar)
+  `~/stairs_detect`, now kept in `archive/stairs_detect`: treads at 12 / 24 / 36 cm, plus the triangle handrails in the lidar)
   for up to 3 s. Its verdict overrides the lidar's: `stairs` only when it confirms. Depth is
   subscribed only during the check, because one raw depth subscriber slows every stream
   from the robot; odometry jumps in that window do not count towards `FAULT`. A cell that
@@ -294,7 +307,7 @@ been explored, and the robot ends the run standing in the final cell.
   frames with nothing that high = not stairs, depth closes with the floor verdict (about
   1 s instead of up to 4.5 s). `stair_gate:=false` (node parameter) = both at once, as before.
 - **Stairs**: square up in the cell before, enter AI mode (manual → AI on → AI gait), walk
-  two cells (over the stair cell to the centre of the cell after) at 0.15 m/s, leave AI mode
+  two cells (over the stair cell to the centre of the cell after) at `ai_speed` (`config/speeds.yaml`), leave AI mode
   (AI off → manual → Move → gait → navigation mode). The stair cell is closed afterwards.
   This matches the one-cell-before, one-cell-after rule.
   **Centred before the gait change (user, 2026-11-26; unit-tested only):** the AI walk
@@ -306,13 +319,13 @@ been explored, and the robot ends the run standing in the final cell.
   pose is old, the centre is not ahead (within 70 deg) or is more than a cell away; a wall
   ahead or a time limit ends it. Only then AI off -> manual -> Move -> gait -> navigation.
   `ai_centre:=false` (node parameter) = off.
-- **Terrain (user, 2026-11-24; simulator only so far)**: a cell with uneven terrain is
+- **Terrain (user, 2026-11-24; run on the robot 2026-11-25 and 26)**: a cell with uneven terrain is
   entered **sideways**. Uneven = 15 or more 5 cm squares of the cell's interior at 0.06 m or
   more above the floor, below object height (`Sense.rough`). In the cell before, the robot
   turns on the spot until its body is square to the way in, then steps sideways to the next
-  centre at 0.10 m/s (`do_strafe`); the obstacle stop looks to that side. `terrain:=false`
-  walks in head first. The H-Step gait (`gait:=hstep`, default again since 2026-11-24, user; `rug` = RUG
-  general gear) is used for the whole run.
+  centre at `side_speed` (`do_strafe`); the obstacle stop looks to that side. `terrain:=false`
+  walks in head first. The gait on uneven floor is H-Step (`gait:=hstep`; `rug` = RUG general
+  gear); on plain floor see "Gait by floor" below.
   **Depth camera for the floor (user, 2026-11-25):** the lidar's lowest ray meets the floor
   about 1.3 m ahead, so from the cell before, the next cell's floor is mostly unseen. When
   fewer than 25 (40 until 2026-11-26) of its 121 squares have been seen (and the lidar does not already say
@@ -347,7 +360,7 @@ been explored, and the robot ends the run standing in the final cell.
   obstacle stop on: stopped = that side is a wall and the next one is tried.
 - **`maze_side`**: `explore.launch.py` asks "R or L" in the terminal at every launch
   (`maze_side:=R|L` answers it). Used for the end turn only.
-- **Gait by floor (user, 2026-11-26; never run on the robot)**: before a step from a cell
+- **Gait by floor (user, 2026-11-26; run on the robot that day, see section 1 for the suspicion)**: before a step from a cell
   that is not uneven, into a cell that is not uneven either: `flat_gait` (default
   `flat_slow`, `0x21010300`; the flat gaits are untested on this robot); into an uneven
   cell: `gait` (H-Step). Standing in an uneven cell nothing changes. Each change is Move →
@@ -381,37 +394,31 @@ been explored, and the robot ends the run standing in the final cell.
   from it. Not covered: a drive that STARTS with the nose already closer than 14 cm to a
   wall the stop has never seen.
 
-- **Changes of the evening of 2026-11-26 (user; all unit-tested only, none run on the robot)**:
-  - **Before a room / object look: stair check yes, terrain check no.** The depth stair
-    check runs (the camera curtain check too), but no terrain verdict is made or recorded
-    for that cell: it is only looked into, never walked into. The floor frames are still
-    read as the quick gate for the stair detector. For a few hours there was no depth
-    check before looks at all. `look_depth:=false` (node parameter) = none.
-  - **False curtains:** with `curtain_cv` on, the lidar alone proposes no curtain. A tall
-    edge (tall walls read exactly like curtains: 04:42 and 05:30 runs, beside the start
-    cell and beside cell (1, 0)) is a wall until the curtain camera has pointed at it at
-    least once (`camera_pointed`); then the usual checks follow. Cost: a real curtain the
-    camera never fires on while the robot moves about is never looked at squarely.
-    `cv_first:=false` = as before. With `curtain_cv:=false` the lidar decides alone.
-  - **False stairs:** a depth-camera STAIRS verdict counts only if the lidar's height map
-    shows something 0.38 m or higher in that cell (`stair_lidar_top`; stairs are 0.45 m,
-    terrain under 0.30 m). 04:42 run: "stairs 0.70 m, levels 0.12 / 0.25 / 0.38" ahead of
-    the start, in a cell later walked through; what the camera saw there is not known (no
-    depth on record). `stair_agree:=false` = the camera alone, as before.
-  - **Re-anchor after an odometry jump: OFF by default (`jump_fix:=true` = on).** First real
-    use, 05:57 run: 2 s after a 0.32 m jump the pose read 0.38 m / 9.7° off, the grid was
-    turned by that, the map did not turn with it (slam_toolbox kept matching scans to the
-    walls it had), and the cells ended up 10° askew to every mapped wall; the wall fit
-    could not bring them back. What it does when on: the robot stands from the first jump on, so where
-    it believed itself just before is where it still is. Once Fast-LIO has settled (no jump
-    for `odom_settle`, pose still for 1 s, reported tilt under 25°) and the map pose is more
-    than 0.10 m / 4° off that, the cell grid is moved and turned by the difference, a few
-    medium wall fits near the robot refine it, and what was known of the OTHER cells is
-    kept as it was (`self.kept`; the map of them no longer lines up). The height map and
-    the obstacle memory start afresh. Not done when Fast-LIO has not settled after 6 s
-    (it has diverged) or the pose is more than 1.0 m / 30° off. Known weak point: walls
-    mapped before the jump stay in `/map` beside the new ones near the robot.
-    `jump_fix:=false` = off.
+- **False curtains (user, 2026-11-26; unit-tested only):** with `curtain_cv` on, the lidar alone proposes no curtain. A tall
+  edge (tall walls read exactly like curtains: 04:42 and 05:30 runs, beside the start
+  cell and beside cell (1, 0)) is a wall until the curtain camera has pointed at it at
+  least once (`camera_pointed`); then the usual checks follow. Cost: a real curtain the
+  camera never fires on while the robot moves about is never looked at squarely.
+  `cv_first:=false` = as before. With `curtain_cv:=false` the lidar decides alone.
+- **False stairs (user, 2026-11-26; unit-tested only):** a depth-camera STAIRS verdict counts only if the lidar's height map
+  shows something 0.38 m or higher in that cell (`stair_lidar_top`; stairs are 0.45 m,
+  terrain under 0.30 m). 04:42 run: "stairs 0.70 m, levels 0.12 / 0.25 / 0.38" ahead of
+  the start, in a cell later walked through; what the camera saw there is not known (no
+  depth on record). `stair_agree:=false` = the camera alone, as before.
+- **Re-anchor after an odometry jump: OFF by default (`jump_fix:=true` = on).** First real
+  use, 05:57 run: 2 s after a 0.32 m jump the pose read 0.38 m / 9.7° off, the grid was
+  turned by that, the map did not turn with it (slam_toolbox kept matching scans to the
+  walls it had), and the cells ended up 10° askew to every mapped wall; the wall fit
+  could not bring them back. What it does when on: the robot stands from the first jump on, so where
+  it believed itself just before is where it still is. Once Fast-LIO has settled (no jump
+  for `odom_settle`, pose still for 1 s, reported tilt under 25°) and the map pose is more
+  than 0.10 m / 4° off that, the cell grid is moved and turned by the difference, a few
+  medium wall fits near the robot refine it, and what was known of the OTHER cells is
+  kept as it was (`self.kept`; the map of them no longer lines up). The height map and
+  the obstacle memory start afresh. Not done when Fast-LIO has not settled after 6 s
+  (it has diverged) or the pose is more than 1.0 m / 30° off. Known weak point: walls
+  mapped before the jump stay in `/map` beside the new ones near the robot.
+  `jump_fix:=false` = off.
 
 - **Against map drift (user, 2026-11-26; unit-tested only)**: (1) SLAM gets no scans while
   odometry is not to be trusted (`/maze/blind`, as under a curtain): during a burst of
@@ -512,7 +519,8 @@ changes) is not repeated: the script prints the earlier result (`FORCE=1` runs a
 Tell the other session what you are about to run, so one run covers both sets of edits.
 
 Unit tests: `nice -n 19 python3 -m pytest src/<package>/test -q`. `team_perception` and
-`scene_understanding` have tests; `maze_explore` has `test/test_logic.py`.
+`scene_understanding` and `task_reporter` have tests; `maze_explore` has `test/test_*.py`
+(logic, exit stop, start guards, odometry jumps, curtains, QR approach, stairs).
 
 ## 5. Perception and reporting
 
@@ -522,7 +530,6 @@ Unit tests: `nice -n 19 python3 -m pytest src/<package>/test -q`. `team_percepti
 | `scene_understanding` | `junction_trigger`, `room_scene` | **Connected to `maze_explore` (2026-11-24)**, started by `explore.launch.py`. `junction_trigger` takes the three views of each room / object look (compressed colour, subscribed only during the look), sends them as one 2 x 2 image with `LOOK_PROMPT` (scene type, hand tools, hazard, survivor; no QR) to the lab VLM (`192.168.10.141:8000`, images at most 1024 x 768, 2 s cooldown) and publishes `/scene/result`. `scene_understanding:=false` turns it off. `room_scene` is the old path, not started |
 | `task_reporter` (own package, user 2026-11-24) | `task_reporter` | Takes `/scene/result` (scene understanding) and `/qr/read` (`qr_scanner`), maps them to the five missions (`missions.py`), checks the format (`missions.check`) and POSTs each report as `group04_grp4` to `http://192.168.10.141:8001/task_report_A` or `..._B`: **the course follows `maze_side`, L = course A, R = course B** (user, 2026-11-26; `missions.course_url`; a `report_url` ending in `_A` / `_B` overrides it; with neither, nothing is posted and the node logs an error; practice mode, live since 2026-11-24; the reply carries the per-field evaluation). Every report carries `pos`, M04 too (user). `pos` is always the centre of the cell the robot is LOOKING AT (user, 2026-11-25), taken from the explorer's look events and from its status while the job is a look, so both coordinates are whole multiples of 1.02; never where the robot stands. One answer per mission: M01 only for the object the mission asks for (`m01_object`, default `hand_tools`; a setting because the missions may still change, user 2026-11-24), M02 for a hazard sign (`m02_hazard`, default any); the first sighting holds it. Everything else seen is recorded on `/mission/sightings`, not submitted. Imports nothing from the other packages. `report:=false` turns it off |
 | QR during looks | `qr_scanner` (in `team_perception`) | `explore.launch.py` starts one (`qr:=false` = off) with `on_demand`: its camera is subscribed, and every frame fully scanned, only while `/explore/status` shows a look job, the same moment scene understanding takes its views. Do not run `robot.launch.py` as well (a second scanner). It ends with `maze_explore` (user, 2026-11-24): the launch interrupts it when the `maze_explorer` process exits, and it stops itself when the launch dies in any way (`EXIT_WITH_PARENT`, plus a parent check every 2 s). 2026-11-24 10:54 frame: the code on the survivor poster was about 35 px wide from the cell before and the decoder did not even locate it |
-| `datasets/curtain` | one-class curtain YOLO set | See its `README.md` |
 
 **The gap to close.** These packages were written against the old explorer and still
 listen to its topics, which nothing publishes now:
@@ -611,7 +618,7 @@ Sensors and odometry:
   (`depth_on_demand:=true`): it subscribes only while the explorer holds a room look
   (`/explore/event` starting with `room` / `object`) or on `/scene/capture`, and closes 6 s
   after the last one. The stair check opens depth itself for at most 3 s (1.6 s when no
-  frame looks like stairs). `~/stairs_detect/stair_watch.py` still keeps depth and
+  frame looks like stairs). `archive/stairs_detect/stair_watch.py` still keeps depth and
   `/livox/points` open: do not run it during a run.
 - **One subscriber to raw depth (`/camera/depth/image_raw`), even BEST_EFFORT, slows every
   bridge stream to about 10 Hz** (measured 2026-11-23: `/imu/data` 195 → 11 Hz). The same
@@ -664,13 +671,14 @@ Measuring:
 
 - [ ] Run `maze_explore` in the simulator on every maze in `maze_examples/sim/` and record
       the results.
-- [ ] First robot run: mapping only (`explore:=false`), then `drive:=false`, then a full run.
-- [ ] Unit tests for `grid.py`, `sense.py`, `plan.py`.
+- [x] First robot runs: done 2026-11-25 and 26 (section 1).
+- [ ] One robot run that reaches the end cell without an odometry fault. Try
+      `gait_switch:=false` and `v_max` 0.20 to test the two suspects of section 1.
+- [x] Unit tests for `grid.py`, `sense.py`, `plan.py` (`test/test_logic.py`).
 - [ ] Connect perception and scene understanding to `/explore/event` and the cell grid
       (section 5).
-- [ ] Wire the VLM into `room_scene`. `task_reporter` follows the 2026-11-24 report format but
-      has never posted to the real server: test it against `192.168.10.141:8001` with our
-      `group_id`.
+- [x] Mission reports reach the scoring server (practice mode, since 2026-11-24). `room_scene`
+      is the old path and is not started; `junction_trigger` does the VLM work.
 - [x] Decide whether the curtain YOLO model confirms a curtain before the robot pushes:
       yes, with `curtain_cv` on (user, 2026-11-25; section 3.6).
 - [ ] `/livox/imu` reaches this computer at 10-20 Hz instead of 200 (2026-11-23 afternoon,

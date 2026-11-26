@@ -224,9 +224,9 @@ def test_odometry_that_has_not_settled_is_waited_for_then_given_up():
     assert r.jump_settled() and r.kept == {}
 
 
-def test_the_three_views_of_a_look_are_30_degrees_apart():
+def test_the_three_views_of_a_look_are_45_degrees_apart():
     src = __import__('inspect').getsource(E.__init__)
-    assert "p('look_angle', 30.0)" in src
+    assert "p('look_angle', 45.0)" in src
 
 
 def test_before_a_look_the_stair_check_runs_without_a_terrain_verdict():
@@ -255,3 +255,19 @@ def test_grid_corrections_use_the_walls_near_the_robot():
     src = __import__('inspect').getsource(E.align_grid)
     assert 'radius = 4.0 if wide else self.grid_fit_radius' in src
     assert "p('grid_fit_radius', 2.0)" in __import__('inspect').getsource(E.__init__)
+
+
+def test_a_look_is_made_from_10_cm_before_the_rooms_edge():
+    import inspect
+    src = inspect.getsource(E.plan)
+    assert 'reach = self.cell_size / 2 - self.look_gap - self.fp_front' in src
+    assert "p('look_gap', 0.10)" in inspect.getsource(E.__init__)
+    R = type('R', (Robot,), dict(do_drive=E.do_drive, do_call=E.do_call))
+    r = R()
+    r.v_max, r.ai_speed, r.curtain_speed, r.push_stop, r.push_sure, r.step = 0.2, 0.5, 0.1, True, False, None
+    r.pose = [0.03, -0.02, 0.05]                               # at the centre of cell (0, 0)
+    reach = 1.02 / 2 - 0.10 - r.fp_front
+    r.queue.extend([('turn', 0.0, 3.0), ('drive', reach, 0.0, 0.0, 'creep')])
+    assert r.run(30.0)
+    assert r.pose[0] + r.fp_front == pytest.approx(0.51 - 0.10, abs=0.04)     # nose 0.10 m before the edge
+    assert not r.backwards

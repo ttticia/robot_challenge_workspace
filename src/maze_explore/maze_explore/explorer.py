@@ -160,7 +160,7 @@ class Explorer(Node):
         self.rough_checked = {}       # (cell, d) -> True | False | None (camera saw too little)
         self.rough_known = set()      # cells the depth camera has confirmed as uneven
         self.terrain_confirm = p('terrain_confirm', 3).value   # uneven frames that confirm it
-        self.look_angle = math.radians(p('look_angle', 30.0).value)
+        self.look_angle = math.radians(p('look_angle', 45.0).value)
         # QR approach (user, 2026-11-25). From the cell before, a code on a side wall is
         # seen about 60 deg off square and cannot be decoded (10:54 run, 11-24: 34 x 68 px).
         # Scene understanding (the VLM) can SEE it, though. After the three views of a look
@@ -201,6 +201,8 @@ class Explorer(Node):
         self.qr_read_t = -1e9         # time of the last /qr/read
         self.qr_t0 = 0.0              # start of the look under way
         self.look_hold = p('look_hold', 1.5).value
+        self.look_gap = p('look_gap', 0.10).value     # m, nose to the room's edge for a look
+        #                                               (negative = look from the cell centre)
         self.greet_hold = p('greet_hold', 2.0).value
         self.cmd_gap = p('cmd_gap', 1.5).value         # s between mode requests
         self.ai_speed = p('ai_speed', 0.5).value    # stairs copy: was 0.15 (Rey, 2026-11-25: 0.5)
@@ -857,7 +859,8 @@ class Explorer(Node):
         # it is refused (05:57 run, twice), just when it is needed. The first, wide fit
         # still takes everything within 4 m.
         radius = 4.0 if wide else self.grid_fit_radius
-        if self.reanchor_fit and not wide:   # stairs copy: just re-anchored after the stairs
+        anchoring = bool(self.reanchor_fit) and not wide
+        if anchoring:                        # stairs copy: just re-anchored after the stairs
             max_yaw, max_shift, radius = math.radians(10), 0.25, 1.6
             self.reanchor_fit -= 1
         px, py = self.occ.occupied_points()
@@ -893,7 +896,7 @@ class Explorer(Node):
             self.get_logger().info(f'grid lined up with the walls: turned {turned:+.1f} deg, '
                                    f'moved {moved:.2f} m (quality {q:.2f})')
             return True
-        if radius < 4.0:
+        if anchoring:                        # (not every correction: those use 2 m too now)
             self.reanchor_fit = 0
             self.event(f'grid fitted after re-anchoring: {turned:+.1f} deg, {moved:.2f} m '
                        f'(quality {q:.2f})')
@@ -1163,6 +1166,17 @@ class Explorer(Node):
                 q.append(('call', lambda: (self.scene_results.pop(nb(c, d), None),
                                            setattr(self, 'qr_t0', self.now()))))
             what = 'object' if self.kinds.get((c, d)) == 'object' else 'room'
+            # Up to the room first (user, 2026-11-26): forward until the nose is look_gap
+            # (0.10 m) before the edge shared with the room, base_link 0.14 m ahead of the
+            # cell centre, and the three views are made from there. The obstacle stop is
+            # on and nothing becomes a wall if it ends short. Not from an uneven cell:
+            # there turns are made at the centre only.
+            uneven = c in self.rough_cells or c in getattr(self, 'rough_known', ())
+            if self.look_gap >= 0 and not (uneven and self.terrain_on):
+                kx, ky = self.grid.centre(c)
+                reach = self.cell_size / 2 - self.look_gap - self.fp_front
+                q.extend([('turn', h, 3.0), ('call', lambda: setattr(self, 'step', None)),
+                          ('drive', kx + reach * math.cos(h), ky + reach * math.sin(h), h, 'creep')])
             for name, off in (('centre', 0.0), ('left', self.look_angle)):
                 q.extend([('turn', wrap(h + off), 3.0), ('event', f'{what} {name} cell {c} side {d}'),
                           ('hold', self.look_hold)])
