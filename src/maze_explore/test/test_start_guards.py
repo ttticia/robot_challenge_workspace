@@ -390,10 +390,13 @@ def test_the_planner_does_not_send_the_robot_into_such_a_cell():
 
 
 def test_a_skipped_path_cell_is_entered_when_nothing_else_is_left():
+    # user, 2026-11-26 night: skipped cells count as EXPLORED and stay out for good;
+    # through_enter:=true brings the old rule back (entered once nothing else is left)
     import inspect
     from maze_explore.plan import next_job
     src = inspect.getsource(E.plan)
-    assert "if through and j['job'] not in ('visit', 'look'):" in src and 'entered after all' in src
+    assert "and self.through_enter" in src and 'entered after all' in src
+    assert "p('through_enter', False)" in inspect.getsource(E.__init__)
     a, b, other = (1, 0), (1, 1), (2, 0)
     args = dict(closed=set(), links={}, cur=a, facing=0, looked=set(), greeted=set(), exit_cell=None)
     # something else is still unexplored: (2, 0) ahead. The skipped cell (1, 1) is left alone.

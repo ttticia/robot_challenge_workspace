@@ -91,7 +91,7 @@ def test_camera_confirms_then_push(Robot):
     assert r.verify(EDGE, hits=4)
     assert EDGE in r.cv_curtains and BACK in r.cv_curtains
     r.go(A, 0, 'curtain')
-    assert any(a[0] == 'strafe' and a[-1] == 'push' for a in r.queue)
+    assert any(a[0] in ('strafe', 'drive') and a[-1] == 'push' for a in r.queue)   # head on since 11-26 night
 
 
 def test_camera_rejects_lidar_curtain_becomes_wall(Robot):
@@ -127,7 +127,7 @@ def test_camera_off_lidar_decides_alone(Robot):
     r = Robot(cv_on=False)
     r.kind(LidarSaysCurtain(EDGE), *EDGE)
     r.go(A, 0, 'curtain')
-    assert any(a[0] == 'strafe' and a[-1] == 'push' for a in r.queue)
+    assert any(a[0] in ('strafe', 'drive') and a[-1] == 'push' for a in r.queue)   # head on since 11-26 night
 
 
 def test_camera_sees_a_curtain_over_an_ordinary_wall_the_wall_stays_a_wall(Robot):
@@ -166,13 +166,15 @@ def test_after_a_curtain_there_are_no_turns(Robot):
     r.kind(LidarSaysCurtain(EDGE), *EDGE)
     r.go(A, 0, 'curtain')
     acts = [a[0] for a in r.queue]
-    after = acts[acts.index('strafe') + 1:]
+    push = next(i for i, a in enumerate(r.queue) if a[-1] == 'push')
+    after = acts[push + 1:]
     assert 'turn' not in after and after[0] == 'curtain_clear'    # turns only if the lidar is covered
     r.queue.clear()
     r.curtain_turns = True                                   # the old 180 right / 50 left
     r.go(A, 0, 'curtain')
     acts = [a[0] for a in r.queue]
-    assert acts[acts.index('strafe') + 1:].count('turn') == 3
+    push = next(i for i, a in enumerate(r.queue) if a[-1] == 'push')
+    assert acts[push + 1:].count('turn') == 3
 
 
 def test_an_edge_that_stands_down_to_the_floor_is_not_a_curtain():
@@ -203,3 +205,18 @@ def test_an_edge_that_stands_down_to_the_floor_is_not_a_curtain():
 def test_the_camera_needs_5_frames_at_0_6():
     src = inspect.getsource(importlib.import_module('maze_explore.explorer').Explorer.__init__)
     assert "p('cv_conf', 0.6)" in src and "p('cv_verify_hits', 5)" in src and "p('cv_verify_time', 4.0)" in src
+
+
+def test_curtain_is_crossed_head_on(Robot):
+    # user, 2026-11-26 night: walk straight through, facing the curtain
+    r = Robot(cv_on=False)
+    if not hasattr(r, 'curtain_sideways'):
+        pytest.skip('the stairs copy keeps its own curtain crossing')
+    r.kind(LidarSaysCurtain(EDGE), *EDGE)
+    r.go(A, 0, 'curtain')
+    push = [a for a in r.queue if a[-1] == 'push']
+    assert push and push[0][0] == 'drive'
+    r.queue.clear()
+    r.curtain_sideways = True
+    r.go(A, 0, 'curtain')
+    assert [a for a in r.queue if a[-1] == 'push'][0][0] == 'strafe'

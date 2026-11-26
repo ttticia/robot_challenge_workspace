@@ -171,8 +171,10 @@ def watching(status):
         return False
     if not status.startswith('RUN ') or ' act=turn ' in status:
         return False
-    # ... except while the explorer checks for a curtain BEFORE a look's views are taken
-    return 'job=[look ' not in status or ' act=cv_verify ' in status
+    # ... except while the explorer checks for a curtain BEFORE a look's views are taken,
+    # and during a room side check (act=side_watch, user 2026-11-26 night)
+    return 'job=[look ' not in status or ' act=cv_verify ' in status \
+        or ' act=side_watch ' in status
 
 
 def main():

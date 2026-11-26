@@ -12,6 +12,8 @@ explorer = pytest.importorskip('maze_explore.explorer')
 
 class Robot:
     do_ai_centre = explorer.Explorer.do_ai_centre
+    ai_rest = explorer.Explorer.ai_rest
+    ai_centre_dr = explorer.Explorer.ai_centre_dr
 
     class Log:
         def info(self, *a, **k): pass
@@ -24,6 +26,7 @@ class Robot:
         self.ai_centre_on, self.ai_centre_tol, self.ai_centre_speed = True, 0.10, 0.20
         self.ai_walking, self.cloud, self.blocked = False, np.zeros((0, 3)), False
         self.odom_jumps, self.odom_hold_until, self.odom_grace_until = [], 0.0, 0.0
+        self.ai_expected, self.imu_yaw, self.ai_wz = None, None, 0.0
         self.events, self.cmds = [], []
 
     def now(self): return self.t
@@ -140,7 +143,8 @@ def gate_robot(frames):
            stair_min_hits=5, stair_rails=False, body_height=0.30, clouds=[],
            stair_gate=True, stair_gate_min=0.20, stair_gate_squares=6, stair_gate_frames=3,
            depth_high=None, depth_topic='d', depth_info_topic='i', odom_rot=np.eye(3),
-           events=[], queue=deque(), destroyed=[], floor_reads=0)
+           events=[], queue=deque(), destroyed=[], floor_reads=0,
+           raised=lambda *a: False, grid=None, stair_rechecked=set())
     r.now = lambda: r.t
     r.elapsed = lambda: r.t - r.act_t0
     r.send = lambda *a, **k: None
@@ -223,3 +227,74 @@ def test_curtain_camera_is_off_while_depth_is_open():
     job = 'RUN cell=(1, 0) job=[visit cell (1, 0) side 0 via 0 cells] '
     assert watching(job + 'act=drive ')
     assert not watching(job + 'act=stair_check ')
+
+
+def test_lidar_stair_high_overrides_the_floor_gate(monkeypatch):
+    # user, 2026-11-26 night: the gate never vetoes where the lidar shows stair-high
+    r = gate_robot([(False, 0)])                          # the floor frames say flat
+    r.raised = lambda *a: True
+    ticks, detects = run_check(r, monkeypatch, stairs_there=True)
+    assert detects >= 3 and r.stairs_checked[((0, 0), 0)] is True
+
+
+def test_a_sharp_edge_failure_gets_one_recheck_from_up_close(monkeypatch):
+    from maze_explore.grid import Grid
+    r = gate_robot([(True, 30)])
+    r.raised = lambda *a: True
+    r.grid, r.cell_size = Grid(0.0, 0.0, 0.0, 1.02), 1.02
+    r.look_gap, r.fp_front = 0.10, 0.27
+    detect_calls = []
+
+    def detect(*a):
+        detect_calls.append(1)
+        return None
+    detect.last_why = 'no top level at 0.36 m (17 pts)'   # marginal: too few points
+    monkeypatch.setattr(explorer.stair_levels, 'detect', detect)
+    monkeypatch.setattr(explorer.stair_levels, 'Confirm',
+                        lambda: __import__('types').SimpleNamespace(add=lambda now, seen: None))
+    r.act_mem.clear()
+    for i in range(80):
+        if 'subs' in r.act_mem:
+            r.act_mem['frame'], r.act_mem['k'] = object(), (1.0, 1.0, 1.0, 1.0)
+        if explorer.Explorer.do_stair_check(r, (0, 0), 0, True):
+            break
+        r.t += 0.1
+    assert ((0, 0), 0) not in r.stairs_checked            # no verdict yet: rechecking
+    assert ((0, 0), 0) in r.stair_rechecked
+    acts = [a[0] for a in r.queue]
+    assert acts == ['hold', 'drive', 'turn', 'hold', 'stair_check']
+    assert r.queue[-1][-1] is True                        # the close pass
+    assert any('once more from up close' in e for e in r.events)
+    # the close pass fails on the same reason: the verdict is final, no third try
+    r.act_mem.clear()
+    r.queue.clear()
+    r.t += 5.0
+    r.act_t0 = r.t
+    for i in range(80):
+        if 'subs' in r.act_mem:
+            r.act_mem['frame'], r.act_mem['k'] = object(), (1.0, 1.0, 1.0, 1.0)
+        if explorer.Explorer.do_stair_check(r, (0, 0), 0, True, False, True):
+            break
+        r.t += 0.1
+    assert r.stairs_checked[((0, 0), 0)] is False and not any(
+        a[0] == 'stair_check' for a in r.queue)
+
+
+def test_a_pose_not_believed_walks_the_rest_by_dead_reckoning():
+    # the other session's fix after the 19:14 run (SLAM re-matched 1.70 m away, the centre
+    # read 128 deg off): the AI walk's own count says where the robot is; what is left to
+    # the centre is walked straight on in the AI gait
+    r = Robot(2.04 - 0.5, 0.0)
+    r.pose_time = 40.0                                  # the pose is old: not believed
+    r.ai_expected = (2.04 - 0.30, 0.0)                  # the walk's count: 0.30 m short
+    assert r.run((2, 0), fresh=False)
+    assert any('dead reckoning' in e for e in r.events)
+    assert any('walked onto the centre by dead reckoning' in e for e in r.events)
+    assert r.ai_expected is None and not r.ai_walking   # used once
+
+
+def test_no_dead_reckoning_without_the_walk_count():
+    r = Robot(2.04 - 0.5, 0.0)
+    r.pose_time = 40.0
+    assert r.run((2, 0), fresh=False) and 'no dead reckoning' in r.events[0]
+    assert len(r.cmds) == 1                             # nothing driven

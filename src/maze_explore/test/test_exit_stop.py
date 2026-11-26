@@ -136,8 +136,9 @@ def kinds_robot():
 
 
 class Reads:
-    def __init__(self, k): self.k = k
+    def __init__(self, k, walls=()): self.k, self.walls = k, set(walls)
     def kind(self, cell, d, may_exit=True): return self.k
+    def edge(self, cell, d): return ('wall' if (cell, d) in self.walls else 'unknown', False)
 
 
 @pytest.mark.parametrize('reading', ['free', 'unknown', 'curtain', 'room', 'stairs', 'exit'])
@@ -285,7 +286,10 @@ def test_stairs_from_the_depth_camera_need_the_lidar_to_show_something_that_high
     nan = float('nan')
     assert lidar_view(0.15, 0.45) == ''                          # real stairs: 0.45 m at the back
     assert 'highest 0.25' in lidar_view(0.12, 0.25)              # terrain / ramps: not believed
-    assert 'nothing at all' in lidar_view(nan, nan)              # an empty cell
+    # user, 2026-11-26 night: what the lidar has not measured it cannot reject; the
+    # camera then decides alone (stairs seen through a doorway, height map thin there)
+    assert lidar_view(nan, nan) == ''
+    assert lidar_view(0.12, nan) == ''
     assert lidar_view(nan, nan, clouds=3) == ''                  # height map just restarted: no veto
 
 
@@ -323,6 +327,9 @@ def test_a_cell_the_depth_camera_saw_clear_is_walked_into_whatever_the_lidar_say
     assert E.kind(r, Reads(lidar), (2, -2), 0) == 'free'            # ... then walked into
     assert E.kind(r, Reads('wall'), (2, -2), 0) == 'wall'           # a mapped wall stays one
     assert E.kind(r, Reads('room'), (2, -2), 0) == 'room'           # a dead end is still looked at
+    # user, 2026-11-26 night (19:21 run): a dead end is never entered, even seen clear
+    dead = Reads(lidar, walls={((3, -2), 0), ((3, -2), 1), ((3, -2), 3)})
+    assert E.kind(r, dead, (2, -2), 0) == 'room'
 
 
 def test_only_a_well_seen_floor_makes_a_cell_clear():

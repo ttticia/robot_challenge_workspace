@@ -174,8 +174,17 @@ stairs, start and the last cell.
 3. **stairs / curtain**: only when nothing in 1 is left: the nearest one not crossed yet; at
    the same distance stairs come before a curtain.
 4. **exit**: nothing left at all: go to the cell that has the way out, do the end stop (section 3.6, `DONE`).
-5. **no exit**: no exit known either (user, 2026-11-26): the navigation pauses and the robot
-   lies down where it stands (`STOPPED`, not `DONE`; `lie_down:=false` = pause standing).
+5. **no exit**: not believed at once (user, 2026-11-26 night; unit-tested only,
+   `test/test_no_exit.py`): first every wall to an untravelled cell that is not solidly
+   mapped (under 40 % of the edge occupied, or a wall only by a resolve timeout or a
+   given-up step) is faced once more, nearest first (`recheck_soft_wall`,
+   `no_exit_walls:=false` = off); then the nearest tall edge to an untravelled cell
+   (`cv_tall_min`, 20 % curtain-high) is tried as a curtain, camera confirmation or none
+   (`force_tall_curtain`, `curtain_last:=false` = off): fabric maps as a wall, and a
+   curtain is the one 'wall' the robot can walk through. The push keeps its guards (leg
+   stall, 8 s); failing, the edge is a wall for good (`push_failed`) and the next is
+   tried. Each edge is faced / tried once. Only when nothing is left: the navigation
+   pauses and the robot lies down where it stands (`STOPPED`, not `DONE`; `lie_down:=false` = pause standing).
    `/nav/start` stands it up again and it plans afresh. **Not when the robot is lost**: with
    the pose more than 0.75 m (`lost_dist`) from the nearest known cell centre it pauses
    standing and says so (09:06 run: 2.37 m from every known cell, it called it 'no exit
@@ -196,9 +205,11 @@ already seen; then least turning.
 2026-11-26 night; unit-tested only; `through_cells`): an open cell not visited yet is skipped when every other side of it
 is a mapped wall or an open way into a cell the robot has already been in. An unknown side,
 or one open into a cell not visited, keeps it on the list: ALL its ways out must lead to
-known cells. **The rule gives way when nothing else is left to explore**: the skipped cells
-are then entered after all, before any curtain, stairs or the exit. Uneven cells are always
-crossed (they score). `skip_through:=false` = every open cell is entered.
+known cells. **Since 2026-11-26 night the skipped cells stay out for good** (user: mark empty cells as
+explored; 19:21 run: (2, -1) was entered after all, costing two crossings of an uneven cell
+before the curtain job). `through_enter:=true` brings the old rule back (entered once
+nothing else is left). Uneven cells are always crossed (they score). `skip_through:=false`
+= every open cell is entered.
 
 So curtains and stairs are crossed **last**, after everything reachable on this side has
 been explored, and the robot ends the run standing in the final cell.
@@ -225,6 +236,40 @@ been explored, and the robot ends the run standing in the final cell.
 - **Walking**: turn to the heading, drive straight to the next centre. Top speed `v_max` in
   `config/speeds.yaml` (team limit 0.25 m/s). Sideways and heading corrections on the way. **Never backwards**
   (`linear.x` is clamped at 0: nothing looks behind).
+- **Rooms: a dead end is NEVER entered (user, 2026-11-26 night; unit-tested only;
+  `no_dead_end_entry`)**: the `depth_clear` rule (camera saw the floor clear, walk in) gives
+  way when the cell behind is closed on its other three sides; such a cell stays a `room`,
+  looked at only. 19:21 run: room (4, -2) re-read as stair-high, the camera found its floor
+  clear and the robot walked into the dead end.
+- **Room checks (user, 2026-11-26 night; unit-tested only, `test/test_room_checks.py`)**:
+  before the views of a room / object look:
+  (1) **The depth stair check runs only on potential stairs** (user, later that night):
+  the lidar shows something stair-high (`raised`), or the VLM said stairs (`vlm_stairs`).
+  `room_stairs:=true` = at every room, as for a few hours that evening.
+  (2) **Confirmed content overrides the stair check** (user; 20:12 run: the prop room
+  behind (1, 0), 7 squares at 0.65 m or more, got the check and the close recheck on a
+  late feed): a room or object cell with items taller than the wall inside
+  (`Sense.tall_inside` >= 4 squares at 0.65 m, the room_empty content test) gets no stair
+  check and never becomes a `stairs` candidate in `kind()` — stairs are 0.45 m, under the
+  0.53 m walls, so such a cell is a prop room.
+  (3) **The three-point side scan** (face, then 45° left and right, `side_check_angle`,
+  0 = off, 3 s each, `side_check_hold`, with the curtain camera on: `side_watch`,
+  `curtain_node` watches during it) runs for cells with NOTHING confirmed inside (empty
+  or unmeasured rooms: an empty dead end is where a curtain or the stairs can hide on a
+  side), and is skipped for cells with confirmed tall content and when both of the room's
+  side walls are measured ordinary low walls (`Sense.low_wall`: nothing hides behind one;
+  the turns cost ~12 s a look and turning on a late feed is when the odometry jumps,
+  19:42 run). A sighting is verified later like any other. The look's own three views
+  stay at `look_angle` (35°). A look skipped (all missions done, or empty-early) still
+  gets these checks (`no_views`): only the views and scene understanding are dropped.
+  (4) **No curtain check during a scene check** (user, 2026-11-26 night): the look queues
+  no `cv_verify` of its own (`look_curtain:=true` = as before); a candidate ahead of the
+  room comes from the side scan's sightings or the usual check outside looks.
+  (5) **Stairs seen during the approach** (user, 2026-11-26 night; `look_late_stairs`):
+  the look's stair check runs from the cell centre, before the walk up to the room; a
+  cell that shows stair-high only after the approach (0.14 m ahead, three views of lidar)
+  and was never checked gets one depth check as the look ends — never a cell with
+  confirmed tall content, never once the stairs are crossed.
 - **Rooms**: not entered by default (`enter_rooms:=false`). From the cell before, the robot
   looks centre, 35° left and 35° right (`look_angle`; user, 2026-11-26: 25°, 30°, 45°, then 35°), holds 1.0 s each (`look_hold`; 1.5 until that evening) and publishes
   `room centre|left|right cell (i, j) side d` on `/explore/event`. For the look it first walks
@@ -281,9 +326,12 @@ been explored, and the robot ends the run standing in the final cell.
   Nothing becomes a wall because of it. The scanner stays on throughout (the job is still
   the look). A code in the `ahead` view gets no approach. Skipped once the code is read.
   Simulated only (`test/test_qr_approach.py`; rendered views decode from 0.65 m in).
-- **Curtain**: square up on the cell's centre line, make a quarter turn on the spot, then
-  step **sideways** through it (user, 2026-11-25) at `curtain_speed` (0.20 m/s) with `/maze/blind` on, all the
-  way to the centre of the cell behind. **There it turns only if the fabric still covers the
+- **Curtain: crossed HEAD ON (user, 2026-11-26 night; unit-tested only)**: square up on the
+  cell's centre line facing the curtain and walk straight through it at `curtain_speed`
+  (0.20 m/s) with `/maze/blind` on, all the way to the centre of the cell behind. The leg
+  stall stop (below) guards the head-on push too. `curtain_sideways:=true` brings back the
+  sideways step of 2026-11-25 (quarter turn, then sideways through), which the next
+  paragraphs describe where they say sideways. **There it turns only if the fabric still covers the
   lidar** (user, 2026-11-26 night; unit-tested only; `do_curtain_clear`): covered = the lidar's
   cloud has shrunk to under 40 % (`fabric_frac`) of what it gave just before the push. Then
   90° to the right and 90° back to the left, twice at most; clear = no turns. `/maze/blind`
@@ -342,6 +390,17 @@ been explored, and the robot ends the run standing in the final cell.
   gives no usable reading in 6 frames (close up, stairs hide the floor). Three usable
   frames with nothing that high = not stairs, depth closes with the floor verdict (about
   1 s instead of up to 4.5 s). `stair_gate:=false` (node parameter) = both at once, as before.
+  **The gate never vetoes where the lidar shows stair-high** (user, 2026-11-26 night,
+  "missing stairs" fixes; unit-tested only): with `raised()` true the detector runs from
+  the first frame, whatever the floor frames say.
+  **Sharp-edge recheck (user, 2026-11-26 night; unit-tested only):** when the detector
+  fails only on an edge-quality test (`no top level`, `top level alone`, `broken`,
+  `too little of it seen`, `front edge straight`, `not in line` — the 19:42 run failed the
+  real stairs on that one) while the lidar shows stair-high, no
+  verdict is recorded: the robot creeps up (nose `look_gap` before the shared edge, as
+  for a look) and checks ONCE more from there (`stair_rechecked`); that verdict is final.
+  From a cell away the top tread can be sparse ('no top level at 0.36 m (17 pts)',
+  threshold 25). Not for a clean miss (no flat surfaces, wrong heights, slant, lidar veto).
 - **Stairs**: square up in the cell before, enter AI mode (manual → AI on → AI gait), walk
   two cells (over the stair cell to the centre of the cell after) at `ai_speed` (`config/speeds.yaml`), leave AI mode
   (AI off → manual → Move → gait → navigation mode). The stair cell is closed afterwards.
@@ -528,6 +587,15 @@ been explored, and the robot ends the run standing in the final cell.
   terrain under 0.30 m). 04:42 run: "stairs 0.70 m, levels 0.12 / 0.25 / 0.38" ahead of
   the start, in a cell later walked through; what the camera saw there is not known (no
   depth on record). `stair_agree:=false` = the camera alone, as before.
+  **What the lidar has not measured it cannot reject (user, 2026-11-26 night; unit-tested
+  only):** with the 0.35-0.65 m band of that cell unmeasured in the height map (stairs seen
+  only through a doorway), the camera decides alone; the lidar rejects only what it has
+  measured low.
+  **VLM backup (user, 2026-11-26 night; unit-tested only):** the look prompt also asks
+  `stairs` (a climbable staircase; toys and shelves are false). A yes on `/scene/result`
+  reopens the depth check for that edge (`vlm_stairs`, kind() makes it a `stairs`
+  candidate again, a `False` verdict is dropped); the depth detector keeps the last word.
+  Never once the stairs are crossed.
   **Square to the grid (user, 2026-11-26 night):** stairs the depth camera sees at more than
   15° to the grid direction (`stair_slant_max`) are not stairs; real stairs stand with their
   steps parallel to the cell's edge (10:39 run: the play kitchen was read as stairs).

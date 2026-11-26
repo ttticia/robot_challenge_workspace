@@ -1004,6 +1004,7 @@ class JunctionTrigger(ImageSubscriber):
                     'hazards': [scene['hazard']] if scene['hazard'] else [],
                     'humans': scene['survivor'],
                     'qr': bool(scene.get('qr')), 'qr_view': scene.get('qr_view', ''),
+                    'stairs': bool(scene.get('stairs')),
                     'vlm': 'lab', 'look': explore_look['kind'], 'junction': index,
                 })))
             elif explore_look is not None and self.room_pub is not None:
