@@ -9,8 +9,9 @@ is, checks the format (missions.check) and submits. It imports nothing from them
                        scene_type, objects, hazards, humans. Results with vlm 'none' (not
                        analysed) are skipped.
        /qr/read        (team_perception qr_scanner) the decoded text, passed on exactly as
-                       decoded. The QR report (M04) needs nothing else: no VLM, no
-                       junction_trigger.
+                       decoded. The QR report (M04) goes out once the VLM
+                       (junction_trigger) has given the scene type of the room the code
+                       was read in: no VLM result for that room = no M04.
        /explore/event  (maze_explorer) `room|object centre cell (i, j) side d`: the room the
                        robot is looking into. A QR read within `qr_cell_window` s of it
                        belongs to that room (which makes its survivor M03).
@@ -92,6 +93,13 @@ class TaskReporter(Node):
         # ok (accepted and, where the reply carries an evaluation, every field right),
         # reply. The explorer counts a mission as done only on ok.
         self.result_pub = self.create_publisher(String, '/mission/result', 10)
+        # Every POST and what came back, retries included (user, 2026-11-26), JSON: time,
+        # task_id, url, attempt, sent (the payload), http (status code, null = no answer),
+        # reply (in full). Latched, so `ros2 run task_reporter report_watch` started late
+        # still shows the earlier ones.
+        self.server_pub = self.create_publisher(String, '/mission/server_log', QoSProfile(
+            depth=200, reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.seen_pub = self.create_publisher(String, '/mission/sightings', QoSProfile(
             depth=1, reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -149,8 +157,9 @@ class TaskReporter(Node):
                         {'Content-Type': 'application/json'}, method='POST')
                     with urllib.request.urlopen(req, timeout=self.timeout) as r:
                         answer = r.read().decode(errors='replace')
+                    self.exchange(payload, attempt, r.status, answer)
                     log = self.get_logger().info if '"accepted"' in answer else self.get_logger().error
-                    log(f'{payload["task_id"]} server: {answer.strip()[:200]}')
+                    log(f'{payload["task_id"]} server: {answer.strip()}')
                     self.result(payload, successful(answer), answer)
                     with self.waiting_lock:
                         if self.waiting.get(payload['task_id']) == payload:
@@ -158,14 +167,16 @@ class TaskReporter(Node):
                     break
                 except urllib.error.HTTPError as e:      # answered, but refused
                     answer = e.read().decode(errors='replace')
+                    self.exchange(payload, attempt, e.code, answer)
                     if not_now(e.code, answer):
                         self.hold_back(payload, e.code, answer)
                         break
                     self.get_logger().error(f'{payload["task_id"]} rejected: HTTP {e.code} '
-                                            f'{answer[:200]}')
+                                            f'{answer.strip()}')
                     self.result(payload, False, answer)
                     break
                 except Exception as e:                   # no answer: try again
+                    self.exchange(payload, attempt, None, f'no answer: {e}')
                     self.get_logger().warn(f'{payload["task_id"]} post failed (try {attempt} '
                                            f'of 3): {e}')
                     time.sleep(1.0)
@@ -173,6 +184,12 @@ class TaskReporter(Node):
                 self.get_logger().error(f'{payload["task_id"]} NOT delivered after 3 tries: '
                                         f'{payload}')
                 self.result(payload, False, 'not delivered', refuse=False)
+
+    def exchange(self, payload, attempt, code, answer):
+        """One POST and its reply, on /mission/server_log (for report_watch)."""
+        self.server_pub.publish(String(data=json.dumps({
+            'time': time.time(), 'task_id': payload.get('task_id'), 'url': self.url,
+            'attempt': attempt, 'sent': payload, 'http': code, 'reply': answer})))
 
     def hold_back(self, payload, code, answer):
         """The server cannot take reports just now: keep this one and send it again."""

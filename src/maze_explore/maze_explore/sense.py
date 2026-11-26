@@ -173,6 +173,68 @@ class Sense:
         t = self.hm.top_at(x, y)
         return int(((t >= self.p['terrain_min']) & (t < self.hm.obj)).sum()) >= self.p['terrain_squares']
 
+    @staticmethod
+    def jump_share(t, jump=0.04, low=0.03):
+        """Share of neighbouring squares of the height grid t (NaN = not measured) that
+        differ by `jump` or more, both above `low`; (share, pairs)."""
+        t = np.where(t >= low, t, np.nan)
+        n = jumps = 0
+        for a, b in ((t[:, 1:], t[:, :-1]), (t[1:, :], t[:-1, :])):
+            ok = ~np.isnan(a) & ~np.isnan(b)
+            n += int(ok.sum())
+            jumps += int((np.abs(a - b) >= jump)[ok].sum())
+        return (jumps / n if n else 0.0), n
+
+    def square_grid(self, cell, d, x, y, h, min_points=3):
+        """Median height of each 5 cm square of the neighbour's interior as a grid (NaN =
+        fewer than min_points points): from dense points, the depth camera."""
+        x, y, h = (np.asarray(v, float).ravel() for v in (x, y, h))
+        b = nb(cell, d)
+        bu, bv = b[0] * self.grid.size, b[1] * self.grid.size
+        u, v = self.grid.to_grid(x, y)
+        half = INSIDE[-1] + 0.025
+        n = int(round(2 * half / 0.05))
+        out = np.full((n, n), np.nan)
+        ok = (np.abs(u - bu) < half) & (np.abs(v - bv) < half) & np.isfinite(h)
+        if not ok.any():
+            return out
+        iu = np.clip(np.floor((u[ok] - bu + half) / 0.05).astype(int), 0, n - 1)
+        iv = np.clip(np.floor((v[ok] - bv + half) / 0.05).astype(int), 0, n - 1)
+        key = iu * n + iv
+        order = np.argsort(key)
+        key, hs = key[order], h[ok][order]
+        starts = np.r_[0, np.nonzero(np.diff(key))[0] + 1]
+        counts = np.diff(np.r_[starts, len(key)])
+        for s_, c_ in zip(starts, counts):
+            if c_ >= min_points:
+                out[key[s_] // n, key[s_] % n] = np.median(hs[s_:s_ + c_])
+        return out
+
+    def blocky_from_points(self, cell, d, x, y, h, min_pairs=40):
+        """Block share of the neighbour from dense depth points, or None with too few."""
+        share, n = self.jump_share(self.square_grid(cell, d, x, y, h))
+        return share if n >= min_pairs else None
+
+    def blocky(self, cell, d, jump=0.04, min_pairs=20, share=0.2):
+        """What kind of uneven floor is in the neighbour on side d: True = BLOCKS (stacked
+        cubes of different heights: next to each other, squares differ by a step), False =
+        ramps (sloped boards: neighbouring squares differ little, except at a ramp's end),
+        None = too little of it measured to tell. Measured as the share of neighbouring
+        5 cm square pairs, both measured and both above the floor, that differ by `jump`
+        or more: blocks give about half, ramps a few per cent."""
+        x, y = self.grid.box(cell, d, INSIDE, INSIDE_DEPTH)
+        t = self.hm.top_at(x, y)
+        t = np.where(t >= self.p['terrain_min'] / 2, t, np.nan)
+        pairs = [(t[:, 1:], t[:, :-1]), (t[1:, :], t[:-1, :])]
+        n = jumps = 0
+        for a, b in pairs:
+            ok = ~np.isnan(a) & ~np.isnan(b)
+            n += int(ok.sum())
+            jumps += int((np.abs(a - b) >= jump)[ok].sum())
+        if n < min_pairs:
+            return None
+        return jumps / n >= share
+
     def rough_from_points(self, cell, d, x, y, h, min_seen=40, min_points=3):
         """Uneven terrain in the neighbour on side d, from dense points (the depth camera):
         map-frame x, y and height above the floor h. Same squares and thresholds as rough(),

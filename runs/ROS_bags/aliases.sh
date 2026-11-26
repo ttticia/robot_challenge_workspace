@@ -28,3 +28,5 @@ alias curtain_view='ros2 run rqt_image_view rqt_image_view /curtain/image'
 alias explore_check=~/challenge_ws/src/maze_explore/preflight.sh
 alias explore_go='ros2 topic pub --once /nav/start std_msgs/msg/Empty'
 alias explore_stop='ros2 topic pub --once /explore/stop std_msgs/msg/Empty'
+# explore_stop also hands control to the controller (manual mode), 26 Nov
+alias explore_stop='ros2 topic pub --once /explore/stop std_msgs/msg/Empty; ros2 topic pub --once /simple_cmd transfer_interfaces/msg/MotionSimpleCMD "{cmd_code: 0x21010C02, type: 0}"'

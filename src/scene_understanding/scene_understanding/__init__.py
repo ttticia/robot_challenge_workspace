@@ -1,3 +1,2 @@
-"""Scene understanding: room captures for the VLM (room_scene) and mission task reports
-(now the task_reporter package). The cell grid and dead-end / junction triggers are maze_nav.scene_cells /
-maze_nav.scene_trigger."""
+"""Scene understanding: junction_trigger sends the three views of each maze_explore room
+look to the lab VLM and publishes /scene/result (task_reporter turns that into reports)."""

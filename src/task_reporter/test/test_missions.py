@@ -59,22 +59,34 @@ def test_unknown_scene_type_and_labels_are_not_reported():
     assert set(by_task(m.reports())) == {'M01'}
 
 
-def test_qr_read_outside_a_room_still_reports_m04():
+def test_m04_waits_for_the_vlm_scene_type_of_its_room():
+    # 11:47 run, 2026-11-26: M04 went out as 'kitchen' (a fixed fallback) 10 s before the
+    # VLM named the room, a cleaning room. Nothing hard-coded: wait for the VLM.
+    m = Missions('g')
+    m.scene((0, 1), 'workshop')                        # another room: not used for M04
+    m.qr('Please help me.', (2, 0))
+    assert 'M04' not in by_task(m.reports())
+    m.scene((2, 0), 'cleaning_room', humans=True)
+    r = by_task(m.reports())
+    assert r['M04']['scene_type'] == 'cleaning_room' and r['M04']['pos'] is None
+
+
+def test_qr_read_outside_a_room_uses_the_room_the_vlm_saw_the_code_in():
     m = Missions('g')
     m.qr('Please help me.', None)
+    assert m.reports() == []                           # no room known: no guessed scene type
+    m.scene((1, 2), 'clinic', humans=True, qr=True)
     r = by_task(m.reports())
-    assert set(r) == {'M04'} and r['M04']['scene_type'] == 'kitchen'
-    assert r['M04']['pos'] is None                     # the QR report has pos null
+    assert r['M04']['scene_type'] == 'clinic' and r['M04']['pos'] is None
 
 
 def test_the_qr_report_never_carries_a_position():
     # 08:01 run, 2026-11-26: HTTP 422 "QR requires nonempty message, null pos, empty label,
     # and empty/permitted scene_type" for an M04 report with a position
     m = Missions('g')
-    m.qr('Please help me.', None, near=(2, 1))
+    m.scene((2, 2), 'market')
+    m.qr('Please help me.', (2, 2), near=(2, 1))
     assert by_task(m.reports())['M04']['pos'] is None
-    m.qr('Please help me.', (2, 2))
-    assert 'M04' not in by_task(m.reports())           # nothing changes when its room becomes known
 
 
 def test_every_report_has_the_seven_keys_and_a_position():

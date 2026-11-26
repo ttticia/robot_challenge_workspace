@@ -5,9 +5,9 @@ Booklet as updated 2026-11-24: five fixed missions, the same in practice, prelim
   M01  object    the hand tools: scene type, label hand_tools, position
   M02  hazard    the hazard warning sign: scene type, its label, position
   M03  survivor  the conscious survivor = the one WITH a QR code: scene type, position
-  M04  qr        that QR code's text, exactly as decoded. Only the text is scored, but every
-                 report carries a position (user, 2026-11-24): the room it was read in, else
-                 the cell the robot stood in, else the start cell
+  M04  qr        that QR code's text, exactly as decoded, with pos null (the server
+                 refuses a position) and the scene type the VLM gave the room it was read
+                 in: sent once that room's VLM result is in, never with a guessed type
   M05  survivor  the other survivor, WITHOUT a QR code: scene type, position
 
 Each arena has exactly two survivors and one QR code. Positions are cell centres in the
@@ -255,10 +255,15 @@ class Missions:
         if without_qr in self.scenes:
             want['M05'] = self.payload('M05', 'survivor', self.scenes[without_qr], '',
                                        self.pos(without_qr))
-        if self.qr_text is not None:
-            # Only the message is scored, but the server rejects an unknown scene type.
-            scene = self.scenes.get(self.qr_cell) or next(iter(self.scenes.values()), 'kitchen')
-            want['M04'] = self.payload('M04', 'qr', scene, '', None, self.qr_text)   # pos null
+        # M04 carries the scene type the VLM gave the room the code was read in (user,
+        # 2026-11-26: nothing hard-coded; the 11:47 run sent 'kitchen', a fixed fallback,
+        # for a code read in a cleaning room). It waits for that room's VLM result; a code
+        # read outside any known room uses the room where the VLM saw a survivor with a
+        # QR code, and with neither it is not sent.
+        qr_room = self.qr_cell if self.qr_cell is not None else self.qr_seen
+        if self.qr_text is not None and qr_room in self.scenes:
+            want['M04'] = self.payload('M04', 'qr', self.scenes[qr_room], '', None,
+                                       self.qr_text)   # pos null
         out = [p for t, p in sorted(want.items()) if self.sent.get(t) != p]
         for p in out:
             self.sent[p['task_id']] = p

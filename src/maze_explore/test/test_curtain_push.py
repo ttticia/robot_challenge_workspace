@@ -136,3 +136,34 @@ def test_still_covered_after_two_goes_means_no_mapping_until_it_clears():
     assert r.fabric_until > r.t and any('nothing is added to the map' in e for e in r.events)
     src = __import__('inspect').getsource(explorer.Explorer.tick)
     assert 'elif self.now() < self.fabric_until:' in src and 'if self.lidar_blocked():' in src
+
+
+def test_after_a_curtain_both_sides_of_the_cell_behind_are_faced():
+    # user, 2026-11-26 night: the lidar was blind on the way in
+    src = __import__('inspect').getsource(explorer.Explorer.go)
+    i = src.index("('call', lambda: blind(False)),")
+    after = src[i:i + 1100]
+    assert "('turn', wrap(body + math.pi), 3.0)" in after and 'curtain_side_look' in after
+
+
+def test_curtains_are_crossed_in_h_step_and_the_map_catch_up_is_not_a_fault():
+    import inspect
+    E = explorer.Explorer
+    assert "self.gait_for_step(a, b, rough or how == 'curtain')" in inspect.getsource(E.go)
+    assert "('map_resync',)" in inspect.getsource(E.go)
+    from test_qr_approach import Robot as Base
+    R = type('R', (Base,), dict(do_map_resync=E.do_map_resync, pose_jumped=E.pose_jumped))
+    r = R()
+    r.poses, r.ai_walking, r.curtain_blind, r.pose_jump_max = deque(maxlen=40), False, False, 0.5
+    r.queue.append(('map_resync',))
+    jumped = []
+    for k in range(60):                        # 1.1 m correction 0.5 s in, then still
+        if k == 5:
+            r.pose = [r.pose[0] + 1.1, r.pose[1], r.pose[2]]
+        r.poses.append((r.t, tuple(r.pose)))
+        jumped.append(r.pose_jumped())
+        r.run(0.1)
+        if not r.queue and r.act is None:
+            break
+    assert not any(jumped)                     # not taken for a fault
+    assert any('1.10 m from where odometry' in e for e in r.events)

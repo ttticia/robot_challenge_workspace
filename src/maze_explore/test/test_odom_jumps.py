@@ -96,3 +96,17 @@ def test_on_uneven_floor_more_jumping_is_allowed():
     r.odom_terrain, r.on_uneven = 2.0, (lambda: True)
     feed(r, [(0.0, 0.0), (0.0, 0.0), (2.5, 0.0)])
     assert r.faults                                      # one jump over 2 m is a FAULT anywhere
+
+
+def test_the_cell_last_arrived_in_counts_as_where_the_robot_stands():
+    # 20:58 video: on a ramp cell, the pose jumped 0.52 m and read outside it; the normal
+    # limits then applied and the run ended in FAULT at 1.57 m
+    from maze_explore.grid import Grid
+    E = explorer.Explorer
+    me = NS(rough_cells={(1, -1)}, grid=Grid(0.0, 0.0, 0.0, 1.02), pose=(1.02, -0.50, 0.0),
+            step=None, last_cell=(1, -1))
+    me.cur_cell = lambda: me.grid.cell_of(me.pose[0], me.pose[1])
+    assert me.cur_cell() == (1, 0)                  # the jumped pose: another cell
+    assert E.on_uneven(me)                          # still on the ramp cell it arrived in
+    me.last_cell = (1, 0)
+    assert not E.on_uneven(me)

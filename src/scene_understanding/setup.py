@@ -12,13 +12,12 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    description='Scene understanding of room looks with the lab VLM (junction_trigger, room_scene)',
+    description='Scene understanding of room looks with the lab VLM (junction_trigger)',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'junction_trigger = scene_understanding.junction_trigger:main',
-            'room_scene = scene_understanding.room_scene:main',
         ],
     },
 )

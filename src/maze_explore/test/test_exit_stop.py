@@ -389,3 +389,17 @@ def test_stairs_at_an_angle_to_the_grid_are_not_stairs():
     src = __import__('inspect').getsource(E.do_stair_check)
     assert 'abs(slant) > slant_max' in src
     assert "p('stair_slant_max', 15.0)" in __import__('inspect').getsource(E.__init__)
+
+
+def test_a_blocked_end_cell_still_gets_the_end_stop():
+    # user, 2026-11-26 night: being in row 6 is all it takes; something in the end cell
+    # that stops the robot short of the end spot does not make it STOPPED
+    import numpy as np
+    r = make(maze_side='L')
+    r.pose = [4 * 1.02, 0.0, 0.0]
+    r.obstacles = np.stack([np.full(20, 5 * 1.02 + 0.30), np.linspace(-0.4, 0.4, 20)], 1)
+    r.stuck = lambda mode, along: True
+    exit_queue(r, (4, 0), 0)
+    assert r.run(150.0)
+    assert r.pose[0] > 5 * 1.02 - 0.51 and r.halted == ['DONE'] and r.sent == []
+    assert any('ending here' in e for e in r.events)

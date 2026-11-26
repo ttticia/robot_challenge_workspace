@@ -65,22 +65,6 @@ def test_reported_pos_ahead_or_robot_cell():
     assert node._report_pos(None) == (None, None)
 
 
-def test_scan_blocked_while_maze_explorer_runs():
-    from types import SimpleNamespace
-    from scene_understanding.junction_trigger import JunctionTrigger
-    node = JunctionTrigger.__new__(JunctionTrigger)
-    topic = {'value': '/maze/status'}
-    publishers = {'/maze/status': 1}
-    node.get_parameter = lambda name: SimpleNamespace(value=topic['value'])
-    node.count_publishers = lambda t: publishers.get(t, 0)
-    assert 'maze_explorer' in node._scan_blocked()
-    publishers['/maze/status'] = 0
-    assert node._scan_blocked() is None
-    publishers['/maze/status'] = 1
-    topic['value'] = ''
-    assert node._scan_blocked() is None
-
-
 def test_explorer_stitches_only_matching_views(monkeypatch):
     """An incomplete look cannot mix with the next cell's complete look."""
     from queue import Queue

@@ -211,9 +211,9 @@ def test_an_empty_room_gets_no_look_and_a_room_with_something_tall_does():
     r.skip_looks()
     assert r.looked == set()
     r = Looks(empty=True)
-    r.raised = lambda c, d: True                      # something stair-high in there: not empty
-    r.skip_looks()
-    assert r.looked == set()
+    r.raised = lambda c, d: True                      # blocks / a ramp read stair-high: still empty
+    r.skip_looks()                                    # (12:42 run: an empty room was sent anyway)
+    assert r.looked == {((0, 0), 0)}
 
 
 def test_no_more_looks_once_all_five_missions_are_reported():

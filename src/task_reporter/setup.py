@@ -18,6 +18,7 @@ setup(
     entry_points={
         'console_scripts': [
             'task_reporter = task_reporter.task_reporter:main',
+            'report_watch = task_reporter.report_watch:main',
         ],
     },
 )

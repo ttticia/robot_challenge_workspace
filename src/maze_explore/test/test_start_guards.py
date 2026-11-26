@@ -319,7 +319,8 @@ def test_realign_on_arrival_brings_back_a_grid_the_small_correction_gives_up_on(
 
 def test_the_realign_waits_for_a_still_pose():
     src = __import__('inspect').getsource(E.do_resolve)
-    assert 'self.align_grid(arrived=True)' in src and 'if not still and self.elapsed() < 4.0' in src
+    assert 'self.align_grid(arrived=True)' in src and 'if not still and self.elapsed() < self.arrive_still_max' in src
+    assert "p('arrive_still_max', 2.5)" in __import__('inspect').getsource(E.__init__)
 
 
 def test_a_turn_that_goes_nowhere_is_given_up_in_about_ten_seconds():
@@ -389,23 +390,19 @@ def test_the_planner_does_not_send_the_robot_into_such_a_cell():
     assert next_job(kinds, {a} | {b}, **args)['job'] != 'visit'      # what plan() passes when b is skipped
 
 
-def test_a_skipped_path_cell_is_entered_when_nothing_else_is_left():
+def test_a_skipped_cell_stays_explored_even_when_only_curtains_or_stairs_are_left():
+    # user, 2026-11-26 night: a path / junction cell whose every way out leads to explored
+    # cells counts as explored, for good, and is not entered even when only curtains or
+    # stairs are left (the earlier override is gone)
     import inspect
     from maze_explore.plan import next_job
     src = inspect.getsource(E.plan)
-    assert "if through and j['job'] not in ('visit', 'look'):" in src and 'entered after all' in src
-    a, b, other = (1, 0), (1, 1), (2, 0)
+    assert 'entered after all' not in src and 'self.through_done |= self.through_cells(sense)' in src
+    a, b, c = (1, 0), (1, 1), (2, 0)
+    kinds = {(a, 1): 'free', (a, 0): 'curtain', (a, 2): 'wall', (a, 3): 'wall'}
     args = dict(closed=set(), links={}, cur=a, facing=0, looked=set(), greeted=set(), exit_cell=None)
-    # something else is still unexplored: (2, 0) ahead. The skipped cell (1, 1) is left alone.
-    kinds = {(a, 1): 'free', (a, 0): 'free', (a, 2): 'wall', (a, 3): 'wall'}
-    j = next_job(kinds, {a, b}, **args)
-    assert j['job'] == 'visit' and (j['cell'], j['d']) == (a, 0)
-    # nothing else left: with the skip the planner has no visit; without it, it enters (1, 1)
-    kinds = {(a, 1): 'free', (a, 0): 'wall', (a, 2): 'wall', (a, 3): 'wall'}
-    assert next_job(kinds, {a, b}, **args)['job'] not in ('visit', 'look')
-    j = next_job(kinds, {a}, **args)
-    assert j['job'] == 'visit' and (j['cell'], j['d']) == (a, 1)
-
+    j = next_job(kinds, {a, b}, **args)              # b passed as explored, as plan() does
+    assert j['job'] in ('greet', 'curtain') and j['d'] == 0
 
 def test_a_junction_cell_is_skipped_the_same_way():
     # user, 2026-11-26 night: the rule holds for junction cells too. (1, 1) opens on all
@@ -458,3 +455,71 @@ def test_a_pose_jump_drops_the_plan_and_waits_for_a_still_pose():
     tick = __import__('inspect').getsource(E.tick)
     assert 'self.queue.clear()' in tick and 'if self.pose_held is not None:' in tick
     assert 'self.align_grid(arrived=True)' in tick
+
+
+def test_block_terrain_is_told_from_ramps():
+    from maze_explore.sense import HeightMap, Sense, INSIDE, INSIDE_DEPTH
+    g = Grid(0.0, 0.0, 0.0, 1.02)
+    def sense_with(heights):
+        hm = HeightMap()
+        x, y = g.box((0, 0), 0, INSIDE, INSIDE_DEPTH)
+        for _ in range(2):
+            hm.add(x.ravel(), y.ravel(), heights(x, y).ravel())
+        return Sense(g, NS(at=lambda x, y: np.zeros(np.shape(x))), hm)
+    # blocks: 10 cm cubes, 0.08 / 0.14 / 0.20 m high in a checker pattern
+    blocks = lambda x, y: 0.08 + 0.06 * ((np.floor(x / 0.10) + np.floor(y / 0.10)) % 3)
+    # ramps: a board rising 0.15 m over 0.5 m, then the next one
+    ramps = lambda x, y: 0.07 + 0.30 * ((x - 0.76) % 0.5)
+    assert sense_with(blocks).blocky((0, 0), 0) is True
+    assert sense_with(ramps).blocky((0, 0), 0) is False
+    empty = Sense(g, NS(at=lambda x, y: np.zeros(np.shape(x))), HeightMap())
+    assert empty.blocky((0, 0), 0) is None                          # not seen: head on, as before
+    src = __import__('inspect').getsource(E.go)
+    assert 'self.terrain_sideways or blocks' in src
+
+
+def test_blocks_are_told_from_ramps_by_the_depth_camera():
+    from maze_explore.sense import Sense, HeightMap
+    g = Grid(0.0, 0.0, 0.0, 1.02)
+    s = Sense(g, NS(at=lambda x, y: np.zeros(np.shape(x))), HeightMap())
+    u, v = np.meshgrid(np.arange(0.77, 1.27, 0.01), np.arange(-0.25, 0.25, 0.01), indexing='ij')
+    blocks = 0.08 + 0.06 * ((np.floor(u / 0.10) + np.floor(v / 0.10)) % 3)
+    ramps = 0.05 + 0.30 * ((u - 0.77) % 0.5)
+    assert s.blocky_from_points((0, 0), 0, u, v, blocks) >= 0.2
+    assert s.blocky_from_points((0, 0), 0, u, v, ramps) < 0.2
+    assert s.blocky_from_points((0, 0), 0, u[:3, :3], v[:3, :3], ramps[:3, :3]) is None
+    src = __import__('inspect').getsource(E.go)
+    assert "('stair_check', a, d, False, True)" in src and 'blocks_checked' in src
+
+
+def test_looks_from_uneven_cells_do_not_turn_and_a_cut_look_goes_on():
+    import inspect
+    src = inspect.getsource(E.plan)
+    assert "angle = 0.0 if uneven and self.terrain_on and not self.look_turn_uneven else self.look_angle" in src
+    assert 'if name in done:' in src and "self.look_views.setdefault((c, d), set())" in src
+    assert "p('look_turn_uneven', True)" in inspect.getsource(E.__init__)      # turns back on
+    assert '*steady,' in src and "[('settle', self.settle_max)] if uneven" in src
+
+
+def test_after_a_turn_on_uneven_floor_the_robot_settles_before_the_view():
+    from collections import deque
+    R = type('R', (Robot,), dict(do_settle=E.do_settle))
+    r = R()
+    r.poses = deque(maxlen=40)
+    r.queue.append(('settle', 3.0))
+    for k in range(40):                                # wobbles for 1.2 s, then still
+        if k < 12:
+            r.pose = [0.05 * (k % 2), 0.0, 0.0]
+        r.poses.append((r.t, tuple(r.pose)))
+        if r.run(0.1) and r.act is None and not r.queue:
+            break
+    assert 1.6 < r.t - 100.0 < 2.6                     # waited for the wobble to end
+    r = R()
+    r.poses = deque(maxlen=40)
+    r.queue.append(('settle', 3.0))
+    for k in range(60):                                # never still: gives up at 3 s
+        r.pose = [0.04 * (k % 2), 0.0, 0.0]
+        r.poses.append((r.t, tuple(r.pose)))
+        if r.run(0.1) and r.act is None and not r.queue:
+            break
+    assert r.t - 100.0 == pytest.approx(3.1, abs=0.25)
