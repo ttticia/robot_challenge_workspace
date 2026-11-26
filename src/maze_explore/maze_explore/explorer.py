@@ -85,6 +85,8 @@ class Explorer(Node):
         self.lie_down = p('lie_down', True).value
         self.lying = False            # lying down in a pause (no exit found)
         self.lost_dist = p('lost_dist', 0.75).value   # m from the nearest known cell centre = lost
+        self.pose_jump_max = p('pose_jump_max', 0.5).value   # m between two ticks = the pose jumped
+        self.pose_held = None
         self.skip_through = p('skip_through', True).value   # see through_cells()
         self.through_said = set()
         # The way into the end cell can read wrong (user, 2026-11-26): beyond it is open
@@ -102,6 +104,10 @@ class Explorer(Node):
         self.curtain_right = math.radians(p('curtain_turn_right', 180.0).value)
         self.curtain_left = math.radians(p('curtain_turn_left', 50.0).value)
         self.curtain_turns = p('curtain_turns', False).value   # off: no turns after a curtain
+        # ... unless the fabric still covers the lidar (do_curtain_clear): then 90 right, 90 left
+        self.curtain_clear = p('curtain_clear', True).value
+        self.fabric_frac = p('fabric_frac', 0.4).value         # cloud under this share of normal = covered
+        self.fabric_until, self.cloud_ref = 0.0, 0
         # Holding the pivot while turning on the spot (do_turn; config/speeds.yaml)
         self.turn_kp = p('turn_kp', 1.5).value             # 1/s on the heading error
         self.pivot_kp = p('pivot_kp', 1.5).value           # 1/s on the distance off the pivot
@@ -129,11 +135,13 @@ class Explorer(Node):
         # while the robot greets it (a miss there is not final) and just before the push (a
         # miss there makes the edge a wall). No camera frames at all = not confirmed either.
         self.cv_on = p('curtain_cv', True).value and self.curtains_on   # on by default (user, 2026-11-25)
-        self.cv_conf = p('cv_conf', 0.5).value
+        # stricter since the night of 2026-11-26 (user): 0.6 and 5 frames (were 0.5 and 3);
+        # the model gave false boxes on 2 of 51 frames without a curtain in validation
+        self.cv_conf = p('cv_conf', 0.6).value
         self.cv_hits = p('cv_hits', 3).value                 # frames, within cv_window s
         self.cv_window = p('cv_window', 3.0).value
-        self.cv_verify_time = p('cv_verify_time', 3.0).value   # s facing the edge
-        self.cv_verify_hits = p('cv_verify_hits', 3).value
+        self.cv_verify_time = p('cv_verify_time', 4.0).value   # s facing the edge (3 until 5 frames were needed)
+        self.cv_verify_hits = p('cv_verify_hits', 5).value
         self.cv_seen = {}             # (cell, d) -> times of the frames that pointed at it
         self.cv_pending, self.cv_curtains, self.cv_rejected = set(), set(), set()
         # Curtain edges are latched (user, 2026-11-25): once the lidar has read an edge as a
@@ -145,6 +153,10 @@ class Explorer(Node):
         self.cv_frames = deque(maxlen=60)     # (time, box across the image centre?) per frame
         self.cv_checking = set()              # edges whose verification is queued or running
         self.cv_first = p('cv_first', True).value   # a lidar curtain needs a camera sighting first
+        self.cv_tall_min = p('cv_tall_min', 0.2).value
+        self.base_share_max = p('base_share_max', 0.5).value   # edge share standing on the floor = no curtain   # share of the edge seen tall before a camera check
+        self.square_tol = p('square_tol', 0.08).value    # m off the centre line accepted when squaring up
+        self.square_deg = p('square_deg', 5.0).value     # deg off the heading accepted when squaring up
         # Before a room / object look is shown to scene understanding (the VLM prompt goes
         # out after its three views), the way ahead is checked for stairs (depth detector)
         # and for a curtain (camera, with curtain_cv). If one is verified the look is
@@ -352,6 +364,7 @@ class Explorer(Node):
         self.depth_info_topic = p('depth_info_topic', '/camera/depth/camera_info').value
         self.stairs_checked = {}      # (cell, d) -> True (stairs) | False (not) | 'lidar' (no depth)
         self.stair_agree = p('stair_agree', True).value          # lidar must agree with the camera
+        self.stair_slant_max = math.radians(p('stair_slant_max', 15.0).value)   # stairs are square to the grid
         # Depth against lidar (see kind()): a cell the depth camera has seen clear
         # (depth_clear_min of its 121 squares read, nothing stair_gate_min high) is free.
         self.depth_clear_on = p('depth_clear', True).value
@@ -1009,6 +1022,12 @@ class Explorer(Node):
         k = getattr(self, 'kept', {}).get((cell, d)) or sense.kind(cell, d, may_exit=cell != self.start)
         if k == 'curtain' and (not self.curtains_on or (cell, d) in self.cv_rejected):
             k = 'wall'                # off, or a lidar candidate the camera turned down
+        if k == 'curtain' and not self.cv_on \
+                and getattr(self, 'base_veto', lambda *a: False)(sense, cell, d):
+            # it stands down to the floor: not a hanging curtain. Only for the lidar alone:
+            # a raised platform behind a real curtain fills the gap under it too (user,
+            # 2026-11-26 night), so where the camera decides, this test does not overrule it.
+            k = 'wall'
         if k == 'curtain' and self.cv_on and getattr(self, 'cv_first', True) \
                 and not self.camera_pointed(cell, d):
             # False curtains (user, 2026-11-26; 04:42 and 05:30 runs: tall walls beside the
@@ -1102,6 +1121,29 @@ class Explorer(Node):
         seen = getattr(self, 'cv_seen', {})
         return any(seen.get(e) or e in self.cv_pending or e in self.cv_curtains
                    or e in getattr(self, 'cv_checking', ()) for e in both)
+
+    def base_veto(self, sense, cell, d):
+        """This edge stands right down to the floor, so it is no curtain (user, 2026-11-26
+        night): a curtain leaves about 0.15 m free under it. Logged once per edge."""
+        if self.base_share_max <= 0 or not hasattr(sense, 'solid_base'):
+            return False
+        share = sense.solid_base(cell, d)
+        if share < self.base_share_max:
+            return False
+        said = getattr(self, 'base_said', set())
+        if (cell, d) not in said:
+            self.base_said = said | {(cell, d), (nb(cell, d), opp(d))}
+            self.event(f'curtain ruled out, cell {cell} side {d}: {share * 100:.0f} % of the edge '
+                       'stands right down to the floor (a curtain leaves a gap under it)')
+        return True
+
+    def tall_share(self, sense, cell, d):
+        """Share of the edge seen curtain-high (0.65 m and more); None when no height along
+        it has been measured yet."""
+        x, y = self.grid.box(cell, d, ALONG, ACROSS)
+        if not (~np.isnan(sense.hm.top_at(x, y))).any():
+            return None
+        return float(sense.hm.tall_at(x, y).any(axis=1).mean())
 
     def wall_share(self, cell, d):
         """Share of the edge on side d of `cell` that the map shows as wall (0-1)."""
@@ -1198,7 +1240,19 @@ class Explorer(Node):
         # its edge: from the cell before it (the camera is then 1.3 m away, inside the range
         # the model was trained for), or from its own cell when the robot is already there.
         self.cv_checking.clear()              # plan() runs with an empty queue: none is under way
+        sense_now = self.sense()
         for a, d in sorted(self.cv_pending):
+            # Only an edge the lidar shows TALL somewhere (a curtain hangs to 0.9 m, a wall is
+            # 0.53 m) is worth a turn and 3 s of looking (user, 2026-11-26 night; 10:39 run:
+            # a 90 deg turn and 3 s for a sighting on the side of the tool cart). Not seen tall
+            # yet = it waits; its height measured and low = dropped.
+            share = self.tall_share(sense_now, a, d)
+            if share is not None and share < self.cv_tall_min:
+                if sense_now.low_wall(a, d):
+                    self.cv_pending.discard((a, d))
+                continue
+            if share is None:
+                continue
             if a == cur or (nb(cur, d) == a and self.kinds.get((cur, d)) in ('free', 'room')):
                 self.cv_pending.discard((a, d))
                 self.cv_checking.add((a, d))
@@ -1547,6 +1601,9 @@ class Explorer(Node):
                 self.links[(a, d)], self.links[(b, opp(d))] = ('curtain', b), ('curtain', a)
                 self.arrive(b)
             def blind(on):
+                if on:                # how many points the lidar gives with nothing over it
+                    sizes = sorted(len(c) for c in list(self.clouds)[-6:])
+                    self.cloud_ref = sizes[len(sizes) // 2] if sizes else 0
                 self.curtain_blind = on
                 self.push_sure = bool(on and self.cv_on and (a, d) in self.cv_curtains)
                 if not on:
@@ -1577,10 +1634,11 @@ class Explorer(Node):
                       ('call', lambda: setattr(self, 'step', (a, d, b))),
                       ('call', lambda: blind(True)),
                       ('strafe', bx, by, h, body, 'push'),
-                      *(turns if self.curtain_turns else [('hold', 1.0)]),
+                      *(turns if self.curtain_turns else
+                        [('curtain_clear', body, 0)] if self.curtain_clear else [('hold', 1.0)]),
                       ('call', lambda: blind(False)),
-                      ('event', f'curtain: through, cell {b}; '
-                                + (say if self.curtain_turns else 'no turns')),
+                      ('event', f'curtain: through, cell {b}'
+                                + (f'; {say}' if self.curtain_turns else '')),
                       ('call', crossed)])
         elif how == 'stairs':
             c = nb(b, d)
@@ -1871,9 +1929,18 @@ class Explorer(Node):
             mem['rails'] = f'{mem["hits"]} of {mem["frames"]} frames over the look'
         lidar_no = getattr(self, 'stairs_not_in_lidar', lambda c_, d_: '')(cell, d) \
             if found is not None else None
+        slant = getattr(self, 'stair_slant', lambda f_, d_: 0.0)(found, d) if found is not None else 0.0
+        slant_max = getattr(self, 'stair_slant_max', math.radians(15.0))
         if found is not None and lidar_no:
             verdict = False
             text = (f'NOT stairs: the depth camera reports {found.summary()}, but {lidar_no}')
+        elif found is not None and abs(slant) > slant_max:
+            # Stairs stand square to the grid (user, 2026-11-26 night): their steps run
+            # parallel to the cell's edge. Something stepped at an angle to it is a prop
+            # (the 10:39 run read the play kitchen as stairs).
+            verdict = False
+            text = (f'NOT stairs: {found.summary()}, but at {math.degrees(slant):+.0f} deg to the '
+                    f'grid (stairs are square to it, {math.degrees(slant_max):.0f} deg at most)')
         elif found is not None:
             verdict = True
             text = f'STAIRS: {found.summary()}; {mem["rails"]}'
@@ -1906,6 +1973,13 @@ class Explorer(Node):
                      f'up to {seen} squares seen)'))
         self.queue.appendleft(('hold', 1.5))        # the robot's streams recover
         return True
+
+    def stair_slant(self, found, d):
+        """Angle between the stairs the depth camera saw and the grid direction d, rad.
+        found.yaw is the stairs' heading in the robot's level frame."""
+        if self.grid is None or self.pose is None:
+            return 0.0
+        return wrap(found.yaw + self.pose[2] - self.grid.heading(d))
 
     def stairs_not_in_lidar(self, cell, d):
         """Why the lidar says there are no stairs behind side d, or '' when it agrees or
@@ -2023,16 +2097,49 @@ class Explorer(Node):
             if cell != here and k != 'unknown':
                 self.kept.setdefault((cell, d), k)
 
+    def pose_jumped(self):
+        """The map pose moved pose_jump_max or more between two ticks (0.3 s at most apart),
+        far more than the robot can walk: the pose is wrong, whatever moved it (Fast-LIO,
+        SLAM). 10:39 run: a 45 deg turn 'moved' the robot 1.04 m, and what it planned from
+        there took the play kitchen for stairs."""
+        if len(self.poses) < 2 or self.ai_walking or self.curtain_blind:
+            return 0.0
+        (t0, p0), (t1, p1) = self.poses[-2], self.poses[-1]
+        if t1 - t0 > 0.3:
+            return 0.0
+        d = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+        return d if d >= self.pose_jump_max else 0.0
+
     def tick(self):
         have = self.read_pose()
         if have:
             self.poses.append((self.now(), self.pose))
+            jump = self.pose_jumped() if self.state == 'RUN' and self.pose_jump_max > 0 else 0.0
+            if jump:
+                # Nothing planned on the old pose is carried out: stand, wait for the pose to
+                # be still, line the grid up with the walls again, then plan afresh.
+                self.queue.clear()
+                self.act, self.step = None, None
+                self.curtain_blind = False
+                self.leg_watch(False)
+                self.pose_held = self.now()
+                self.event(f'pose jumped {jump:.2f} m: everything planned is dropped; standing until '
+                           'the pose is still, then realigning and planning afresh')
         if self.curtain_blind:
             self.blind_pub.publish(Bool(data=True))
             self.blind_until = self.odom_grace_until = self.now() + 1.5
         elif self.map_blind and (self.ai_walking or self.now() < self.map_blind_until):
             self.blind_pub.publish(Bool(data=True))      # odometry not to be trusted now
             self.blind_until = self.now() + 1.0          # no height-map updates either
+        elif self.now() < self.fabric_until:
+            # after a curtain the fabric still lay over the lidar: nothing goes into the
+            # map (no scans to SLAM, no height map) for as long as it does, 15 s at most
+            if self.lidar_blocked():
+                self.blind_pub.publish(Bool(data=True))
+                self.blind_until = self.now() + 1.0
+            else:
+                self.fabric_until = 0.0
+                self.event('curtain: the lidar is clear again, mapping goes on')
         if self.state == 'WAIT':
             miss = [n for n, ok in (('/map', self.occ is not None), ('map -> base_level', have),
                                     ('/maze/cloud', self.cloud is not None)) if not ok]
@@ -2044,7 +2151,23 @@ class Explorer(Node):
                     self.begin()
         elif self.state == 'RUN':
             age = max(self.now() - self.pose_time, self.now() - (self.cloud_time or 0.0))
-            if self.jump_from is not None and self.now() >= self.odom_hold_until \
+            if self.pose_held is not None:
+                self.send()
+                self.why = 'pose jumped: standing until it is still, then realigning'
+                now = self.now()
+                recent = [q for t_, q in self.poses if now - t_ <= 2.0]
+                still = now - self.pose_held >= 2.0 and len(recent) >= 10 and all(
+                    math.hypot(q[0] - self.pose[0], q[1] - self.pose[1]) < 0.03 for q in recent)
+                if still or now - self.pose_held > 12.0:
+                    self.pose_held = None
+                    if self.aligned and self.grid is not None:
+                        self.align_grid(arrived=True)
+                    cur = self.cur_cell()
+                    cx, cy = self.grid.centre(cur)
+                    self.event(f'pose {"still" if still else "not still after 12 s"}: going on from '
+                               f'cell {cur}, {math.hypot(cx - self.pose[0], cy - self.pose[1]):.2f} m '
+                               'off its centre')
+            elif self.jump_from is not None and self.now() >= self.odom_hold_until \
                     and not self.ai_walking and not self.jump_settled():
                 self.send()
                 self.act_t0 += 0.1
@@ -2218,7 +2341,11 @@ class Explorer(Node):
             self.blind_pub.publish(Bool(data=True))
             self.blind_until = self.now() + 1.5
         if mode == 'square':                 # onto the cell's centre line, facing `heading`
-            if abs(lat) < 0.04 and abs(herr) < math.radians(3) or self.elapsed() > 15.0:
+            # 8 cm / 5 deg (user, 2026-11-26 night; was 4 cm / 3 deg): the robot shuffled
+            # sideways again and again for the checks before a look (10:39 run)
+            if abs(lat) < getattr(self, 'square_tol', 0.08) \
+                    and abs(herr) < math.radians(getattr(self, 'square_deg', 5.0)) \
+                    or self.elapsed() > 15.0:
                 self.send()
                 return True
             self.send(vy=clamp(0.8 * lat, -0.10, 0.10) if abs(herr) < math.radians(15) else 0.0,
@@ -2318,6 +2445,40 @@ class Explorer(Node):
         onto the centre for this stay in the cell."""
         self.shifted_in = cell
         self.no_recentre.add(cell)
+
+    def lidar_blocked(self):
+        """Fabric lies over the lidar: its cloud has shrunk to under fabric_frac of what it
+        gave just before the push. (Fast-LIO drops everything within 0.30 m of the lidar,
+        so fabric on it shows as points missing, not as near points.)"""
+        ref = getattr(self, 'cloud_ref', 0)
+        sizes = sorted(len(c) for c in list(self.clouds)[-3:])
+        if ref < 50 or not sizes:
+            return False              # nothing to compare with
+        return sizes[len(sizes) // 2] < self.fabric_frac * ref
+
+    def do_curtain_clear(self, body, tries):
+        """At the centre of the cell behind a curtain (user, 2026-11-26 night): if the fabric
+        still lies over the lidar, turn 90 deg to the RIGHT and 90 deg back to the LEFT to
+        shake it off, twice at most. Clear from the start = no turns at all. /maze/blind
+        stays on throughout, so nothing seen through fabric goes into the map; if it is
+        still blocked after the turns, the map stays untouched until it clears (tick())."""
+        self.send()
+        if self.elapsed() < 1.0:               # a second of clouds from where it stands
+            return False
+        if not self.lidar_blocked():
+            if tries:
+                self.event(f'curtain: lidar clear after {tries} turn(s) right and left')
+            return True
+        if tries >= 2:
+            self.fabric_until = self.now() + 15.0
+            self.event('curtain: the fabric still covers the lidar after two turns right and '
+                       'left: going on, nothing is added to the map until it clears')
+            return True
+        self.event('curtain: the fabric covers the lidar: turning 90 right and 90 left')
+        self.queue.extendleft(reversed([('turn', wrap(body - math.pi / 2), 3.0),
+                                        ('turn', body, 3.0),
+                                        ('curtain_clear', body, tries + 1)]))
+        return True
 
     def do_shift(self, tx, ty):
         """Step onto (tx, ty) WITHOUT turning: forward and sideways only, the heading the

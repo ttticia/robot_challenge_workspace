@@ -216,3 +216,11 @@ def test_the_course_follows_maze_side():
     assert course_url(base, 'r ') == base + '_B'
     assert course_url(base + '_A', 'R') == base + '_A'       # a course named by hand wins
     assert course_url(base, '') == '' and course_url(base, 'X') == ''     # no guess: nothing posted
+
+
+def test_a_report_refused_for_no_competition_slot_is_kept_and_sent_again():
+    from task_reporter.task_reporter import not_now
+    # 10:39 run, 2026-11-26: every report refused with this
+    assert not_now(409, '{"status":"rejected","reason":"No active competition slot"}')
+    assert not_now(503, '')
+    assert not not_now(422, '{"reason":"QR requires nonempty message, null pos"}')   # a real fault

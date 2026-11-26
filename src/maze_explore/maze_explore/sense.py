@@ -48,13 +48,17 @@ class Occupancy:
 class HeightMap:
     """Highest return above the floor per square, and how often a square was seen tall."""
 
-    def __init__(self, half=25.0, res=0.05, tall=0.65, obj=0.38):
+    def __init__(self, half=25.0, res=0.05, tall=0.65, obj=0.38, base=(0.06, 0.12)):
         # obj: above terrain (<= 0.25 m, plus height error), below the props (>= 0.5 m)
         self.res, self.half, self.tall, self.obj = res, half, tall, obj
         n = int(2 * half / res)
         self.top = np.full((n, n), np.nan, np.float32)
         self.tall_hits = np.zeros((n, n), np.uint16)
         self.obj_hits = np.zeros((n, n), np.uint16)
+        # returns just above the floor (base[0]-base[1] m): a wall or a frame reaches down to
+        # the floor, a curtain hangs from 0.9 m and leaves about 0.15 m free under it
+        self.base = base
+        self.base_hits = np.zeros((n, n), np.uint16)
 
     def _idx(self, x, y):
         c = np.floor((np.asarray(x) + self.half) / self.res).astype(int)
@@ -72,6 +76,8 @@ class HeightMap:
         np.add.at(self.tall_hits, (r[t], c[t]), 1)
         o = h >= self.obj
         np.add.at(self.obj_hits, (r[o], c[o]), 1)
+        b = (h >= self.base[0]) & (h <= self.base[1])
+        np.add.at(self.base_hits, (r[b], c[b]), 1)
 
     def top_at(self, x, y):
         r, c, ok = self._idx(x, y)
@@ -85,6 +91,13 @@ class HeightMap:
         out[ok] = self.tall_hits[r[ok], c[ok]] >= hits
         return out
 
+
+    def base_at(self, x, y, hits=2):
+        """Squares with returns just above the floor (HeightMap.base) at least `hits` times."""
+        r, c, ok = self._idx(x, y)
+        out = np.zeros(np.shape(x), bool)
+        out[ok] = self.base_hits[r[ok], c[ok]] >= hits
+        return out
 
     def obj_at(self, x, y, hits=3):
         """Squares seen at object height (>= obj) at least `hits` times."""
@@ -210,6 +223,15 @@ class Sense:
         the way from the cell after the start into the open terrain cells read as one."""
         sides = all(self.edge(cell, k)[0] == 'wall' for k in ((d + 1) % 4, (d + 3) % 4))
         return sides and self.edge(cell, (d + 2) % 4)[0] != 'wall'
+
+    def solid_base(self, cell, d):
+        """Share (0-1) of the edge on side d where something stands right down to the floor
+        (returns 0.06-0.12 m high on the edge line). A curtain hangs from about 0.9 m with
+        about 0.15 m free under it, so it gives none there; a wall, a frame or a prop does.
+        Only positive evidence counts: close to the robot the lidar cannot see that low, so
+        a low share may just mean 'not seen'."""
+        x, y = self.grid.box(cell, d, ALONG, ACROSS)
+        return float(self.hm.base_at(x, y).any(axis=1).mean())
 
     def low_wall(self, cell, d):
         """A wall of ordinary height stands on this edge: wall in the map, its top measured

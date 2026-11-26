@@ -90,3 +90,49 @@ def test_pose_during_a_crossing_is_the_held_map_pose_with_fresh_odometry():
     r.read_pose_blind = lambda: explorer.Explorer.read_pose_blind(r)
     assert explorer.Explorer.read_pose(r)
     assert r.pose == pytest.approx((1.0, 2.5, math.pi / 2 + 0.1)) and r.pose_time == 160
+
+
+def cleared(sizes_after, ref=600):
+    """The robot has just stepped through; the cloud sizes it then sees, one per second."""
+    import numpy as np
+    from test_qr_approach import Robot as Base
+    E = explorer.Explorer
+    R = type('R', (Base,), dict(do_curtain_clear=E.do_curtain_clear, lidar_blocked=E.lidar_blocked))
+    r = R()
+    r.fabric_frac, r.fabric_until, r.cloud_ref = 0.4, 0.0, ref
+    sizes = list(sizes_after)
+    r.clouds = deque(maxlen=12)
+    send = r.send
+
+    def tick_cloud(*a, **k):
+        n = sizes[min(int(r.t - 100.0), len(sizes) - 1)]
+        r.clouds.append(np.zeros((n, 3)))
+        return send(*a, **k)
+    r.send = tick_cloud
+    r.pose = [1.02, 0.0, math.pi / 2]
+    r.queue.append(('curtain_clear', math.pi / 2, 0))
+    assert r.run(90.0)
+    turns = [p for p in r.trail if p[0] == 'turn']
+    return r, turns
+
+
+def test_no_turns_after_a_curtain_when_the_lidar_is_clear():
+    r, turns = cleared([580] * 60)
+    assert turns == [] and r.fabric_until == 0.0 and r.t - 100.0 < 2.0
+
+
+def test_fabric_on_the_lidar_is_shaken_off_with_90_right_then_90_left():
+    r, turns = cleared([150] * 4 + [590] * 60)           # covered, clear once the robot has turned
+    yaws = [math.degrees(p[3]) for p in turns]
+    assert min(yaws) == pytest.approx(0.0, abs=4.0)       # 90 deg to the right of +90
+    assert abs(math.degrees(r.pose[2]) - 90.0) < 4.0      # and back
+    assert any('turning 90 right and 90 left' in e for e in r.events)
+    assert any('lidar clear after 1 turn' in e for e in r.events) and r.fabric_until == 0.0
+
+
+def test_still_covered_after_two_goes_means_no_mapping_until_it_clears():
+    r, turns = cleared([150] * 90)
+    assert sum('turning 90 right' in e for e in r.events) == 2
+    assert r.fabric_until > r.t and any('nothing is added to the map' in e for e in r.events)
+    src = __import__('inspect').getsource(explorer.Explorer.tick)
+    assert 'elif self.now() < self.fabric_until:' in src and 'if self.lidar_blocked():' in src

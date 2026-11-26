@@ -7,7 +7,7 @@ import math
 import pytest
 
 from maze_explore import robot as codes
-from maze_explore.grid import wrap
+from maze_explore.grid import Grid, wrap
 from test_qr_approach import Robot, explorer
 
 E = explorer.Explorer
@@ -376,3 +376,16 @@ def test_onto_uneven_floor_the_robot_pushes_past_what_would_stop_it_on_plain_flo
     assert max(abs(p[1] - q[1]) for p, q in zip(r.trail, r.trail[1:])) <= 0.013 + 1e-6   # at 0.13 m/s
     r, gave_up = push_onto(0.70, push=False)           # the old way: the stop holds it
     assert gave_up and gave_up[0][0] == 'rough' and r.pose[0] < 0.5
+
+
+def test_stairs_at_an_angle_to_the_grid_are_not_stairs():
+    from types import SimpleNamespace as NS
+    me = NS(grid=Grid(0.0, 0.0, 0.0, 1.02), pose=(0.0, 0.0, math.radians(3)))
+    seen = lambda deg: NS(yaw=math.radians(deg))
+    assert abs(math.degrees(E.stair_slant(me, seen(-2), 0))) < 2      # square to the grid
+    assert math.degrees(E.stair_slant(me, seen(25), 0)) == pytest.approx(28, abs=0.5)
+    me.pose = (0.0, 0.0, math.radians(92))                           # facing side 1
+    assert abs(math.degrees(E.stair_slant(me, seen(-1), 1))) < 2
+    src = __import__('inspect').getsource(E.do_stair_check)
+    assert 'abs(slant) > slant_max' in src
+    assert "p('stair_slant_max', 15.0)" in __import__('inspect').getsource(E.__init__)

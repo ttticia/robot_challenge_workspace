@@ -107,7 +107,15 @@ class TaskReporter(Node):
         self.last_capture = None       # (cell, monotonic)
         self.robot_cell = None
         self.outbox = queue.Queue()
+        # Reports the server could not take yet (user, 2026-11-26 night; 10:39 run: every
+        # report refused with HTTP 409 "No active competition slot"). They are NOT a wrong
+        # answer: the sighting is kept and the latest report per mission is sent again
+        # every retry_period s until the server takes it. A newer report for the same
+        # mission replaces the waiting one.
+        self.retry_period = float(p('retry_period', 5.0).value)
+        self.waiting, self.waiting_lock = {}, threading.Lock()
         threading.Thread(target=self.post_loop, daemon=True).start()
+        threading.Thread(target=self.retry_loop, daemon=True).start()
         self.create_timer(1.0, self.flush)
         which = 'all missions' if self.only is None else ', '.join(sorted(self.only)) + ' only'
         self.get_logger().info(f'M01 = {g("m01_object")}, M02 = {g("m02_hazard") or "any hazard sign"}')
@@ -124,6 +132,9 @@ class TaskReporter(Node):
                 continue
             valid, why = check(payload)
             if valid:
+                with self.waiting_lock:          # a newer report replaces a waiting one
+                    if payload['task_id'] in self.waiting:
+                        self.waiting[payload['task_id']] = payload
                 self.outbox.put(payload)
             else:
                 self.get_logger().error(f'{payload["task_id"]} not posted: {why}')
@@ -141,9 +152,15 @@ class TaskReporter(Node):
                     log = self.get_logger().info if '"accepted"' in answer else self.get_logger().error
                     log(f'{payload["task_id"]} server: {answer.strip()[:200]}')
                     self.result(payload, successful(answer), answer)
+                    with self.waiting_lock:
+                        if self.waiting.get(payload['task_id']) == payload:
+                            del self.waiting[payload['task_id']]
                     break
                 except urllib.error.HTTPError as e:      # answered, but refused
                     answer = e.read().decode(errors='replace')
+                    if not_now(e.code, answer):
+                        self.hold_back(payload, e.code, answer)
+                        break
                     self.get_logger().error(f'{payload["task_id"]} rejected: HTTP {e.code} '
                                             f'{answer[:200]}')
                     self.result(payload, False, answer)
@@ -156,6 +173,25 @@ class TaskReporter(Node):
                 self.get_logger().error(f'{payload["task_id"]} NOT delivered after 3 tries: '
                                         f'{payload}')
                 self.result(payload, False, 'not delivered', refuse=False)
+
+    def hold_back(self, payload, code, answer):
+        """The server cannot take reports just now: keep this one and send it again."""
+        task = payload['task_id']
+        with self.waiting_lock:
+            first = task not in self.waiting
+            self.waiting[task] = payload
+        if first:
+            self.get_logger().warn(f'{task} not taken now (HTTP {code} {answer.strip()[:120]}): '
+                                   f'kept, sent again every {self.retry_period:.0f} s until it is')
+        self.result(payload, False, answer, refuse=False)
+
+    def retry_loop(self):
+        while True:
+            time.sleep(self.retry_period)
+            with self.waiting_lock:
+                again = list(self.waiting.values())
+            for payload in again:
+                self.outbox.put(payload)
 
     def result(self, payload, ok, answer, refuse=True):
         if not ok and refuse:
@@ -220,6 +256,12 @@ class TaskReporter(Node):
             cell = self.last_capture[0]
         self.missions.qr(msg.data, cell, self.robot_cell)       # the text exactly as decoded
         self.flush()
+
+
+def not_now(code, answer):
+    """An HTTP refusal that is about the server's state, not the report: try again later.
+    409 'No active competition slot' (10:39 run, 2026-11-26), and server errors."""
+    return code == 409 or code >= 500 or 'slot' in (answer or '').lower()
 
 
 def successful(answer):

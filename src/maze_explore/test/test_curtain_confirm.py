@@ -1,3 +1,4 @@
+import inspect
 import math
 """Lidar curtain = candidate only; the camera must confirm before a push (user, 2026-11-25).
 Driven without ROS: the explorer's own kind / go / do_cv_verify run on a stand-in. Run for
@@ -42,7 +43,7 @@ class Stand:
         self.cv_first = False          # these tests are about the checks after a candidate exists
         self.maze_rows, self.gait_switch, self.cur_gait, self.rough_cells = 0, False, 'hstep', set()
         self.curtain_right, self.curtain_left = math.pi, math.radians(50.0)
-        self.curtain_turns = False
+        self.curtain_turns, self.curtain_clear, self.clouds = False, True, deque()
         self.gait_for_step = lambda a, b, rough: None
         self.low = False               # Sense.low_wall for every edge
 
@@ -166,9 +167,39 @@ def test_after_a_curtain_there_are_no_turns(Robot):
     r.go(A, 0, 'curtain')
     acts = [a[0] for a in r.queue]
     after = acts[acts.index('strafe') + 1:]
-    assert 'turn' not in after and after[0] == 'hold'        # user, 2026-11-26: stand 1 s, go on
+    assert 'turn' not in after and after[0] == 'curtain_clear'    # turns only if the lidar is covered
     r.queue.clear()
     r.curtain_turns = True                                   # the old 180 right / 50 left
     r.go(A, 0, 'curtain')
     acts = [a[0] for a in r.queue]
     assert acts[acts.index('strafe') + 1:].count('turn') == 3
+
+
+def test_an_edge_that_stands_down_to_the_floor_is_not_a_curtain():
+    # user, 2026-11-26 night: a curtain hangs from about 0.9 m and leaves ~0.15 m free under it
+    import numpy as np
+    from types import SimpleNamespace as NS
+    from maze_explore.sense import HeightMap, Sense
+    E = importlib.import_module('maze_explore.explorer').Explorer
+    g = Grid(0.0, 0.0, 0.0, 1.02)
+    hm = HeightMap()
+    s = Sense(g, NS(at=lambda x, y: np.zeros(np.shape(x))), hm)
+    x, y = g.box((0, 0), 0, np.linspace(-0.3, 0.3, 13), [0.0])
+    for _ in range(3):
+        hm.add(x.ravel(), y.ravel(), np.full(x.size, 0.9))        # fabric, tall
+    assert s.solid_base((0, 0), 0) == 0.0                         # nothing at 0.06-0.12 m: a gap
+    me = NS(base_share_max=0.5, event=lambda t: None)
+    assert not E.base_veto(me, s, (0, 0), 0)
+    for _ in range(3):
+        hm.add(x.ravel(), y.ravel(), np.full(x.size, 0.09))       # the frame wall reaches the floor
+    assert s.solid_base((0, 0), 0) == 1.0 and E.base_veto(me, s, (0, 0), 0)
+    # a raised platform behind a real curtain fills the gap too: the camera's word is not
+    # overruled, and its sightings are still checked (user, 2026-11-26 night)
+    assert 'base_veto' not in inspect.getsource(E.do_cv_verify)
+    assert 'base_veto' not in inspect.getsource(E.plan)
+    assert 'not self.cv_on' in inspect.getsource(E.kind)
+
+
+def test_the_camera_needs_5_frames_at_0_6():
+    src = inspect.getsource(importlib.import_module('maze_explore.explorer').Explorer.__init__)
+    assert "p('cv_conf', 0.6)" in src and "p('cv_verify_hits', 5)" in src and "p('cv_verify_time', 4.0)" in src

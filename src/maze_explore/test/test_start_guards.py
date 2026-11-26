@@ -417,3 +417,44 @@ def test_a_junction_cell_is_skipped_the_same_way():
     assert skip == {(1, 1)} and len(said) == 1
     skip, _ = through(edges, been - {(1, 2)}, kinds)          # one of its ways is new: enter it
     assert skip == set()
+
+
+def test_square_up_accepts_8_cm_and_5_degrees():
+    R = type('R', (Robot,), dict(do_drive=E.do_drive))
+    r = R()
+    r.v_max, r.ai_speed, r.curtain_speed, r.push_stop, r.push_sure, r.step = 0.2, 0.5, 0.1, True, False, None
+    r.pose = [0.0, 0.06, math.radians(4)]          # 6 cm off the line, 4 deg off: good enough now
+    r.queue.append(('drive', 0.0, 0.0, 0.0, 'square'))
+    assert r.run(5.0) and r.t - 100.0 < 0.3 and r.cmd == (0.0, 0.0, 0.0)
+
+
+def test_a_curtain_sighting_is_checked_only_where_the_lidar_sees_something_tall():
+    from maze_explore.sense import HeightMap
+    g = Grid(0.0, 0.0, 0.0, 1.02)
+    hm = HeightMap()
+    me = NS(grid=g)
+    sense = NS(hm=hm)
+    assert E.tall_share(me, sense, (0, 0), 1) is None              # nothing measured there yet
+    x, y = g.box((0, 0), 1, np.linspace(-0.3, 0.3, 13), [0.0])
+    for _ in range(3):
+        hm.add(x.ravel(), y.ravel(), np.full(x.size, 0.53))          # an ordinary wall
+    assert E.tall_share(me, sense, (0, 0), 1) == 0.0
+    for _ in range(3):
+        hm.add(x.ravel(), y.ravel(), np.full(x.size, 0.9))           # fabric up to 0.9 m
+    assert E.tall_share(me, sense, (0, 0), 1) > 0.5
+    src = __import__('inspect').getsource(E.plan)
+    assert 'share < self.cv_tall_min' in src and 'if share is None:' in src
+
+
+def test_a_pose_jump_drops_the_plan_and_waits_for_a_still_pose():
+    from collections import deque
+    me = NS(ai_walking=False, curtain_blind=False, pose_jump_max=0.5,
+            poses=deque([(100.0, (1.0, 0.0, 0.0)), (100.1, (1.04, 0.0, 0.0))]))
+    assert E.pose_jumped(me) == 0.0
+    me.poses.append((100.2, (2.08, 0.05, 0.3)))                      # 10:39 run: 1.04 m in a turn
+    assert E.pose_jumped(me) == pytest.approx(1.04, abs=0.01)
+    me.ai_walking = True                                             # not on the stairs (expected there)
+    assert E.pose_jumped(me) == 0.0
+    tick = __import__('inspect').getsource(E.tick)
+    assert 'self.queue.clear()' in tick and 'if self.pose_held is not None:' in tick
+    assert 'self.align_grid(arrived=True)' in tick

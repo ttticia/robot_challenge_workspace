@@ -6,13 +6,13 @@
 # jump; the stairs were crossed at 0.55. For a few hours that day: 0.30 / 0.25 / 0.60.
 /**:
   ros__parameters:
-    v_max: 0.35      # m/s    normal walk, cell centre to cell centre
+    v_max: 0.3      # m/s    normal walk, cell centre to cell centre
     terrain_push_speed: 0.15   # m/s  into an uneven cell (head on, pushing: obstacle stop off, 10 s patience)
     ai_speed: 0.55        # m/s    stairs, in AI mode
     ai_centre_speed: 0.20  # m/s  after the stairs, still in AI mode: walking onto the centre of the cell after
     curtain_speed: 0.20  # m/s    curtains (sideways push)
     qr_speed: 0.08       # m/s    QR sideways check (stepping into the room and back out)
-    w_max: 0.7       # rad/s  turning on the spot, top rate (0.5 until the night of 2026-11-26; above the old team limit of 0.5, user)
+    w_max: 0.6       # rad/s  turning on the spot, top rate (0.5 until the night of 2026-11-26; above the old team limit of 0.5, user)
     terrain_w_max: 0.3       # rad/s  turning on the spot in an uneven cell (top rate)
     min_spin: 0.2        # rad/s  slowest turn commanded; the Lite3 does not turn below ~0.1
 

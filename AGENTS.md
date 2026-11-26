@@ -272,9 +272,14 @@ been explored, and the robot ends the run standing in the final cell.
   Simulated only (`test/test_qr_approach.py`; rendered views decode from 0.65 m in).
 - **Curtain**: square up on the cell's centre line, make a quarter turn on the spot, then
   step **sideways** through it (user, 2026-11-25) at 0.10 m/s with `/maze/blind` on, all the
-  way to the centre of the cell behind, where it stands 1 s and goes on. **No turns after a
-  curtain** (user, 2026-11-26; earlier that day it turned 180° right then 50° left to clear the
-  fabric off the lidar: `curtain_turns:=true` brings that back). The crossing is remembered as a link so later routes can use it.
+  way to the centre of the cell behind. **There it turns only if the fabric still covers the
+  lidar** (user, 2026-11-26 night; unit-tested only; `do_curtain_clear`): covered = the lidar's
+  cloud has shrunk to under 40 % (`fabric_frac`) of what it gave just before the push. Then
+  90° to the right and 90° back to the left, twice at most; clear = no turns. `/maze/blind`
+  stays on meanwhile, and if the lidar is still covered after the turns nothing is added to
+  the map (no scans to SLAM, no height map) until it clears, 15 s at most.
+  `curtain_clear:=false` = stand 1 s and go on; `curtain_turns:=true` = the old 180° right,
+  50° left. The crossing is remembered as a link so later routes can use it.
   **Latched (2026-11-25):** once an edge reads `curtain` it stays a curtain on both sides, whatever the map shows later (swaying or parted fabric must not turn it into an open way or a plain wall). A failed crossing, or the first grid fit (the cells move), undoes it.
   **Obstacle stop during the push:** off for a curtain the camera has confirmed (2026-11-25; with the stop on, the fabric itself stopped the step 3 cm in and the curtain became a wall: 10:42 run, cell (2, 2) side 0). For a curtain only the lidar has seen (`curtain_cv:=false`) `push_stop` still rules (default true = the fabric stops the robot, user 2026-11-23; `push_stop:=false` goes through). No progress for 8 s still ends any push.
   **Stall stop (user, 2026-11-25; unit-tested only):** the lidar is under the fabric during a push, so the guard is whether the robot moves. The explorer listens to the leg odometry (`/leg_odom2` pose, only during the push: it is a 200 Hz stream) and gives the push up (side = wall) when, after 2.2 s of stepping, the legs report under 3 cm in the last 1.5 s (`push_stall`, `push_stall_time`, `push_stall_grace`, `push_stall_min`). On the bags the leg pose follows Fast-LIO at about 0.85 of its distance while walking and moves 0-2 cm in 1.5 s standing; what it reads while the robot presses on something (feet slipping) has not been recorded. No leg data = the 8 s rule alone.
@@ -478,6 +483,9 @@ been explored, and the robot ends the run standing in the final cell.
   terrain under 0.30 m). 04:42 run: "stairs 0.70 m, levels 0.12 / 0.25 / 0.38" ahead of
   the start, in a cell later walked through; what the camera saw there is not known (no
   depth on record). `stair_agree:=false` = the camera alone, as before.
+  **Square to the grid (user, 2026-11-26 night):** stairs the depth camera sees at more than
+  15° to the grid direction (`stair_slant_max`) are not stairs; real stairs stand with their
+  steps parallel to the cell's edge (10:39 run: the play kitchen was read as stairs).
 - **Re-anchor after an odometry jump: OFF by default (`jump_fix:=true` = on).** First real
   use, 05:57 run: 2 s after a 0.32 m jump the pose read 0.38 m / 9.7° off, the grid was
   turned by that, the map did not turn with it (slam_toolbox kept matching scans to the
@@ -503,12 +511,29 @@ been explored, and the robot ends the run standing in the final cell.
   (07:45 run; 4 of 19 with 4 m in the 05:57 run), the grid drifted and cells' own walls
   read as objects inside them. It is 4 m again.
 
+- **Fewer readjustments at looks (user, 2026-11-26 night; unit-tested only)**: squaring up
+  onto a centre line now accepts 8 cm and 5° (`square_tol`, `square_deg`; was 4 cm / 3°,
+  and the robot shuffled sideways again and again before a look). A curtain-camera sighting
+  is checked (a turn and 3 s of looking) only once the lidar shows at least 20 % of that
+  edge curtain-high (0.65 m and more; `cv_tall_min`); an edge measured low is dropped, one
+  not measured yet waits.
+- **Fewer false curtains (user, 2026-11-26 night; unit-tested only)**: (1) the camera needs
+  5 frames (`cv_verify_hits`, was 3) at confidence 0.6 (`cv_conf`, was 0.5) to confirm; it
+  looks 4 s (`cv_verify_time`, was 3). A real curtain the camera does not confirm becomes
+  a wall for good, so watch the first real crossing. (2) Floor-gap test (`Sense.solid_base`,
+  `HeightMap.base_hits`): a curtain hangs from about 0.9 m and leaves about 0.15 m free
+  under it, so an edge with lidar returns 0.06-0.12 m above the floor along half of it or
+  more (`base_share_max`) stands on the floor. **Used only when the lidar decides alone
+  (`curtain_cv:=false`)**: a raised platform behind a real curtain fills that gap too
+  (user, same night), so the test never overrules the camera or stops a camera check.
+
 Safety behaviour:
 
 | Condition | Reaction |
 |---|---|
 | `/odom` moves more than 0.15 m (`odom_jump_min`; 0.25 for a few hours on 2026-11-26, when a 0.18 m slip during a sidestep onto a ramp cell went unnoticed) + 0.6 m/s × the time since the last message | stand until it has been steady for 1.5 s (`odom_settle`; was 3 s: user, "pausing for too long"), then carry on. Jumps that follow each other within 3 s (`odom_burst_gap`) are one burst and do not add up (user, 2026-11-26: allow some jumping; 05:03 run: /odom swung ±0.3 m sideways for 1.7 s on a late feed, 10 jumps, then held, but 3 jumps in 10 s was a `FAULT` then). `FAULT` (stop for good, relaunch) only when it does not come back: a burst still going after 6 s of standing (`odom_burst_max`), a pose more than 1.5 m from where the burst began (`odom_net_max`), or one jump over 2 m. Unit-tested on the 05:03 trace only. **On uneven floor more is allowed** (user, 2026-11-26; `odom_terrain`, default 2): standing in an uneven cell, or on a step into or out of one, a step of `/odom` counts as a jump only from twice the size (0.30 m), and a burst may last and the pose may end twice as far (12 s, 3.0 m) before `FAULT`; one jump over 2 m is a `FAULT` anywhere |
 | Sensor feed late: `/odom` arrives more than 0.30 s (`feed_late`; 0.15 until the 05:30 run, where 11 of 15 pauses began under 0.30 s) later than usual after its stamp (2026-11-26) | stand still until it has been on time for 0.5 s (`feed_settle`); at most 6 s in one go, then carry on for 10 s at 0.10 m/s at most (`feed_slow`; 05:03 run: it went on at 0.30 m/s and odometry swung 5 s later). Every odometry jump on record followed a late feed while the robot was moving (bags of 11-25 and 11-26: 12 late episodes moving, 2 jumps; 24 standing, none). `feed_pause:=false` (node parameter) = off |
+| The map pose moves 0.5 m or more between two ticks (`pose_jump_max`; 2026-11-26 night, unit-tested only) | everything planned is dropped; the robot stands until the pose has been still for 2 s (12 s at most), lines the grid up with the walls again and plans afresh. 10:39 run: a 45° turn "moved" the robot 1.04 m and what it planned from there took the play kitchen for stairs. A slip of a whole cell cannot be seen by the wall fit (walls line up with cell borders either way), so this stops acting on a jumped pose but cannot always put it right |
 | Pose or lidar cloud older than 1 s | stand still until fresh (the action clock waits too) |
 | Something knee-high or taller 6–20 cm ahead while walking, and while pushing (`push_stop`) | stop; after 8 ticks give up the step |
 | No progress for 8 s (12 s in AI mode) | give up the step |
@@ -603,7 +628,7 @@ Unit tests: `nice -n 19 python3 -m pytest src/<package>/test -q`. `team_percepti
 |---|---|---|
 | `team_perception` | `depth_relay`, `qr_scanner`, `human_detector`, `poster_detector` | Guides: `launch_guide.md`, `perception_guide.md`, `data_required.md`. `challenge_ws` is the master copy; do not re-sync from Robot-Dog-Grp4 |
 | `scene_understanding` | `junction_trigger`, `room_scene` | **Connected to `maze_explore` (2026-11-24)**, started by `explore.launch.py`. `junction_trigger` takes the three views of each room / object look (compressed colour, subscribed only during the look), sends them as one 2 x 2 image with `LOOK_PROMPT` (scene type, hand tools, hazard, survivor; no QR) to the lab VLM (`192.168.10.141:8000`, images at most 1024 x 768, 2 s cooldown) and publishes `/scene/result`. `scene_understanding:=false` turns it off. `room_scene` is the old path, not started |
-| `task_reporter` (own package, user 2026-11-24) | `task_reporter` | Takes `/scene/result` (scene understanding) and `/qr/read` (`qr_scanner`), maps them to the five missions (`missions.py`), checks the format (`missions.check`) and POSTs each report as `group04_grp4` to `http://192.168.10.141:8001/task_report_A` or `..._B`: **the course follows `maze_side`, L = course A, R = course B** (user, 2026-11-26; `missions.course_url`; a `report_url` ending in `_A` / `_B` overrides it; with neither, nothing is posted and the node logs an error; practice mode, live since 2026-11-24; the reply carries the per-field evaluation). M01, M02, M03 and M05 carry `pos`; **M04 (the QR text) is sent with `pos` null**: the server rejects a QR report with a position (08:01 run, 2026-11-26, HTTP 422; until then every report carried one). `pos` is always the centre of the cell the robot is LOOKING AT (user, 2026-11-25), taken from the explorer's look events and from its status while the job is a look, so both coordinates are whole multiples of 1.02; never where the robot stands. One answer per mission: M01 only for the object the mission asks for (`m01_object`, default `hand_tools`; a setting because the missions may still change, user 2026-11-24), M02 for a hazard sign (`m02_hazard`, default any); the first sighting holds it. Everything else seen is recorded on `/mission/sightings`, not submitted. Imports nothing from the other packages. `report:=false` turns it off |
+| `task_reporter` (own package, user 2026-11-24) | `task_reporter` | Takes `/scene/result` (scene understanding) and `/qr/read` (`qr_scanner`), maps them to the five missions (`missions.py`), checks the format (`missions.check`) and POSTs each report as `group04_grp4` to `http://192.168.10.141:8001/task_report_A` or `..._B`: **the course follows `maze_side`, L = course A, R = course B** (user, 2026-11-26; `missions.course_url`; a `report_url` ending in `_A` / `_B` overrides it; with neither, nothing is posted and the node logs an error; practice mode, live since 2026-11-24; the reply carries the per-field evaluation). **A report the server cannot take yet is kept and sent again every 5 s** (user, 2026-11-26 night; `retry_period`): HTTP 409 ("No active competition slot", every report of the 10:39 run) and server errors count as not delivered, not as a wrong answer, so the sighting is not dropped; a newer report for the same mission replaces the waiting one. Tested against a local fake server. M01, M02, M03 and M05 carry `pos`; **M04 (the QR text) is sent with `pos` null**: the server rejects a QR report with a position (08:01 run, 2026-11-26, HTTP 422; until then every report carried one). `pos` is always the centre of the cell the robot is LOOKING AT (user, 2026-11-25), taken from the explorer's look events and from its status while the job is a look, so both coordinates are whole multiples of 1.02; never where the robot stands. One answer per mission: M01 only for the object the mission asks for (`m01_object`, default `hand_tools`; a setting because the missions may still change, user 2026-11-24), M02 for a hazard sign (`m02_hazard`, default any); the first sighting holds it. Everything else seen is recorded on `/mission/sightings`, not submitted. Imports nothing from the other packages. `report:=false` turns it off |
 | QR during looks | `qr_scanner` (in `team_perception`) | `explore.launch.py` starts one (`qr:=false` = off) with `on_demand`: its camera is subscribed, and every frame fully scanned, only while `/explore/status` shows a look job, the same moment scene understanding takes its views. Do not run `robot.launch.py` as well (a second scanner). It ends with `maze_explore` (user, 2026-11-24): the launch interrupts it when the `maze_explorer` process exits, and it stops itself when the launch dies in any way (`EXIT_WITH_PARENT`, plus a parent check every 2 s). 2026-11-24 10:54 frame: the code on the survivor poster was about 35 px wide from the cell before and the decoder did not even locate it |
 
 **The gap to close.** These packages were written against the old explorer and still
