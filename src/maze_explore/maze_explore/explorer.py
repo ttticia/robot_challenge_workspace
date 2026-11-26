@@ -75,13 +75,10 @@ class Explorer(Node):
         # heading (the start cell is in row 1) and the end cell is the only cell of the row
         # after, open at its far edge. An open way from the last row into that row is the
         # exit and nothing else is. maze_rows 0 = the exit is told from the map alone.
-        # There the robot stops with its nose end_gap before the open far edge, turns
-        # end_turn AWAY from maze_side (user, 2026-11-26, later the same day) and lies down.
+        # There the robot stops standing, centred, facing the open edge, nose end_gap before
+        # it (end_stop()). Being in that row at all counts as being in the end cell.
         self.maze_rows = p('maze_rows', 5).value
         self.end_gap = p('end_gap', 0.10).value            # m, nose to the open edge
-        self.end_turn = math.radians(p('end_turn', 0.0).value)    # deg away from maze_side; 0 = parallel
-        self.end_side_gap = p('end_side_gap', 0.20).value  # m, flank to the wall away from the maze
-        self.end_lie_down = p('end_lie_down', False).value # lie down at the end stop (it stays standing)
         self.lie_down = p('lie_down', True).value
         self.lying = False            # lying down in a pause (no exit found)
         self.lost_dist = p('lost_dist', 0.75).value   # m from the nearest known cell centre = lost
@@ -191,7 +188,7 @@ class Explorer(Node):
         self.rough_checked = {}       # (cell, d) -> True | False | None (camera saw too little)
         self.rough_known = set()      # cells the depth camera has confirmed as uneven
         self.terrain_confirm = p('terrain_confirm', 3).value   # uneven frames that confirm it
-        self.look_angle = math.radians(p('look_angle', 45.0).value)
+        self.look_angle = math.radians(p('look_angle', 35.0).value)
         # QR approach (user, 2026-11-25). From the cell before, a code on a side wall is
         # seen about 60 deg off square and cannot be decoded (10:54 run, 11-24: 34 x 68 px).
         # Scene understanding (the VLM) can SEE it, though. After the three views of a look
@@ -251,15 +248,39 @@ class Explorer(Node):
         self.ai_distance = p('ai_distance', 'time').value   # stairs copy: 'time' or 'leg'
         self.ai_wall_min = p('ai_wall_min', 1.0).value     # stairs copy: m before the wall stop
         self.ai_walking = False                     # stairs copy: AI walk under way
+        # The stairs are crossed once, never again (user, 2026-11-26 night). stairs_done is
+        # set when a crossing ends, or when a human finished one after an AI-mode stop
+        # (ai_pending = the (a, d, c) of that walk, settled at the next /nav/start).
+        self.stairs_done = False
+        self.ai_pending = None
         # user, 2026-11-26: after the stairs, before the gait is changed back, the robot
         # is walked onto the centre of the cell after if it is more than ai_centre_tol off.
         self.ai_centre_on = p('ai_centre', True).value
         self.ai_centre_tol = p('ai_centre_tol', 0.10).value      # m off the centre = centred
         self.ai_centre_speed = p('ai_centre_speed', 0.20).value  # m/s for that short walk
-        self.ai_settle = p('ai_settle', 3.0).value   # s standing after the AI walk, for the pose
+        self.ai_settle = p('ai_settle', 5.0).value   # s standing after the AI walk, at least (was 3)
+        # ... and on until the pose has stayed within ai_still_m for ai_still_s (SLAM caught up)
+        self.ai_still_m = p('ai_still_m', 0.03).value
+        self.ai_still_s = p('ai_still_s', 1.5).value
+        self.ai_settle_max = p('ai_settle_max', 10.0).value   # s standing at most
+        # Lined up before the climb (after the 19:05 run, 2026-11-26): onto the stairs' own
+        # centre line (stair_lines, from the depth stair check) within these, before AI mode
+        self.stair_align_tol = p('stair_align_tol', 0.03).value     # m sideways
+        self.stair_align_deg = p('stair_align_deg', 2.0).value      # deg, final turn
+        self.stair_line_deg = math.radians(p('stair_line_deg', 10.0).value)  # measured line believed within
+        self.stair_line_off = p('stair_line_off', 0.25).value       # m of the cell's centre line
+        self.stair_lines = {}         # (cell, d) -> (x, y, heading) of the stairs' centre line, map
+        self.ai_sequence = False      # in the stairs sequence: a pose jump does not drop it
         self.ai_last_walked = 0.0                   # stairs copy: m of the last AI walk
         self.ai_reanchor = p('ai_reanchor', True).value   # stairs copy: re-anchor the grid after
         self.reanchor_min = p('reanchor_min', 0.15).value  # m off before it re-anchors
+        # a pose SHORT of the counted spot after the AI walk is believed (see reanchor).
+        # Off: in both stairs runs of 2026-11-26 night (19:05, 19:14) the lidar pose jumped
+        # over 1 m right after the walk, so it is not to be believed there
+        self.ai_short_trust = p('ai_short_trust', False).value
+        self.ai_reanchor_deg = math.radians(p('ai_reanchor_deg', 45.0).value)
+        self.ai_start = None          # map pose where the AI walk began (lined up)
+        self.ai_expected = None       # where the walk put the robot, by dead reckoning
         self.reanchor_fit = 0
         self.imu_yaw = self.leg_vx = None           # stairs copy: body IMU yaw, leg-odometry speed
         self.leg_time = 0.0
@@ -879,6 +900,7 @@ class Explorer(Node):
         self.curtain_blind = False
         self.leg_watch(False)
         self.ai_walking = False               # stairs copy
+        self.ai_sequence = False              # the rest of the stairs sequence is gone too
         self.state, self.why = state, why
         (self.get_logger().error if state == 'FAULT' else self.get_logger().info)(f'{state}: {why}')
 
@@ -909,12 +931,42 @@ class Explorer(Node):
                 self.lying = False
                 self.get_logger().info('resuming: standing up first (stand / sit toggle)')
                 self.queue.extend([('cmd', robot.STAND_SIT), ('hold', 4.0)])
+            after = self.settle_ai_pending() if self.ai_pending is not None else None
             self.get_logger().info(f'resuming: sending Move, {self.cur_gait} and navigation mode again')
             for code in robot.start_sequence(self.cur_gait):
                 self.queue.append(('cmd', code))
                 self.queue.append(('hold', self.cmd_gap))
+            if after is not None:
+                self.queue.append(('resolve', after))
         self.state, self.why = 'RUN', ''
         self.get_logger().info(f"exploring (maze_side: {self.maze_side or 'not given'})")
+
+    def settle_ai_pending(self):
+        """Resuming after a stop during the stairs crossing (from the AI walk on). The AI walk
+        finished, or the robot past the middle of the stair cell (put there by hand) = the
+        stairs count as crossed and the robot is in the cell after them. Short of that the
+        crossing did not happen and may be tried again."""
+        a, d, c = self.ai_pending
+        self.ai_pending = None
+        self.step = None
+        self.cur_gait = self.gait     # the AI leave sequence never ran: back to the step gait
+        if self.grid is None or self.pose is None:
+            return
+        ax, ay = self.grid.centre(a)
+        h = self.grid.heading(d)
+        along = (self.pose[0] - ax) * math.cos(h) + (self.pose[1] - ay) * math.sin(h)
+        if self.stairs_done or along > self.cell_size:
+            self.get_logger().info(f'resuming: {along:.2f} m past cell {a} along the stairs: '
+                                   'they count as crossed')
+            self.stairs_crossed(a, d)
+            self.arrive(c)
+            # arrive() queued a resolve first; it comes after the start codes (begin())
+            self.queue = deque(x for x in self.queue if x != ('resolve', c))
+            return c
+        else:
+            self.get_logger().info(f'resuming: only {along:.2f} m past cell {a}: the stairs '
+                                   'are not crossed yet')
+        return None
 
     def align_grid(self, arrived=False):
         """Line the grid up with the walls in the map. Returns True when this call was the
@@ -1045,7 +1097,9 @@ class Explorer(Node):
         # blocks the next cell is kept as possible stairs (looked at before anything is done).
         checked = self.stairs_checked.get((cell, d))
         if checked is True:
-            return 'stairs'
+            # the stairs are crossed once (user, 2026-11-26 night): stairs seen after
+            # that are a prop to look at, never crossed
+            return 'object' if getattr(self, 'stairs_done', False) else 'stairs'
         clear = (cell, d) in getattr(self, 'depth_clear', ())
         if clear and k in ('stairs', 'blocked', 'object'):
             # The depth camera has read this cell's floor and found it flat with nothing
@@ -1074,6 +1128,8 @@ class Explorer(Node):
         if checked in (False, 'lidar') and k == 'free' and self.stairs_on and not clear \
                 and self.raised(cell, d):
             k = 'blocked'
+        if k == 'stairs' and getattr(self, 'stairs_done', False):
+            k = 'object'              # crossed once already: a prop now, looked at, not crossed
         if k == 'room' and any((b, e) in self.cv_curtains or (b, e) in self.curtain_latched
                                for e in range(4)):
             k = 'free'                # not a dead end: one of its "walls" is a curtain
@@ -1192,6 +1248,13 @@ class Explorer(Node):
                 cur = min(self.visited - self.closed,
                           key=lambda c: math.dist(self.grid.centre(c), self.pose[:2]))
             self.queue.append(('resolve', cur))
+            return
+        # In the 6th row = in the end cell (user, 2026-11-26 night): that row has one cell
+        # and nothing else, so being anywhere in it is enough. Straight to the end stop.
+        here = self.cur_cell()
+        if self.maze_rows > 0 and here[0] >= self.maze_rows:
+            self.job = f'exit cell {here}'
+            self.end_stop(here, 0)
             return
         # Every job starts from a cell centre. Turns end on heading alone and nothing drives
         # backwards, so a robot that has ended up off the centre is walked back onto it first.
@@ -1342,54 +1405,23 @@ class Explorer(Node):
         elif j['job'] in ('curtain', 'stairs'):
             self.go(c, d, j['job'])
         elif j['job'] == 'exit':
-            # The end stop (user, 2026-11-26 night). `c` has the way out on side exit_d.
-            # With the row rule c is the cell BEFORE the end cell: walk into the end cell
-            # first. The robot ends STANDING (it used to lie down), parallel to the side
-            # walls (it used to turn 15 deg), with its nose (fp_front ahead of base_link)
-            # end_gap short of the open far edge, and its flank end_side_gap from the side
-            # wall on the side OPPOSITE to maze_side (maze on the left = by the right
-            # wall). That ends the run.
+            # `c` has the way out on side exit_d. With the row rule c is the cell BEFORE the
+            # end cell: square up there, walk into the end cell, then the end stop.
             d = self.exit_d
             h = self.grid.heading(d)
             end = c if self.maze_rows <= 0 or c[0] >= self.maze_rows else nb(c, d)
             ex, ey = self.grid.centre(end)
-            reach = self.cell_size / 2 - self.end_gap - self.fp_front
-            side = {'L': -1.0, 'R': 1.0}.get(str(getattr(self, 'maze_side', '')).upper()[:1], 0.0)
-            if not side:
-                self.get_logger().warn('maze_side not given (L / R): ending on the centre line')
-            # sideways from the centre line, to the left (+): towards the wall away from the maze
-            lat = side * max(0.0, self.cell_size / 2 - self.end_side_gap - self.fp_half_width)
-            lx, ly = -lat * math.sin(h), lat * math.cos(h)
-            ex, ey = ex + lx, ey + ly                   # the line the robot walks in on
-            tx, ty = ex + reach * math.cos(h), ey + reach * math.sin(h)
             # A possible exit only: a step like any other, so that being stopped on the
-            # way in makes this side a wall (stuck()) and the next candidate is tried. A
-            # plain open way keeps the old rule: not reached = STOPPED, for a human.
+            # way in makes this side a wall (stuck()) and the next candidate is tried.
             weak = (c, d) in self.exit_weak
-            q.extend([('turn', h, 3.0), ('drive', tx, ty, h, 'square'),
-                      ('call', lambda: setattr(self, 'step', (c, d, end) if weak and end != c else None))])
             if end != c:
-                q.extend([('event', f'exit: into the end cell {end} from cell {c} side {d}'
+                q.extend([('turn', h, 3.0), ('drive', ex, ey, h, 'square'),
+                          ('call', lambda: setattr(self, 'step', (c, d, end) if weak else None)),
+                          ('event', f'exit: into the end cell {end} from cell {c} side {d}'
                                     + (' (possible exit: trying it)' if weak else '')),
                           ('drive', ex, ey, h, 'normal'),
                           ('call', lambda: (setattr(self, 'step', None), self.visited.add(end)))])
-            def reached():
-                off = math.hypot(tx - self.pose[0], ty - self.pose[1])
-                if off > 0.20:        # something was in the way: this is not the end stop
-                    self.halt('STOPPED', f'end stop not reached ({off:.2f} m short): finish by '
-                                         'hand, or clear the way and send /nav/start')
-            q.extend([('drive', tx, ty, h, 'creep'), ('drive', tx, ty, h, 'square'),
-                      ('call', reached), ('turn', h, 2.0, 'here')])       # parallel to the side walls
-            if side and self.end_turn > 0:              # off by default (end_turn 0)
-                q.append(('turn', wrap(h + side * self.end_turn), 2.0, 'here'))
-            q.extend([('hold', 1.0),
-                      ('event', f'exit: stopped in the end cell {end}, standing, nose {self.end_gap:.2f} m '
-                                f'before its open edge'
-                                + (f', {self.end_side_gap:.2f} m from the {"left" if side > 0 else "right"} '
-                                   f'wall' if side else ', on the centre line'))])
-            if self.end_lie_down:                       # off by default: the robot stays standing
-                q.extend([('cmd', robot.STAND_SIT), ('event', 'exit: lying down'), ('hold', 2.0)])
-            q.append(('call', lambda: self.halt('DONE', 'in the end cell')))
+            self.end_stop(end, d)
         else:
             if off > self.lost_dist:
                 # Not with a pose like this (user, 2026-11-26 night; 09:06 run: 2.37 m
@@ -1413,6 +1445,38 @@ class Explorer(Node):
                 'STOPPED', 'everything reachable explored, no exit found: paused'
                            + (', lying down' if self.lie_down else '')
                            + '. /nav/start to stand up and go on')))
+
+    def end_stop(self, end, d):
+        """The end stop (user, 2026-11-26 night), queued with the robot in or on its way
+        into the end cell `end`, whose open edge is side d. Onto the cell's centre line
+        facing the open edge, forward until the nose (fp_front ahead of base_link) is
+        end_gap (0.10 m) before that edge, stop standing: DONE. With the row rule, being
+        in the 6th row is all it takes: if something stops the robot short of the spot,
+        it ends where it got to. Not in that row at all = STOPPED, for a human."""
+        q = self.queue
+        h = self.grid.heading(d)
+        ex, ey = self.grid.centre(end)
+        reach = self.cell_size / 2 - self.end_gap - self.fp_front
+        tx, ty = ex + reach * math.cos(h), ey + reach * math.sin(h)
+
+        def reached():
+            if self.maze_rows > 0:
+                if self.cur_cell()[0] < self.maze_rows:
+                    self.halt('STOPPED', f'end cell {end} not reached: finish by hand, or '
+                                         'clear the way and send /nav/start')
+                return
+            off = math.hypot(tx - self.pose[0], ty - self.pose[1])
+            if off > 0.20:            # something was in the way: this is not the end stop
+                self.halt('STOPPED', f'end stop not reached ({off:.2f} m short): finish by '
+                                     'hand, or clear the way and send /nav/start')
+        q.extend([('turn', h, 3.0), ('drive', ex, ey, h, 'square'),      # centred, facing the edge
+                  ('drive', tx, ty, h, 'creep'), ('drive', tx, ty, h, 'square'),
+                  ('call', reached), ('turn', h, 2.0, 'here'), ('hold', 1.0),
+                  ('call', lambda: self.event(
+                      f'exit: stopped in the end cell {end}, standing, facing its open edge, '
+                      f'nose {max(0.0, self.cell_size / 2 - self.fp_front - ((self.pose[0] - ex) * math.cos(h) + (self.pose[1] - ey) * math.sin(h))):.2f} m '
+                      'before it, on the centre line')),
+                  ('call', lambda: self.halt('DONE', 'in the end cell'))])
 
     def through_cells(self, sense):
         """Path cells that need not be entered (user, 2026-11-26 night): not visited yet, open
@@ -1540,6 +1604,14 @@ class Explorer(Node):
         """Queue one step from the centre of cell a through side d."""
         q, h, b = self.queue, self.grid.heading(d), nb(a, d)
         ax, ay = self.grid.centre(a)
+        if how == 'stairs' and getattr(self, 'stairs_done', False):
+            # never a second time (user, 2026-11-26 night): whatever reads as stairs now is
+            # not crossed. plan() offers no such job; this is the last guard.
+            self.get_logger().warn(f'stairs crossed already: cell {a} side {d} is not crossed, '
+                                   'it counts as a wall')
+            self.event(f'stairs: already crossed once, cell {a} side {d} taken as a wall')
+            self.forced_wall.update({(a, d), (b, opp(d))})
+            return
         stairs = self.stair_check_on and (a, d) not in self.stairs_checked and (
             how == 'stairs' or (how == 'walk' and b not in self.visited and self.raised(a, d)))
         # the lidar has hardly seen the floor in there: let the depth camera read it
@@ -1645,31 +1717,86 @@ class Explorer(Node):
             cx, cy = self.grid.centre(c)
 
             def crossed():
-                self.links[(a, d)], self.links[(c, opp(d))] = ('stairs', c), ('stairs', a)
-                self.closed.add(b)
+                self.ai_pending = None
+                self.ai_sequence = False
                 self.arrive(c)
-            q.extend([('drive', ax, ay, h, 'square'), ('turn', h, 2.0),
+            # Lined up before the climb (19:05 run: squared up within 8 cm / 5 deg on a grid
+            # that was never fitted, the detector saw the stairs 7 cm off to the side, and
+            # the walk has no heading hold). Onto the stairs' own centre line where the
+            # depth camera measured it, else the cell's: within stair_align_tol sideways,
+            # then turned to within stair_align_deg.
+            lx, ly, lh = self.stair_line(a, d)
+            q.extend([('call', lambda: setattr(self, 'ai_sequence', True)),
+                      ('drive', lx, ly, lh, 'align'), ('turn', lh, self.stair_align_deg),
+                      ('drive', lx, ly, lh, 'align'), ('turn', lh, self.stair_align_deg),
+                      ('call', lambda: self.event(
+                          f'stairs: lined up, {self.line_offset(lx, ly, lh) * 100:+.0f} cm off the '
+                          f'{"stairs" if (a, d) in self.stair_lines else "cell"} centre line, '
+                          f'{math.degrees(wrap(lh - self.pose[2])):+.1f} deg')),
                       ('event', f'stairs: AI mode, cell {a} side {d}')])
             for code in robot.ai_enter_sequence():
                 q.extend([('cmd', code), ('hold', self.cmd_gap)])
             if self.ai_auto:                  # stairs copy: follow /cmd_vel in the AI gait
                 q.extend([('cmd', robot.AUTO), ('hold', self.cmd_gap)])
-            q.extend([('hold', 1.0), ('call', lambda: setattr(self, 'step', (a, d, c))),
+            # ai_pending: a stop from here on is settled at the next /nav/start
+            # (settle_ai_pending). Once the AI walk is over the stairs count as crossed,
+            # whatever stops the robot afterwards (user, 2026-11-26 night: never again).
+            q.extend([('hold', 1.0), ('call', lambda: (setattr(self, 'step', (a, d, c)),
+                                                       setattr(self, 'ai_pending', (a, d, c)))),
                       ('drive', cx, cy, h, 'ai'),
+                      ('call', lambda: self.stairs_crossed(a, d)),
                       # Before the gait is changed back (user, 2026-11-26): is the robot in
                       # the middle of the cell after the stairs? The AI walk ends just past
                       # that cell's border, by distance. Stand until the pose has settled,
                       # line the grid up with where the walk put the robot (reanchor, which
                       # used to come after the gait change), and if the robot is off the
                       # centre walk onto it, still in the AI gait (do_ai_centre).
-                      ('hold', self.ai_settle),
+                      ('ai_settle',),
                       ('call', lambda: self.reanchor(ax, ay, h)),    # stairs copy
                       ('ai_centre', c, h), ('hold', 1.0)])
-            for code in robot.ai_leave_sequence(self.gait):
+            # Out of AI mode into the FLAT gait (user, 2026-11-26 night): the cell after the
+            # stairs is plain floor. It used to be `gait` (H-Step, the uneven-floor gait).
+            after = self.flat_gait if self.gait_switch else self.gait
+            for code in robot.ai_leave_sequence(after):
                 q.extend([('cmd', code), ('hold', self.cmd_gap)])
-            q.extend([('call', lambda: setattr(self, 'cur_gait', self.gait)),
-                      ('event', f'stairs: crossed, {self.gait} again'),
+            q.extend([('call', lambda: setattr(self, 'cur_gait', after)),
+                      ('event', f'stairs: crossed, {after} gait again'),
                       ('call', crossed)])
+
+    def stair_line(self, a, d):
+        """(x, y, heading) of the line the robot climbs on, from cell a through side d: the
+        stairs' centre line where the depth camera measured it, if that is believable
+        (within stair_line_deg of the grid direction and stair_line_off of the cell's centre
+        line), else the cell's centre line."""
+        ax, ay = self.grid.centre(a)
+        h = self.grid.heading(d)
+        got = self.stair_lines.get((a, d))
+        if got is not None:
+            px, py, hs = got
+            off = -(px - ax) * math.sin(h) + (py - ay) * math.cos(h)
+            if abs(wrap(hs - h)) <= self.stair_line_deg and abs(off) <= self.stair_line_off:
+                return px, py, hs
+            self.event(f'stairs: the measured stairs line is {off:+.2f} m / '
+                       f'{math.degrees(wrap(hs - h)):+.0f} deg off the cell, not used')
+        return ax, ay, h
+
+    def line_offset(self, lx, ly, lh):
+        """Sideways distance of base_link from the line through (lx, ly) along lh (left +)."""
+        return -(self.pose[0] - lx) * math.sin(lh) + (self.pose[1] - ly) * math.cos(lh)
+
+    def stairs_crossed(self, a, d):
+        """The stairs from cell a through side d are crossed (the AI walk is over). The
+        stair cell is closed, the crossing is kept as a link (never routed over again,
+        plan.routes) and no more stairs are crossed in this run. The robot arrives in the
+        cell after them later, once it has left the AI gait."""
+        if getattr(self, 'stairs_done', False):
+            return
+        b = nb(a, d)
+        c = nb(b, d)
+        self.links[(a, d)], self.links[(c, opp(d))] = ('stairs', c), ('stairs', a)
+        self.closed.add(b)
+        self.stairs_done = True
+        self.event(f'stairs: crossed once, cell {b} closed; no stairs are crossed again')
 
     def do_ai_centre(self, c, h):
         """After the stairs, still in the AI gait: walk onto the centre of cell c if the
@@ -1695,16 +1822,38 @@ class Explorer(Node):
                 self.odom_grace_until = now + 3.0
             self.event(f'stairs: {text}, cell {c} ({off:.2f} m off its centre)')
             return True
+        if mem.get('dr'):
+            return self.ai_centre_dr(c, end)
         if 't0' not in mem:
             if not self.ai_centre_on or off <= self.ai_centre_tol:
                 return end('in the middle of the cell after' if off <= self.ai_centre_tol
                            else 'centre check off')
-            if now - (self.pose_time or 0.0) > self.pose_timeout:
-                return end('not walked onto the centre: pose too old')
-            if off > self.cell_size or abs(bearing) > math.radians(70):
-                return end('not walked onto the centre: it is '
-                           + ('further than a cell away' if off > self.cell_size else
-                              f'{math.degrees(bearing):+.0f} deg off straight ahead'))
+            bad = ('pose too old' if now - (self.pose_time or 0.0) > self.pose_timeout else
+                   'further than a cell away' if off > self.cell_size else
+                   f'{math.degrees(bearing):+.0f} deg off straight ahead'
+                   if abs(bearing) > math.radians(70) else None)
+            if bad:
+                # The pose is not to be believed (19:14 run: 128 deg off after SLAM re-matched
+                # 1.70 m away). Walk the rest by dead reckoning instead of not at all: the
+                # robot was lined up on the stairs and walked straight, so it stands
+                # ai_expected, facing h; what is left to c's centre is walked straight on.
+                rest = self.ai_rest(c, h)
+                if rest is None:
+                    return end(f'not walked onto the centre: it is {bad}, no dead reckoning')
+                if rest <= self.ai_centre_tol:
+                    return end(f'in the middle of the cell after by dead reckoning ({bad} by the '
+                               f'pose; {rest:+.2f} m left)')
+                if rest > self.cell_size:
+                    return end(f'not walked onto the centre: {bad}, and {rest:.2f} m left by '
+                               'dead reckoning')
+                mem.update(dr=True, t0=now, last=now, rest=rest, walked=0.0, wall=0,
+                           yaw0=self.imu_yaw,
+                           tmax=rest / max(self.ai_centre_speed, 0.05) * 2.5 + 3.0)
+                self.ai_walking = True
+                self.get_logger().info(f'after the stairs: pose not believed ({bad}); walking the '
+                                       f'{rest:.2f} m left to the centre of cell {c} by dead '
+                                       'reckoning, in the AI gait')
+                return False
             mem.update(t0=now, tmax=off / max(self.ai_centre_speed, 0.05) * 2.5 + 3.0, wall=0)
             self.ai_walking = True            # as in the AI walk: odometry steps are expected
             self.get_logger().info(f'after the stairs: {off:.2f} m off the centre of cell {c}: '
@@ -1719,6 +1868,56 @@ class Explorer(Node):
             return end('walk onto the centre ended (time limit or old pose)')
         self.send(vx=min(self.ai_centre_speed, max(0.10, 1.5 * ahead)),
                   wz=clamp(1.2 * bearing, -0.4, 0.4))
+        return False
+
+    def ai_rest(self, c, h):
+        """Metres left along h from where the AI walk put the robot (ai_expected, by dead
+        reckoning) to the centre of cell c; None when the walk's start was not recorded."""
+        if getattr(self, 'ai_expected', None) is None:
+            return None
+        cx, cy = self.grid.centre(c)
+        ex, ey = self.ai_expected
+        return (cx - ex) * math.cos(h) + (cy - ey) * math.sin(h)
+
+    def ai_centre_dr(self, c, end):
+        """do_ai_centre by dead reckoning: straight on at ai_centre_speed, distance from speed
+        x time, heading held on the IMU like the AI walk (ai_wz; 0 = none). Ends when the
+        distance is walked, at a wall just ahead, or on the time limit."""
+        mem, now = self.act_mem, self.now()
+        dt, mem['last'] = now - mem['last'], now
+        mem['walked'] += self.ai_centre_speed * dt
+        if mem['walked'] >= mem['rest']:
+            self.ai_expected = None
+            return end(f'walked onto the centre by dead reckoning ({mem["walked"]:.2f} m)')
+        mem['wall'] = mem['wall'] + 1 if self.cloud is not None and self.front_blocked() else 0
+        if mem['wall'] >= 3:
+            return end(f'dead-reckoned walk onto the centre ended by a wall ahead after '
+                       f'{mem["walked"]:.2f} m')
+        if now - mem['t0'] > mem['tmax']:
+            return end('dead-reckoned walk onto the centre ended (time limit)')
+        herr = 0.0
+        if self.ai_wz > 0 and mem['yaw0'] is not None and self.imu_yaw is not None:
+            herr = wrap(mem['yaw0'] - self.imu_yaw)
+        self.send(vx=self.ai_centre_speed, wz=clamp(0.8 * herr, -self.ai_wz, self.ai_wz))
+        return False
+
+    def do_ai_settle(self):
+        """After the AI walk: stand at least ai_settle, then until the pose has stayed within
+        ai_still_m for ai_still_s (SLAM has caught up with the scans again), ai_settle_max at
+        most (19:14 run: the pose jumped 1.44 m, then 1.70 m a second later)."""
+        now = self.now()
+        waited = now - self.act_t0
+        self.send()
+        if waited < self.ai_settle:
+            return False
+        recent = [q for t_, q in self.poses if now - t_ <= self.ai_still_s]
+        still = self.pose is not None and len(recent) >= 5 and all(
+            math.hypot(q[0] - self.pose[0], q[1] - self.pose[1]) < self.ai_still_m and
+            abs(wrap(q[2] - self.pose[2])) < math.radians(2.0) for q in recent)
+        if still or waited >= self.ai_settle_max:
+            self.event(f'stairs: pose {"still" if still else "NOT still"} after {waited:.1f} s '
+                       'standing; going on')
+            return True
         return False
 
     def gait_for_step(self, a, b, rough):
@@ -1749,22 +1948,46 @@ class Explorer(Node):
         if not self.ai_reanchor or self.pose is None or self.grid is None:
             return
         w = self.ai_last_walked
-        ex, ey = ax + w * math.cos(h), ay + w * math.sin(h)
+        start = getattr(self, 'ai_start', None)      # where the walk began, lined up
+        bx, by = (start[0], start[1]) if start is not None else (ax, ay)
+        ex, ey = bx + w * math.cos(h), by + w * math.sin(h)
+        self.ai_expected = (ex, ey)                  # do_ai_centre walks on from here
         px, py, psi = self.pose
         dth, shift = wrap(psi - h), math.hypot(px - ex, py - ey)
         if shift < self.reanchor_min and abs(dth) < math.radians(4):
             self.get_logger().info(f'after the stairs: pose {shift:.2f} m / '
                                    f'{math.degrees(dth):+.1f} deg from expected, grid kept')
             return
-        if abs(dth) > math.radians(30):      # the walk did not stay straight: don't guess
+        # 19:14 run (2026-11-26): lined up within 1 cm / 0.3 deg, walked straight, and after
+        # the walk SLAM re-matched 1.44 then 1.70 m away and 31 deg off. The 30 deg limit
+        # here refused to re-anchor, the centring walk saw its target 128 deg to the side,
+        # the arrival turns spun the robot to "unknown" sides 121-177 deg away and it ended
+        # lost. Lined up and walked straight, the robot faces along the stairs: trust that
+        # up to ai_reanchor_deg (45) and move the cells onto it.
+        if abs(dth) > self.ai_reanchor_deg:
             self.get_logger().warn(f'after the stairs: heading {math.degrees(dth):+.0f} deg off, '
                                    'too far to re-anchor; grid kept')
+            return
+        # Short of the expected spot = believed (19:05 run, 2026-11-26). The walk counts
+        # commanded speed x time, which can only OVER-count: on the steps the robot is
+        # slower than commanded, never faster. That run it came up about 0.6 m short, still
+        # on the stair cell, and moving the grid onto the counted spot would have hidden it
+        # (do_ai_centre would then have seen nothing left to walk). So when the lidar pose
+        # is behind the counted spot along the walk, the grid is kept and do_ai_centre walks
+        # the rest; only a pose AHEAD of it (impossible) is taken as Fast-LIO's error.
+        along = (px - ex) * math.cos(h) + (py - ey) * math.sin(h)
+        if self.ai_short_trust and -self.cell_size <= along < -self.reanchor_min:
+            self.event(f'stairs: the walk came up {-along:.2f} m short of the counted '
+                       f'{w:.2f} m by the lidar; grid kept, walking the rest')
             return
         c, s = math.cos(dth), math.sin(dth)
         gx, gy = self.grid.x0 - ex, self.grid.y0 - ey
         self.grid = Grid(px + c * gx - s * gy, py + s * gx + c * gy,
                          wrap(self.grid.yaw + dth), self.grid.size)
         self.reanchor_fit = 6                 # planning steps that may use the medium fit
+        # anchored on the robot now: no wide (30 deg / 0.40 m) first fit may swing the
+        # cells again (19:14 run: it turned them -29 deg and the robot read a cell off)
+        self.aligned = True
         self.event(f'stairs: grid re-anchored, pose was {shift:.2f} m / '
                    f'{math.degrees(dth):+.1f} deg off the expected spot')
 
@@ -1962,6 +2185,19 @@ class Explorer(Node):
         if stairs:
             self.stairs_checked[(cell, d)] = verdict
             self.event(f'stair check cell {cell} side {d}: {text}')
+            if verdict is True and self.pose is not None and all(
+                    isinstance(getattr(found, k, None), float) for k in ('yaw', 'distance', 'lateral')):
+                # Where the stairs are, in the map: their centre line (a point on it and its
+                # heading), from the detector's own measurement. The crossing lines up on
+                # it (stair_line), not on the grid: in the 19:05 run the grid was never
+                # fitted and the detector saw the stairs 0.07 m to the side.
+                x, y, yaw = self.pose
+                hs = wrap(yaw + found.yaw)
+                px = x + found.distance * math.cos(yaw) - found.lateral * math.sin(yaw)
+                py = y + found.distance * math.sin(yaw) + found.lateral * math.cos(yaw)
+                if not hasattr(self, 'stair_lines'):
+                    self.stair_lines = {}
+                self.stair_lines[(cell, d)] = (px, py, hs)
         if terrain and self.terrain_on and self.terrain_depth:
             votes = [r for r, _ in mem['rough'] if r is not None]
             seen = max((n for _, n in mem['rough']), default=0)
@@ -2115,7 +2351,17 @@ class Explorer(Node):
         if have:
             self.poses.append((self.now(), self.pose))
             jump = self.pose_jumped() if self.state == 'RUN' and self.pose_jump_max > 0 else 0.0
-            if jump:
+            if jump and getattr(self, 'ai_sequence', False):
+                # In the stairs sequence (19:05 run, 2026-11-26): the pose jumped 1.16 m as
+                # the scans went back to SLAM right after the AI walk, the queue was dropped
+                # with the centring walk and the AI leave sequence in it, and the robot was
+                # left in the AI gait walking back towards the stairs. Here nothing is
+                # dropped: stand until the pose is still, then carry on with the sequence
+                # (it re-anchors the grid itself).
+                self.pose_held = self.now()
+                self.event(f'pose jumped {jump:.2f} m during the stairs sequence: standing '
+                           'until the pose is still, then going on with it (nothing dropped)')
+            elif jump:
                 # Nothing planned on the old pose is carried out: stand, wait for the pose to
                 # be still, line the grid up with the walls again, then plan afresh.
                 self.queue.clear()
@@ -2158,7 +2404,11 @@ class Explorer(Node):
                 recent = [q for t_, q in self.poses if now - t_ <= 2.0]
                 still = now - self.pose_held >= 2.0 and len(recent) >= 10 and all(
                     math.hypot(q[0] - self.pose[0], q[1] - self.pose[1]) < 0.03 for q in recent)
-                if still or now - self.pose_held > 12.0:
+                if (still or now - self.pose_held > 12.0) and getattr(self, 'ai_sequence', False):
+                    self.pose_held = None
+                    self.event(f'pose {"still" if still else "not still after 12 s"}: going on '
+                               'with the stairs sequence')
+                elif still or now - self.pose_held > 12.0:
                     self.pose_held = None
                     if self.aligned and self.grid is not None:
                         self.align_grid(arrived=True)
@@ -2340,6 +2590,19 @@ class Explorer(Node):
         if mode == 'push':                   # curtain over the lidar: wall_scan sends no scans
             self.blind_pub.publish(Bool(data=True))
             self.blind_until = self.now() + 1.5
+        if mode == 'align':                  # before the stairs: onto the line, tighter
+            # Sideways within stair_align_tol (3 cm); the heading only roughly here (the
+            # turn after it is made to stair_align_deg). Sideways steps at 0.04 m/s or more:
+            # the Lite3 hardly moves below that. 15 s at most.
+            if abs(lat) < self.stair_align_tol and abs(herr) < math.radians(8.0) \
+                    or self.elapsed() > 15.0:
+                self.send()
+                return True
+            vy = 0.0
+            if abs(herr) < math.radians(15):
+                vy = math.copysign(clamp(0.8 * abs(lat), 0.04, 0.10), lat)
+            self.send(vy=vy, wz=clamp(1.5 * herr, -self.w_max, self.w_max))
+            return False
         if mode == 'square':                 # onto the cell's centre line, facing `heading`
             # 8 cm / 5 deg (user, 2026-11-26 night; was 4 cm / 3 deg): the robot shuffled
             # sideways again and again for the checks before a look (10:39 run)
@@ -2399,6 +2662,9 @@ class Explorer(Node):
         now, mem = self.now(), self.act_mem
         if 'dist' not in mem:
             self.ai_walking = True
+            # where the walk begins, lined up on the stairs: the dead reckoning after it
+            # (reanchor, do_ai_centre) starts from here, not from the cell centre
+            self.ai_start = tuple(self.pose) if self.pose is not None else None
             mem.update(dist=self.ai_walk_cells * self.cell_size + self.ai_body_clear, t0=now,
                        last=now, walked=0.0, leg=0.0, wall=0, yaw0=self.imu_yaw)
             mem['tmax'] = mem['dist'] / max(self.ai_speed, 0.05) * 2.5 + 5.0

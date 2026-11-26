@@ -224,9 +224,9 @@ def test_odometry_that_has_not_settled_is_waited_for_then_given_up():
     assert r.jump_settled() and r.kept == {}
 
 
-def test_the_three_views_of_a_look_are_45_degrees_apart():
+def test_the_three_views_of_a_look_are_35_degrees_apart():
     src = __import__('inspect').getsource(E.__init__)
-    assert "p('look_angle', 45.0)" in src
+    assert "p('look_angle', 35.0)" in src
 
 
 def test_before_a_look_the_stair_check_runs_without_a_terrain_verdict():

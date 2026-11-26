@@ -35,7 +35,8 @@ RANK = {'look': 0, 'visit': 1, 'stairs': 2, 'curtain': 3}
 
 def routes(kinds, visited, closed, links, start):
     """Fewest-cells routes from `start` to every visited cell: {cell: [(d, how, dest), ...]}.
-    how = 'walk', or 'curtain' / 'stairs' for a crossing made before."""
+    how = 'walk', or 'curtain' for a crossing made before. A stairs crossing is never part
+    of a route (user, 2026-11-26 night: the stairs are crossed once, never again)."""
     out = {start: []}
     queue = deque([start])
     while queue:
@@ -43,6 +44,8 @@ def routes(kinds, visited, closed, links, start):
         for d in range(4):
             if (c, d) in links:
                 how, dest = links[(c, d)]
+                if how == 'stairs':
+                    continue          # crossed once: not walked back over
             elif kinds.get((c, d)) in WALKABLE:
                 how, dest = 'walk', nb(c, d)
             else:
@@ -100,7 +103,13 @@ def next_job(kinds, visited, closed, links, cur, facing, looked, greeted, exit_c
                 return None                   # travelled through, or looked at already
             return 'look' if (c, d) not in looked else None
 
+    # The maze has one stairs. Once they have been crossed (a stairs link exists) nothing
+    # else is taken for stairs to cross (user, 2026-11-26 night).
+    stairs_done = any(how == 'stairs' for how, _ in links.values())
+
     def deferred(c, d, k):
+        if k == 'stairs' and stairs_done:
+            return None
         return k if k in ('curtain', 'stairs') and (c, d) not in links else None
 
     job = nearest(explore)

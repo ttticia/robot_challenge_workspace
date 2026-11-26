@@ -4,8 +4,19 @@ Read this before changing anything here. It records the current strategy for the
 how the code is laid out, how to build and test it, and what the old stack taught us about
 the robot and the arena.
 
-Last updated 2026-11-26 (evening). Competition day is **27 November 2026**. Keep this file current
-when the strategy or the interfaces change.
+Last updated 2026-11-26 (night, after the revert below). Competition day is **27 November 2026**.
+Keep this file current when the strategy or the interfaces change.
+
+> **Reverted to `ff405d8` (user, night of 2026-11-26).** `exploration-v2` was reset from
+> `e35dff5` to `ff405d8`. The three later commits (`2a913ae`, `0019738`, `e35dff5`) are on
+> branch `backup/pre-revert-e35dff5`; the uncommitted work on top of them (it included
+> `bt.md`, QR approach off by default, `walls_plain`, `through_done`, `outside_arena`,
+> `try_unknown`, `turn_centre`, the head-on curtain crossing, `fault_resume`, `stall_retry`)
+> is in `git stash` as "pre-revert to ff405d8". None of those exist in the code now, and
+> this file describes `ff405d8` only. Changed since the revert: `look_angle` 45 -> 35 deg;
+> the end stop (centred, facing the open edge, 0.10 m from it; row 6 = end cell); the
+> stairs line-up and the stairs-sequence fixes after the 19:05 run (section 3.6, Stairs).
+> `origin/exploration-v2` still has `2a913ae` and `0019738` until it is force-pushed.
 
 - Robot: DEEP Robotics **Lite3** quadruped, Livox **Mid-360** lidar (tilted 15°), Orbbec
   RGB-D camera. ROS 2 **Humble**, Ubuntu 22.04, Python packages (`ament_python`).
@@ -215,7 +226,7 @@ been explored, and the robot ends the run standing in the final cell.
   `config/speeds.yaml` (team limit 0.25 m/s). Sideways and heading corrections on the way. **Never backwards**
   (`linear.x` is clamped at 0: nothing looks behind).
 - **Rooms**: not entered by default (`enter_rooms:=false`). From the cell before, the robot
-  looks centre, 45° left and 45° right (`look_angle`; user, 2026-11-26: 25°, then 30°, then 45°), holds 1.0 s each (`look_hold`; 1.5 until that evening) and publishes
+  looks centre, 35° left and 35° right (`look_angle`; user, 2026-11-26: 25°, 30°, 45°, then 35°), holds 1.0 s each (`look_hold`; 1.5 until that evening) and publishes
   `room centre|left|right cell (i, j) side d` on `/explore/event`. For the look it first walks
   up to the room (user, 2026-11-26; unit-tested only): forward until its nose is 0.10 m
   (`look_gap`) before the edge shared with the room, base_link 0.14 m ahead of the cell
@@ -271,7 +282,7 @@ been explored, and the robot ends the run standing in the final cell.
   the look). A code in the `ahead` view gets no approach. Skipped once the code is read.
   Simulated only (`test/test_qr_approach.py`; rendered views decode from 0.65 m in).
 - **Curtain**: square up on the cell's centre line, make a quarter turn on the spot, then
-  step **sideways** through it (user, 2026-11-25) at 0.10 m/s with `/maze/blind` on, all the
+  step **sideways** through it (user, 2026-11-25) at `curtain_speed` (0.20 m/s) with `/maze/blind` on, all the
   way to the centre of the cell behind. **There it turns only if the fabric still covers the
   lidar** (user, 2026-11-26 night; unit-tested only; `do_curtain_clear`): covered = the lidar's
   cloud has shrunk to under 40 % (`fabric_frac`) of what it gave just before the push. Then
@@ -335,6 +346,16 @@ been explored, and the robot ends the run standing in the final cell.
   two cells (over the stair cell to the centre of the cell after) at `ai_speed` (`config/speeds.yaml`), leave AI mode
   (AI off → manual → Move → gait → navigation mode). The stair cell is closed afterwards.
   This matches the one-cell-before, one-cell-after rule.
+  **Crossed once, never again (user, 2026-11-26 night; unit-tested only,
+  `test/test_stairs_once.py`).** The stairs count as crossed as soon as the AI walk is over
+  (`stairs_crossed`, `stairs_done`): the stair cell is closed, the crossing link is never
+  used as a route (`plan.routes` skips `stairs` links, so cells left behind the stairs are
+  not gone back to), no second stairs job is planned, anything that reads as stairs after
+  that is an `object` (looked at, never entered), and `go()` refuses a stairs step. A stop
+  during the crossing (AI-mode stop, `/explore/stop`, a fault after the walk) is settled at
+  the next `/nav/start` (`settle_ai_pending`): AI walk finished, or the robot more than a
+  cell past the cell before the stairs (finished by hand) = crossed, the robot is in the
+  cell after; short of that, not crossed and it may be tried again.
   **Centred before the gait change (user, 2026-11-26; unit-tested only):** the AI walk
   ends by distance just past the border of the cell after, about 0.16 m short of its
   centre. The robot now stands 3 s (`ai_settle`), the grid is re-anchored (this used to
@@ -344,8 +365,27 @@ been explored, and the robot ends the run standing in the final cell.
   pose is old, the centre is not ahead (within 70 deg) or is more than a cell away; a wall
   ahead or a time limit ends it. Only then AI off -> manual -> Move -> gait -> navigation.
   `ai_centre:=false` (node parameter) = off.
+  **After the 19:05 run (2026-11-26 night; unit-tested only).** That run the stairs were
+  straight ahead of the start; the grid was never fitted (every wide fit failed, 94-164
+  wall points), the robot was squared up within the old 8 cm / 5 deg on that unfitted grid
+  while the detector saw the stairs 7 cm to the side, the walk (counted as 0.55 m/s x 3.5 s
+  = 1.93 m) ended about 0.6 m short on the stair cell, and a 1.16 m pose jump right after
+  it dropped the whole queue: no centring walk, no AI leave sequence, and the robot,
+  still in the AI gait, was sent back towards the start. Now:
+  (1) **lined up on the stairs** (`stair_line`, `align` drive): the depth stair check keeps
+  the stairs' centre line in the map (`stair_lines`); before AI mode the robot steps onto
+  it within 3 cm (`stair_align_tol`; sideways steps at 0.04 m/s or more) and turns to within
+  2 deg (`stair_align_deg`), twice over. A measured line more than 10 deg
+  (`stair_line_deg`) or 0.25 m (`stair_line_off`) off the cell's is not used (the cell's
+  centre line then). The event `stairs: lined up, … cm off …, … deg` records the result.
+  (2) **A pose jump does not drop the stairs sequence** (`ai_sequence`, from the line-up to
+  the end of the AI leave sequence): the robot stands until the pose is still, then goes
+  on with it. (3) **Short is believed** (`ai_short_trust`): speed x time can only
+  over-count, so when the lidar puts the robot behind the counted spot (by more than
+  `reanchor_min`, up to a cell), the grid is not re-anchored and `ai_centre` walks the rest
+  in the AI gait. A pose ahead of the counted spot is still taken as Fast-LIO's error.
 - **Terrain: uneven cells are entered HEAD ON (user, 2026-11-26 evening; unit-tested only).**
-  The robot turns to the heading and walks straight in at `terrain_push_speed` (0.13 m/s,
+  The robot turns to the heading and walks straight in at `terrain_push_speed` (0.15 m/s,
   in `config/speeds.yaml`, the one speed for uneven floor; `side_speed` is gone), in the
   H-Step gait, and on arrival is taken as centred (`trust_step`). **It pushes** (user,
   2026-11-26 night): the obstacle stop is off for that step, because the blocks and ramps
@@ -384,14 +424,17 @@ been explored, and the robot ends the run standing in the final cell.
   its far edge towards a wide open area. An open way from row 5 into row 6 reads `exit`: it
   is not walked as a visit, only as the last job. Nothing beside or beyond the end cell is
   entered, and an `exit` the map shows anywhere else is a wall. `maze_rows:=0` = the old
-  rule (exit from the map alone, section 3.4). End stop (user, 2026-11-26 night; unit-tested only): walk into the end cell and creep on
-  until the nose is 0.10 m (`end_gap`) before the open far edge (base_link 0.14 m ahead of
-  the cell centre). The robot ends **standing**, **parallel to the side walls**, with its
-  flank 0.20 m (`end_side_gap`) from the side wall on the side OPPOSITE to `maze_side`
-  (maze on the left = by the right wall; base_link 0.08 m off the centre line), then
-  `DONE`. It no longer lies down there (`end_lie_down:=true` brings that back) and no
-  longer turns 15° (`end_turn`, 0 now). More than 0.20 m short of that spot = `STOPPED`.
-  Without `maze_side` it ends on the centre line. The red line on the floor
+  rule (exit from the map alone, section 3.4).
+  **End stop (user, 2026-11-26 night, after the revert; unit-tested only; `end_stop`)**:
+  the end cell is simply the one cell of the 6th row; **being anywhere in that row is
+  being in the end cell**. Whenever `plan()` finds the robot there, it goes straight to the
+  end stop, whatever else is left. In it: square onto the cell's centre line facing the
+  open (far) edge, creep forward until the nose is 0.10 m (`end_gap`) before that edge
+  (base_link 0.14 m ahead of the centre), stop **standing**, `DONE`. Something in the way
+  inside the end cell = it ends where it got to, still `DONE`. The drive into the end
+  cell blocked before row 6 = `STOPPED` (a possible exit: that side becomes a wall and the
+  next is tried). The side-wall offset (`end_side_gap`), `end_turn` and `end_lie_down`
+  are gone; `maze_side` is now used only for the report course. The red line on the floor
   (`maze_info.md`) is not used.
   **Possible exits (user, 2026-11-26; unit-tested only):** the way into the end cell can
   read wrong (open floor beyond, little for the lidar to hit). On the far side of a last-row
@@ -401,8 +444,8 @@ been explored, and the robot ends the run standing in the final cell.
   possible ones the less walled is tried first. A possible exit is walked into with the
   obstacle stop on: stopped = that side is a wall and the next one is tried.
 - **`maze_side`**: `explore.launch.py` asks "R or L" in the terminal at every launch
-  (`maze_side:=R|L` answers it). Used for which side wall the robot ends beside, and for the
-  course the reports go to (L = A, R = B).
+  (`maze_side:=R|L` answers it). Used for the course the reports go to (L = A, R = B); no
+  longer for where the robot ends.
 - **Gait by floor (user, 2026-11-26)**: two gaits only. `normal` = the normal gait of Move
   mode (`0x21010300`, "flat gait, slow"), for flat floor; `hstep` = RUG H-Step
   (`0x21010407`), for uneven floor. Before a step from a cell that is not uneven, into a
@@ -418,8 +461,10 @@ been explored, and the robot ends the run standing in the final cell.
   uneven blocks, where the only gait command sent was H-Step. Whether `0x21010407` shows
   as grip when it follows the normal gait, or the robot changed by itself, is not known;
   it needs watching on the controller at the next uneven cell.
-- **Speeds** (night of 2026-11-26, user: walking 0.25 m/s, turning 0.7 rad/s and 0.3 on
-  uneven floor; 0.10 into uneven cells and through curtains, 0.55 on the stairs. At 0.30
+- **Speeds** (what `speeds.yaml` holds at `ff405d8`: walking 0.30 m/s, **above the team
+  limit of 0.25**; into uneven cells 0.15; curtains 0.20; stairs 0.55; turning 0.6 rad/s,
+  0.3 on uneven floor. The user's last word that night was walking 0.25, turning 0.7, 0.10
+  into uneven cells and through curtains; the file was not changed to that. At 0.30
   that day arrivals were no less accurate than at 0.20; turns drift 2-4 cm): `src/maze_explore/config/speeds.yaml` sets normal walk (`v_max`), uneven
   terrain (`terrain_push_speed`), stairs (`ai_speed`), curtains (`curtain_speed`), QR sideways check
   (`qr_speed`), turning on the spot (`w_max`) and the gains that hold the turn on its pivot.
@@ -453,8 +498,8 @@ been explored, and the robot ends the run standing in the final cell.
   that. Not while scans to SLAM are off. It moves the CELLS onto the map; the SLAM map
   itself cannot be moved. `arrive_fit:=false` = off.
 - **Slower turns on uneven floor (user, 2026-11-26; unit-tested only)**: in an uneven cell
-  the turn rate is capped at 0.3 rad/s (`terrain_w_max` in `config/speeds.yaml`; 0.5
-  elsewhere). 07:42 run: the sensor feed went late and Fast-LIO diverged during a 0.5 rad/s
+  the turn rate is capped at 0.3 rad/s (`terrain_w_max` in `config/speeds.yaml`;
+  `w_max`, 0.6, elsewhere). 07:42 run: the sensor feed went late and Fast-LIO diverged during a 0.5 rad/s
   turn on a tile.
 - **Start-cell guards (2026-11-26, after the 03:29 run; unit-tested only)**: in that run the
   first grid fit put the start centre 0.3-0.4 m behind the robot, the recentre rule walked
@@ -588,8 +633,8 @@ walked into head first. Single switches: `scene_understanding`, `stairs`, `curta
 `maze_side` (user, 2026-11-26): the launch asks "maze on the right (R) or on the left (L)?"
 in the terminal before anything starts; `maze_side:=R|L` answers it. Not asked with
 `explore:=false`. Without a terminal and without the argument the launch refuses to start.
-It reaches the explorer as parameter `maze_side` (`self.maze_side`), for the end-cell
-behaviour.
+It reaches the explorer as parameter `maze_side` (`self.maze_side`, only logged there) and
+task_reporter, for the report course.
 
 Other launch arguments: `auto_start`, `gait` (`hstep` / `rug`, for uneven terrain), `flat_gait`,
 `gait_switch`, `maze_rows`, `enter_rooms`,
@@ -684,9 +729,11 @@ Decisions from the user that still hold:
   `launch.log` and each node's log named after the node (`maze_explorer.log`, …). Logs of
   nodes started with `ros2 run` stay at the top of `logs/ros/` as `<node>_<date-time>_<pid>.log`.
 - Bags: `runs/ROS_bags/ROSBAG_GUIDE.md`, aliases in `runs/ROS_bags/aliases.sh`. `rec_test` and
-  `rec_lean` are one recorder since 2026-11-26 (user): local topics only, no camera and no
-  `/livox/imu` (add `-- /camera/color/image_raw/compressed` or `-- /livox/imu` for one
-  run), about 55 MB a minute. With `/livox/imu` in the preset (one run, 04:42, bag `run1`)
+  `rec_lean` are one recorder since 2026-11-26 (user). Since that night only the small
+  topics: tf, `/odom`, `/scan`, commands, `/explore/*`, scene / QR / mission results,
+  `/curtain/seen`. No cloud, no `/map` (rebuild it from `/scan`), no `/rosout`, no camera, no
+  `/livox/imu`. A few MB a minute, at nice 19 / idle disk priority, uncompressed. Add a
+  topic for one run after `--`. With `/livox/imu` in the preset (one run, 04:42, bag `run1`)
   the feed was late 26 % of the run and the IMU arrived at 109 Hz: practice runs only. Hand-driven
   data run: `explore_check`, `explore.launch.py explore:=false`, then `rec_manual <name>`
   (guide 2.2). The recorder prints sensor rates after recording (no check before), compresses with zstd, and

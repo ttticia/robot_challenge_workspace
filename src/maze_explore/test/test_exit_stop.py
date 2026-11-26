@@ -1,6 +1,6 @@
-"""The end stop (user, 2026-11-26): nose 0.10 m before the open far edge of the end cell,
-turned 15 deg away from maze_side, then lying down; and the gait / curtain-turn rules of the
-same day. The explorer's own plan / go / turn / drive code runs on the stand-in of
+"""The end stop (user, 2026-11-26 night): in the end cell (the one cell of the 6th row),
+centred, facing its open edge, nose 0.10 m before it, standing; being in that row is enough.
+And the gait / curtain-turn rules of the same day. The explorer's own plan / go / turn / drive code runs on the stand-in of
 test_qr_approach (perfect motion)."""
 import math
 
@@ -16,13 +16,13 @@ E = explorer.Explorer
 def make(**fields):
     R = type('R', (Robot,), dict(
         do_drive=E.do_drive, do_call=E.do_call, do_hold=E.do_hold, kind=E.kind,
+        end_stop=E.end_stop, cur_cell=E.cur_cell,
         gait_for_step=E.gait_for_step, go=E.go, do_strafe=E.do_strafe,
         do_cmd=lambda self, code: self.sent.append(code) or True))
     r = R()
     r.v_max, r.ai_speed, r.curtain_speed, r.terrain_push_speed = 0.2, 0.15, 0.1, 0.1
     r.push_stop, r.push_sure, r.step, r.sent = True, False, None, []
-    r.cell_size, r.end_gap, r.end_turn, r.lie_down, r.maze_rows = 1.02, 0.10, 0.0, True, 5
-    r.end_side_gap, r.end_lie_down = 0.20, False
+    r.cell_size, r.end_gap, r.lie_down, r.maze_rows = 1.02, 0.10, True, 5
     r.halted = []
     r.halt = lambda state, why: r.halted.append(state)
     r.visited, r.exit_weak, r.exit_open = set(), {}, set()
@@ -42,33 +42,60 @@ def exit_queue(r, cell, d):
     exec(body, dict(explorer.__dict__, self=r, c=cell, q=r.queue))
 
 
-@pytest.mark.parametrize('side, sign', [('L', -1.0), ('R', 1.0)])   # the wall away from the maze
-def test_end_stop_from_the_cell_before(side, sign):
-    # user, 2026-11-26 night: standing, parallel to the side walls, nose 0.10 m before the open
-    # edge, flank 0.20 m from the side wall opposite to maze_side (L = the right wall)
+EDGE = 5 * 1.02 + 0.51                                 # the open far edge of the end cell
+
+
+def assert_end_stop(r):
+    x, y, yaw = r.pose
+    assert x + 0.27 == pytest.approx(EDGE - 0.10, abs=0.04)        # nose 0.10 m before it
+    assert abs(y) < 0.08                                           # on the centre line
+    assert abs(math.degrees(yaw)) < 5.0                            # facing the open edge
+    for cx, cy in ((0.27, 0.23), (0.27, -0.23), (-0.42, 0.23), (-0.42, -0.23)):   # all inside
+        px = x + cx * math.cos(yaw) - cy * math.sin(yaw)
+        py = y + cx * math.sin(yaw) + cy * math.cos(yaw)
+        assert 5 * 1.02 - 0.51 < px < EDGE and abs(py) < 0.51
+    assert r.sent == [] and r.halted == ['DONE'] and not r.backwards      # standing
+
+
+@pytest.mark.parametrize('side', ['L', 'R', ''])      # maze_side plays no part any more
+def test_end_stop_from_the_cell_before(side):
+    # user, 2026-11-26 night: centred in the end cell, facing its open edge, nose 0.10 m
+    # before it, standing
     r = make(maze_side=side)
     r.pose = [4 * 1.02 + 0.05, 0.08, 0.3]              # in the last row, cell (4, 0)
     exit_queue(r, (4, 0), 0)
     assert r.run(150.0)
-    x, y, yaw = r.pose
-    edge = 5 * 1.02 + 0.51                             # the open far edge of the end cell
-    assert x + 0.27 == pytest.approx(edge - 0.10, abs=0.04)        # nose 0.10 m before it
-    assert abs(math.degrees(yaw)) < 2.5                            # parallel to the side walls
-    flank = 0.51 - (sign * y + 0.23)                               # gap to the wall on that side
-    assert flank == pytest.approx(0.20, abs=0.04)
-    for cx, cy in ((0.27, 0.23), (0.27, -0.23), (-0.42, 0.23), (-0.42, -0.23)):   # all inside
-        px = x + cx * math.cos(yaw) - cy * math.sin(yaw)
-        py = y + cx * math.sin(yaw) + cy * math.cos(yaw)
-        assert 5 * 1.02 - 0.51 < px < edge and abs(py) < 0.51
-    assert r.sent == [] and r.halted == ['DONE'] and not r.backwards      # no lying down
+    assert_end_stop(r)
 
 
-def test_without_maze_side_it_ends_on_the_centre_line():
-    r = make(maze_side='')
-    r.pose = [4 * 1.02, 0.0, 0.0]
-    exit_queue(r, (4, 0), 0)
+def test_end_stop_from_anywhere_in_the_end_cell():
+    # being in the 6th row is all it takes: off-centre and turned there, it still centres,
+    # faces the open edge and stops 0.10 m before it
+    r = make()
+    r.pose = [5 * 1.02 - 0.20, -0.15, 0.5]
+    r.end_stop((5, 0), 0)
     assert r.run(150.0)
-    assert abs(r.pose[1]) < 0.04 and r.sent == [] and r.halted == ['DONE']
+    assert_end_stop(r)
+
+
+def test_in_the_end_cell_but_stopped_short_is_still_done():
+    import numpy as np
+    r = make()
+    r.pose = [4 * 1.02, 0.0, 0.0]
+    r.obstacles = np.stack([np.full(20, 5 * 1.02 + 0.35), np.linspace(-0.2, 0.2, 20)], 1)
+    exit_queue(r, (4, 0), 0)
+    r.halt = lambda state, why: (r.halted.append(state), r.queue.clear())
+    r.stuck = lambda mode, along: True                 # the real one: a creep just ends
+    r.run(150.0)
+    assert r.halted == ['DONE'] and r.cur_cell()[0] == 5
+    assert r.pose[0] + 0.27 < 5 * 1.02 + 0.35          # it did not walk into the obstacle
+
+
+def test_plan_goes_straight_to_the_end_stop_in_the_6th_row():
+    src = __import__('inspect').getsource(E.plan)
+    early = src.index('here[0] >= self.maze_rows')
+    assert 'self.end_stop(here, 0)' in src[early:early + 200]
+    assert early < src.index('if self.recentre_failed')
 
 
 def test_end_stop_not_reached_means_no_lying_down():
@@ -111,6 +138,16 @@ def kinds_robot():
 class Reads:
     def __init__(self, k): self.k = k
     def kind(self, cell, d, may_exit=True): return self.k
+
+
+@pytest.mark.parametrize('reading', ['free', 'unknown', 'curtain', 'room', 'stairs', 'exit'])
+def test_start_cell_back_left_and_right_are_known_walls(reading):
+    # user, 2026-11-26: whatever the map or the lidar says (it sees nothing behind the robot
+    # at the start), the start cell's back, left and right sides are walls; ahead is read
+    r = kinds_robot()
+    for d in (1, 2, 3):
+        assert E.kind(r, Reads(reading), (0, 0), d) == 'wall'
+    assert E.kind(r, Reads('free'), (0, 0), 0) == 'free'
 
 
 @pytest.mark.parametrize('reading', ['blocked', 'object', 'stairs'])
