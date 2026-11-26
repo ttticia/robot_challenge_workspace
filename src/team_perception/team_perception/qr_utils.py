@@ -11,6 +11,8 @@ Decoding backends, tried in this order on every image:
      corners zxing found and both decoders try again (fixes tilted codes zbar misses).
   cv2.QRCodeDetector is used only if neither zxing-cpp nor pyzbar is installed.
 """
+import math
+
 import numpy as np
 import cv2
 
@@ -97,53 +99,102 @@ def _decode_flattened(gray, corners, side=400, margin=80):
 
 
 def _decode_once(gray):
-    """Return a list of (text, corners[4x2]) found in one grayscale image."""
+    """(decoded [(text, corners[4x2])], corners of codes located but not decoded) in one image."""
     gray = np.ascontiguousarray(gray)
     failed = []
     if _zx is not None:
         found, failed = _zxing_decode(gray)
         if found:
-            return found
+            return found, failed
     if _zbar is not None:
         found = _zbar_decode(gray)
         if found:
-            return found
+            return found, []
     elif _zx is None:
-        return _opencv_decode(gray)
+        return _opencv_decode(gray), []
     for corners in failed[:3]:
         found = _decode_flattened(gray, corners)
         if found:
-            return found
-    return []
+            return found, [c for c in failed if c is not corners]
+    return [], failed
+
+
+def scan_qr(bgr, try_upscale=True, try_clahe=True):
+    """
+    Find QR codes in a BGR (or grayscale) image: (decoded [(text, corners)], unread [corners]).
+
+    `unread` are codes zxing-cpp LOCATED (finder patterns and outline found) but no decoder
+    could read: too far, blurred, at a steep angle or partly hidden. Facing them squarely
+    usually fixes that. Only zxing reports these; with pyzbar or OpenCV alone `unread` is
+    always empty. Single frames can hold false outlines, so callers should require a code to
+    persist (UnreadTracker). Corners are pixel coordinates of the ORIGINAL image.
+
+    Tries the image as is, then a contrast-boosted version, then a 2x upscale (helps with
+    small or distant codes). The fallbacks only run when nothing was decoded and cost ~5x a
+    single pass, so for live video pass try_clahe=False, try_upscale=False on most frames.
+    """
+    gray = bgr if bgr.ndim == 2 else cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+    found, unread = _decode_once(gray)
+    if not found and try_clahe:
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        found, more = _decode_once(clahe.apply(gray))
+        unread = unread or more
+    if not found and try_upscale:
+        big = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        f2, more = _decode_once(big)
+        found = [(t, c / 2.0) for t, c in f2]
+        unread = unread or [c / 2.0 for c in more]
+    # A located outline that overlaps a decoded code is that code, not an unread one.
+    unread = [u for u in unread
+              if not any(_overlaps(u, c) for _, c in found)]
+    return found, unread
+
+
+def _overlaps(a, b):
+    """True if the centre of quad a lies inside quad b's bounding box (or vice versa)."""
+    def inside(p, q):
+        return q[:, 0].min() <= p[0] <= q[:, 0].max() and q[:, 1].min() <= p[1] <= q[:, 1].max()
+    return inside(a.mean(axis=0), b) or inside(b.mean(axis=0), a)
 
 
 def decode_qr(bgr, try_upscale=True, try_clahe=True):
     """
-    Find and decode QR codes in a BGR (or grayscale) image.
+    Find and decode QR codes in a BGR (or grayscale) image: [(text, corners)].
 
-    Tries the image as is, then a contrast-boosted version, then a 2x upscale
-    (helps with small or distant codes). Returns [(text, corners)], corners in
-    pixel coordinates of the ORIGINAL image.
-
-    The fallbacks only run when nothing was found and cost ~5x a single pass, so
-    for live video pass try_clahe=False, try_upscale=False on most frames.
+    See scan_qr (which also returns codes located but not read).
     """
-    gray = bgr if bgr.ndim == 2 else cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    return scan_qr(bgr, try_upscale, try_clahe)[0]
 
-    found = _decode_once(gray)
-    if found:
-        return found
 
-    if try_clahe:
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        found = _decode_once(clahe.apply(gray))
-        if found:
-            return found
+class UnreadTracker:
+    """
+    Decide when a located-but-unread QR code is real: seen in at least `need` of the last
+    `window` scanned frames, each sighting within `max_jump_px` of the previous one (the
+    robot moves slowly, the code moves little between frames). Pixel space only, no ROS.
+    """
 
-    if try_upscale:
-        big = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-        return [(t, c / 2.0) for t, c in _decode_once(big)]
-    return []
+    def __init__(self, need=3, window=5, max_jump_px=80.0):
+        self.need, self.window, self.max_jump = need, window, max_jump_px
+        self.hits = []                 # last `window` frames: centre (u, v) or None
+
+    def update(self, centres):
+        """Add one scanned frame's unread centres; return the persistent one's (u, v) or None."""
+        last = next((h for h in reversed(self.hits) if h is not None), None)
+        pick = None
+        if centres:
+            if last is None:
+                pick = max(centres, key=lambda c: c[2] if len(c) > 2 else 0.0)[:2]
+            else:                      # the one nearest the code we were following
+                pick = min(centres, key=lambda c: math.dist(c[:2], last))[:2]
+                if math.dist(pick, last) > self.max_jump:
+                    self.hits = []     # a different code (or noise): start over
+        self.hits = (self.hits + [pick])[-self.window:]
+        n = sum(1 for h in self.hits if h is not None)
+        return pick if pick is not None and n >= self.need else None
+
+    def clear(self):
+        self.hits = []
 
 
 def _ascii(s):
@@ -228,3 +279,143 @@ def depth_at(depth, u, v, window=5):
 def deproject(u, v, z, fx, fy, cx, cy):
     """Pixel + depth -> 3D point (x right, y down, z forward) in the camera optical frame."""
     return ((u - cx) * z / fx, (v - cy) * z / fy, z)
+
+
+# --- unaligned depth ---------------------------------------------------------------------
+class DepthAlign:
+    """
+    Map colour-image pixels into a depth image that is NOT aligned to the colour image.
+
+    TEMPORARY stand-in for depth-to-colour registration in the camera driver (the Lite3's
+    shared Orbbec driver publishes unaligned depth: fx 373 vs colour fx 462, sensors 14 mm
+    apart). Both cameras are treated as pinhole cameras with parallel axes (the rotation
+    between them is ignored; colour lens distortion too):
+      colour_k, depth_k: (fx, fy, cx, cy) of each camera, from their camera_info
+      colour_size:       (width, height) the colour intrinsics belong to
+      t:                 position of the colour camera in the depth optical frame (m),
+                         from TF; (0, 0, 0) if unknown (then up to ~5 px off at 1 m)
+    With aligned depth (depth_k = colour_k scaled, t = 0) it is plain resolution scaling.
+    """
+
+    def __init__(self, colour_k, colour_size, depth_k, t=(0.0, 0.0, 0.0)):
+        self.ck = tuple(float(v) for v in colour_k)
+        self.size = colour_size
+        self.depth_k = tuple(float(v) for v in depth_k)
+        self.t = tuple(float(v) for v in t)
+
+    @classmethod
+    def assume_aligned(cls, colour_k, colour_size, depth_shape):
+        """Depth registered to colour: only the resolution may differ."""
+        sx = depth_shape[1] / float(colour_size[0])
+        sy = depth_shape[0] / float(colour_size[1])
+        fx, fy, cx, cy = colour_k
+        return cls(colour_k, colour_size, (fx * sx, fy * sy, cx * sx, cy * sy))
+
+    def pixel(self, u, v, z=None, image_size=None):
+        """
+        Colour pixel -> depth-image pixel.
+
+        z (m, depth of the point) also corrects the parallax between the two sensors.
+        image_size: (w, h) of the image (u, v) come from, if not colour_size.
+        """
+        if image_size and self.size and tuple(image_size) != tuple(self.size):
+            u = u * self.size[0] / float(image_size[0])
+            v = v * self.size[1] / float(image_size[1])
+        fx, fy, cx, cy = self.ck
+        x, y = (u - cx) / fx, (v - cy) / fy
+        if z is not None and any(self.t):
+            zz = max(z + self.t[2], 1e-3)
+            x, y = (x * z + self.t[0]) / zz, (y * z + self.t[1]) / zz
+        dfx, dfy, dcx, dcy = self.depth_k
+        return dcx + dfx * x, dcy + dfy * y
+
+    def box(self, box, z=None, image_size=None):
+        """Map a colour box [x1, y1, x2, y2] into the depth image (parallax-corrected with z)."""
+        x1, y1 = self.pixel(box[0], box[1], z, image_size)
+        x2, y2 = self.pixel(box[2], box[3], z, image_size)
+        return [x1, y1, x2, y2]
+
+    def depth_at(self, depth, u, v, image_size=None, window=5):
+        """
+        Depth (m) of a colour pixel as (z, u_depth, v_depth), or None.
+
+        Looks up once without parallax, then again at the parallax-corrected pixel.
+        """
+        ud, vd = self.pixel(u, v, None, image_size)
+        z = depth_at(depth, ud, vd, window)
+        if z is None:
+            return None
+        if any(self.t):
+            ud2, vd2 = self.pixel(u, v, z, image_size)
+            z2 = depth_at(depth, ud2, vd2, window)
+            if z2 is not None:
+                z, ud, vd = z2, ud2, vd2
+        return z, ud, vd
+
+
+class DepthAlignState:
+    """
+    Collects what DepthAlign needs from the camera_info topics and TF (ROS-free part).
+
+    depth_info: True when a depth camera_info topic is configured (unaligned depth is
+    compensated); False to assume the depth image is already aligned to colour.
+    """
+
+    def __init__(self, depth_info=True):
+        self.depth_info = depth_info
+        self.colour = None          # (k, size, frame)
+        self.depth = None           # (k, frame)
+        self.t = None               # colour camera position in the depth optical frame
+
+    def set_colour(self, k, size, frame):
+        self.colour = (tuple(k), tuple(size), frame)
+
+    def set_depth(self, k, frame):
+        if self.depth is None or self.depth[1] != frame:
+            self.t = None
+        self.depth = (tuple(k), frame)
+
+    def needs_tf(self):
+        """(depth_frame, colour_frame) if the TF between the sensors is still missing."""
+        if not self.depth_info or self.colour is None or self.depth is None:
+            return None
+        if self.t is not None:
+            return None
+        if self.colour[2] == self.depth[1]:
+            self.t = (0.0, 0.0, 0.0)
+            return None
+        return self.depth[1], self.colour[2]
+
+    def get(self, depth_shape):
+        """Return (DepthAlign or None, reason)."""
+        if self.colour is None:
+            return None, 'no colour camera_info yet'
+        k, size, _ = self.colour
+        if not self.depth_info:
+            return DepthAlign.assume_aligned(k, size, depth_shape), 'assumed aligned'
+        if self.depth is None:
+            return None, 'no depth camera_info yet'
+        if self.t is None:
+            return DepthAlign(k, size, self.depth[0]), 'no TF between the sensors (t = 0)'
+        return DepthAlign(k, size, self.depth[0], self.t), 'ok'
+
+
+def transform_first(tf_buffer, point, frames, timeout=None):
+    """
+    Transform a PointStamped into the first of `frames` that TF can reach right now.
+
+    Returns (point_in_frame, None) or (None, {frame: error text}). Non-blocking by default:
+    a lookup with a timeout inside an executor callback stops that executor from taking
+    /tf, so the buffer falls behind and the next lookup fails too (poster_detector locked
+    3.5-5 s behind this way). Pass `timeout` only from a worker thread. `frames` are tried
+    in order, e.g. ('map', 'odom'): odom stands in until SLAM publishes map.
+    """
+    errors = {}
+    for frame in frames:
+        try:
+            if timeout is None:
+                return tf_buffer.transform(point, frame), None
+            return tf_buffer.transform(point, frame, timeout=timeout), None
+        except Exception as e:  # tf2 LookupException / ExtrapolationException / ...
+            errors[frame] = str(e).strip()
+    return None, errors

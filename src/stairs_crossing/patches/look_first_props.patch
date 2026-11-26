@@ -1,0 +1,33 @@
+--- a/src/stairs_crossing/stairs_crossing/explorer_stairs.py
++++ b/src/stairs_crossing/stairs_crossing/explorer_stairs.py
+@@ -590,8 +590,12 @@
+         checked = self.stairs_checked.get((cell, d))
+         if checked is True:
+             return 'stairs'
+-        if checked is False and k == 'stairs':
+-            k = 'blocked'
++        if checked is False and k in ('stairs', 'blocked'):
++            # Looked at and not stairs: then it is something standing in that cell, a prop.
++            # It gets a look (scene understanding) like any object cell and is not entered.
++            # 11:41 run, 2026-11-25: the prop room (0, 1) read as possible stairs, was put
++            # off to the end with the stairs, and would have ended as 'blocked', unseen.
++            k = 'object'
+         if checked is None and k == 'blocked' and self.stair_check_on:
+             k = 'stairs'
+         # stairs copy: our stairs often map as 'object'; check those too if stair-high
+@@ -668,6 +672,15 @@
+                 h = self.grid.heading(d)
+                 self.queue.extend([('turn', h, 2.0), ('hold', 0.5), ('cv_verify', a, d)])
+                 return
++        # Possible stairs beside this cell are checked NOW, with the depth camera, not at
++        # the end with the crossings: what is not stairs is a prop to look at (kind()).
++        if self.stair_check_on:
++            for d in range(4):
++                if self.kinds.get((cur, d)) == 'stairs' and (cur, d) not in self.stairs_checked:
++                    h = self.grid.heading(d)
++                    self.queue.extend([('drive', cx, cy, h, 'square'), ('turn', h, 2.0),
++                                       ('hold', 0.5), ('stair_check', cur, d)])
++                    return
+         facing = self.grid.nearest_dir(self.pose[2])
+         j = next_job(self.kinds, self.visited, self.closed, self.links, cur, facing,
+                      self.looked, self.greeted, self.exit_cell, self.enter_rooms)

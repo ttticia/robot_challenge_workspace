@@ -14,6 +14,10 @@
   <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>scene_understanding</exec_depend>
+  <exec_depend>stairs</exec_depend>
+  <exec_depend>task_reporter</exec_depend>
+  <exec_depend>team_perception</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>

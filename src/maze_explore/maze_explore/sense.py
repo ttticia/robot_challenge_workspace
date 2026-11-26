@@ -110,8 +110,8 @@ class Sense:
         self.grid, self.occ, self.hm = grid, occ, heights
         p = dict(wall_frac=0.40, open_frac=0.15, seen_frac=0.70, curtain_frac=0.50,
                  blocked_frac=0.50, stair_top=(0.33, 0.60), stair_front=(0.08, 0.42),
-                 exit_depth=2.0, object_squares=8,
-                 wall_top_min=0.50)
+                 exit_depth=2.0, object_squares=8, terrain_min=0.06, terrain_squares=15,
+                 wall_top_min=0.50, low_wall_tall=0.20, low_wall_seen=0.50)
         p.update(params or {})
         self.p = p
 
@@ -148,6 +148,50 @@ class Sense:
         x, y = self.grid.box(cell, d, INSIDE, INSIDE_DEPTH)
         return int(self.hm.obj_at(x, y).sum()) >= self.p['object_squares']
 
+    def floor_seen(self, cell, d):
+        """How many of the 5 cm squares that rough() looks at the lidar has seen at all."""
+        x, y = self.grid.box(cell, d, INSIDE, INSIDE_DEPTH)
+        return int(np.isfinite(self.hm.top_at(x, y)).sum())
+
+    def rough(self, cell, d):
+        """Uneven terrain in the neighbour on side d: at least terrain_squares 5 cm squares
+        of its interior stand terrain_min or more above the floor, below object height."""
+        x, y = self.grid.box(cell, d, INSIDE, INSIDE_DEPTH)
+        t = self.hm.top_at(x, y)
+        return int(((t >= self.p['terrain_min']) & (t < self.hm.obj)).sum()) >= self.p['terrain_squares']
+
+    def rough_from_points(self, cell, d, x, y, h, min_seen=40, min_points=3):
+        """Uneven terrain in the neighbour on side d, from dense points (the depth camera):
+        map-frame x, y and height above the floor h. Same squares and thresholds as rough(),
+        but each square takes the MEDIAN of its points (dense data: one stray point must not
+        decide). Returns (rough, squares seen); rough is None with fewer than min_seen squares."""
+        med = self.square_heights(cell, d, x, y, h, min_points)
+        if len(med) < min_seen:
+            return None, int(len(med))
+        n = int(((med >= self.p['terrain_min']) & (med < self.hm.obj)).sum())
+        return n >= self.p['terrain_squares'], int(len(med))
+
+    def square_heights(self, cell, d, x, y, h, min_points=3):
+        """Median height of each 5 cm square of the neighbour's interior (the squares
+        rough() looks at) that holds at least min_points of the given points."""
+        x, y, h = (np.asarray(v, float).ravel() for v in (x, y, h))
+        b = nb(cell, d)
+        bu, bv = b[0] * self.grid.size, b[1] * self.grid.size
+        u, v = self.grid.to_grid(x, y)
+        half = INSIDE[-1] + 0.025                  # the squares rough() samples, edge to edge
+        ok = (np.abs(u - bu) <= half) & (np.abs(v - bv) <= half) & np.isfinite(h)
+        if not ok.any():
+            return np.zeros(0)
+        iu = np.floor((u[ok] - bu + half) / 0.05).astype(int)
+        iv = np.floor((v[ok] - bv + half) / 0.05).astype(int)
+        key = iu * 1000 + iv
+        order = np.argsort(key)
+        key, hs = key[order], h[ok][order]
+        starts = np.r_[0, np.nonzero(np.diff(key))[0] + 1]
+        counts = np.diff(np.r_[starts, len(key)])
+        med = np.array([np.median(hs[s:s + n]) for s, n in zip(starts, counts)])
+        return med[counts >= min_points]
+
     def outside(self, cell, d):
         """Open edge with no walls for exit_depth beyond it, nor beside the next cell."""
         x, y = self.grid.box(cell, d, np.arange(-0.45, 0.451, 0.05),
@@ -157,6 +201,48 @@ class Sense:
             return False
         b = nb(cell, d)
         return all(self.edge(b, k)[0] != 'wall' for k in ((d + 1) % 4, (d + 3) % 4))
+
+    def last_cell(self, cell, d):
+        """`cell` is shaped like the last cell, with its way out on side d: a stub that
+        sticks out of the maze, walled on both sides of the way out and entered from
+        behind (user, 2026-11-25, arena plan: the finish cell is one cell out from the
+        block, then the open hall). Open floor alone is not an exit: on 2026-11-25 09:38
+        the way from the cell after the start into the open terrain cells read as one."""
+        sides = all(self.edge(cell, k)[0] == 'wall' for k in ((d + 1) % 4, (d + 3) % 4))
+        return sides and self.edge(cell, (d + 2) % 4)[0] != 'wall'
+
+    def low_wall(self, cell, d):
+        """A wall of ordinary height stands on this edge: wall in the map, its top measured
+        along at least half of it, and (almost) nothing curtain-high seen there. The colour
+        camera sees a curtain OVER such a wall (walls are 0.53 m, curtains hang from 0.9 m)
+        and has no depth, so a sighting in that direction is of a curtain further back, not
+        of this edge (user, 2026-11-25). An edge whose height is not known is not one."""
+        x, y = self.grid.box(cell, d, ALONG, ACROSS)
+        if (self.occ.at(x, y) >= OCC).any(axis=1).mean() < self.p['wall_frac']:
+            return False
+        if self.hm.tall_at(x, y).any(axis=1).mean() >= self.p['low_wall_tall']:
+            return False
+        measured = (~np.isnan(self.hm.top_at(x, y))).any(axis=1).mean()
+        return bool(measured >= self.p['low_wall_seen'])
+
+    def tall_inside(self, cell, d):
+        """(squares, measured) for the cell behind side d, its three other walls included:
+        how many 5 cm squares were seen taller than an ordinary wall (HeightMap.tall, twice
+        or more), and whether the far wall's top was measured along at least half of it
+        (so 'nothing tall' means looked and found nothing, not 'not seen'). The four
+        corners of the cell are left out."""
+        along, depth = np.arange(-0.55, 0.551, 0.05), np.arange(0.10, 1.121, 0.05)
+        x, y = self.grid.box(cell, d, along, depth)
+        # Not the corners (0.2 m): a curtain or a frame wall on a NEIGHBOUR's edge ends at
+        # the corner post and reads tall there (simulator, 2026-11-26: the empty room
+        # beside the curtain of challenge_a gave 7 squares, all from the curtain's end).
+        a, e = np.meshgrid(along, depth, indexing='ij')
+        corner = (np.abs(a) > 0.35) & ((e < 0.30) | (e > 0.82))
+        tall = self.hm.tall_at(x, y)
+        squares = int((tall & ~corner).sum())
+        fx, fy = self.grid.box(nb(cell, d), d, ALONG, ACROSS)
+        measured = (~np.isnan(self.hm.top_at(fx, fy))).any(axis=1).mean() >= self.p['low_wall_seen']
+        return squares, bool(measured)
 
     def kind(self, cell, d, may_exit=True):
         state, tall = self.edge(cell, d)
@@ -172,7 +258,7 @@ class Sense:
             return 'stairs' if low_edge and self.steps(*self.interior(cell, d)[1:]) else 'wall'
         if state == 'unknown':
             return 'unknown'
-        if may_exit and self.outside(cell, d):
+        if may_exit and self.outside(cell, d) and self.last_cell(cell, d):
             return 'exit'
         b = nb(cell, d)
         blocked, front, top = self.interior(cell, d)

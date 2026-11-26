@@ -1,0 +1,18 @@
+--- a/src/stairs_crossing/stairs_crossing/explorer_stairs.py
++++ b/src/stairs_crossing/stairs_crossing/explorer_stairs.py
+@@ -682,8 +682,14 @@
+                                        ('hold', 0.5), ('stair_check', cur, d)])
+                     return
+         facing = self.grid.nearest_dir(self.pose[2])
++        # how closed the cell behind each open way already looks (dead ends go first)
++        sense, beyond = self.sense(), {}
++        for (c, d), k in self.kinds.items():
++            b = nb(c, d)
++            if k == 'free' and b not in self.visited:
++                beyond[(c, d)] = sum(sense.edge(b, e)[0] == 'wall' for e in range(4) if e != opp(d))
+         j = next_job(self.kinds, self.visited, self.closed, self.links, cur, facing,
+-                     self.looked, self.greeted, self.exit_cell, self.enter_rooms)
++                     self.looked, self.greeted, self.exit_cell, self.enter_rooms, beyond)
+         job = f"{j['job']} cell {j['cell']} side {j['d']} via {len(j['path'])} cells"
+         if job != self.job:
+             here = ' '.join(self.kinds.get((cur, k), '-') for k in range(4))

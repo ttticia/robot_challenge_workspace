@@ -1,0 +1,112 @@
+--- a/src/stairs_crossing/stairs_crossing/explorer_stairs.py
++++ b/src/stairs_crossing/stairs_crossing/explorer_stairs.py
+@@ -190,6 +190,22 @@
+         # on 9 of 9 frames) and the curtain became a wall. push_stop still rules a curtain
+         # only the lidar has seen (curtain_cv off). No progress for 8 s still ends a push.
+         self.push_sure = False
++        # Stall stop (user, 2026-11-25): during a push the lidar is under the fabric, so the
++        # guard is whether the robot MOVES. Fabric gives way, a wall or a prop does not.
++        # Movement is read from the robot's own leg odometry (/leg_odom2 pose; Fast-LIO is
++        # not to be trusted with the lidar covered), subscribed only during the push (it
++        # is a 200 Hz stream across the bridge). Commanded for push_stall_grace +
++        # push_stall_time s and moved less than push_stall_min in the last push_stall_time
++        # s = something solid: the push is given up (the side becomes a wall). On the bags
++        # the leg pose follows Fast-LIO at about 0.85 of its distance while walking and
++        # moves 0-2 cm in 1.5 s standing. Not yet seen: what it reads while the robot is
++        # pressed against something (feet slipping). No leg data = the 8 s rule alone.
++        self.push_stall = p('push_stall', True).value
++        self.push_stall_time = p('push_stall_time', 1.5).value
++        self.push_stall_grace = p('push_stall_grace', 0.7).value
++        self.push_stall_min = p('push_stall_min', 0.03).value
++        self.leg_topic = p('leg_odom_topic', '/leg_odom2').value
++        self.leg, self.leg_sub = deque(maxlen=200), None
+         self.push_stop = p('push_stop', True).value    # obstacle stop also while pushing (a
+         #                                                real curtain then stops the push too)
+         # Body outline from base_link, m. The rear is the 0.37 m body plus 0.05 m for the bent
+@@ -462,6 +478,7 @@
+         self.queue.clear()
+         self.act = None
+         self.curtain_blind = False
++        self.leg_watch(False)
+         self.ai_walking = False               # stairs copy
+         self.state, self.why = state, why
+         (self.get_logger().error if state == 'FAULT' else self.get_logger().info)(f'{state}: {why}')
+@@ -791,6 +808,8 @@
+             def blind(on):
+                 self.curtain_blind = on
+                 self.push_sure = bool(on and self.cv_on and (a, d) in self.cv_curtains)
++                if not on:
++                    self.leg_watch(False)
+                 if self.push_sure:
+                     self.event(f'curtain: confirmed by the camera, obstacle stop off for '
+                                f'this push, cell {a} side {d}')
+@@ -1280,6 +1299,14 @@
+             self.send()
+             self.get_logger().warn(f'sideways step: no progress, {along:.2f} m short')
+             return self.stuck(mode, along)
++        if mode == 'push' and self.push_stall:
++            self.leg_watch(True)
++            if abs(herr) > math.radians(25):
++                mem.pop('pushing', None)             # not stepping sideways just now
++            elif self.push_stalled(mem):
++                self.send()
++                self.leg_watch(False)
++                return self.stuck(mode, along)
+         if abs(herr) > math.radians(25):         # knocked round: turn back first, on the spot
+             self.send(wz=math.copysign(max(self.min_spin, min(self.w_max, 1.5 * abs(herr))), herr))
+             return False
+@@ -1424,6 +1451,46 @@
+                   wz=clamp(1.5 * herr, -0.4, 0.4))
+         return False
+ 
++    def leg_watch(self, on):
++        """Listen to the leg odometry only while pushing through a curtain."""
++        if on and self.leg_sub is None:
++            self.leg.clear()
++            self.leg_sub = self.create_subscription(Odometry, self.leg_topic, self.on_leg,
++                                                    qos_profile_sensor_data)
++        elif not on and self.leg_sub is not None:
++            self.destroy_subscription(self.leg_sub)
++            self.leg_sub = None
++
++    def on_leg(self, msg):
++        now, p = self.now(), msg.pose.pose.position
++        if self.leg and now - self.leg[-1][0] < 0.05:
++            return                               # 20 a second is plenty
++        if self.leg and math.hypot(p.x - self.leg[-1][1], p.y - self.leg[-1][2]) > 0.5:
++            self.leg.clear()                     # its pose jumps now and then (bags): start over
++        self.leg.append((now, p.x, p.y))
++
++    def push_stalled(self, mem):
++        """Pushing for long enough, and the legs say the robot has hardly moved."""
++        now = self.now()
++        since = mem.setdefault('pushing', now)
++        if now - since < self.push_stall_grace + self.push_stall_time:
++            return False
++        if not self.leg or now - self.leg[-1][0] > 0.5:
++            if not mem.get('no_leg'):
++                mem['no_leg'] = True
++                self.get_logger().warn(f'push: no {self.leg_topic}: no stall stop, the 8 s rule only')
++            return False
++        old = [s for s in self.leg if s[0] <= now - self.push_stall_time]
++        if not old or old[-1][0] < since:
++            return False                         # not a full window of pushing on record yet
++        moved = math.hypot(self.leg[-1][1] - old[-1][1], self.leg[-1][2] - old[-1][2])
++        if moved >= self.push_stall_min:
++            return False
++        self.get_logger().warn(f'push stalled: {moved * 100:.0f} cm in {self.push_stall_time:.1f} s '
++                               'by the legs while stepping: something solid, giving it up')
++        self.event(f'curtain: push stalled ({moved * 100:.0f} cm in {self.push_stall_time:.1f} s), given up')
++        return True
++
+     def stuck(self, mode, along):
+         """A drive that cannot go on. Returns True (the action is over)."""
+         if mode == 'ai':
+@@ -1436,6 +1503,7 @@
+         self.queue.clear()
+         self.curtain_blind = False      # the crossing is over, whichever way
+         self.push_sure = False
++        self.leg_watch(False)
+         cur = self.cur_cell()
+         self.step = None
+         if cur == b and along < 0.35:           # far enough in: count the cell as reached

@@ -16,8 +16,6 @@ runs/ROS_bags/*
 !runs/ROS_bags/ROSBAG_GUIDE.md
 !runs/ROS_bags/record.sh
 !runs/ROS_bags/aliases.sh
-!runs/ROS_bags/qos_overrides.yaml
-!runs/ROS_bags/bag_video.py
 recordings/
 maps/
 logs/
@@ -31,3 +29,7 @@ datasets/*.MOV
 
 # model weights and caches written at run time
 models/
+# ... except the curtain model the explorer stack ships (3.3 MB, from branch curtain_cv)
+!src/maze_explore/models/
+!runs/ROS_bags/bag_video.py
+!runs/ROS_bags/qos_overrides.yaml

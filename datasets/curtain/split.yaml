@@ -1,0 +1,5 @@
+path: /home/user/challenge_ws/datasets/curtain
+train: split_train.txt
+val: split_val.txt
+names:
+  0: curtain
