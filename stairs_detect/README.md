@@ -1,5 +1,7 @@
 # stairs_detect: our own stair detector (23 Nov 2026)
 
+> **26 Nov:** on the robot, the old `~/stairs_detect` folder is archived in `~/challenge_ws/archive/stairs_detect`, the 23 Nov bags are in `~/challenge_ws/runs/stairs_bags_real`, and old run logs are in `~/challenge_ws/logs/stairs_runs_old`. Commands below that use `~/stairs_detect/...` are the old versions; use the `stairs_crossing` package (or the merged team launch) instead. `~/maze_explore_backup` stays in the home folder on purpose (outside challenge_ws, so colcon never sees two maze_explore packages).
+
 New, standalone files. Nothing in lite3_nav or maze_nav is changed.
 
 | File | What |
@@ -57,7 +59,7 @@ laptop Git Bash). On the robot:
 
 ```bash
 source /opt/ros/humble/setup.bash
-cd ~/stairs_detect && python3 stair_watch.py
+ros2 run stairs_crossing stair_watch    # was: cd ~/stairs_detect && python3 stair_watch.py
 ```
 Second terminal: `ros2 topic echo /stairs/status`. Point the robot at the stairs from the
 neighbouring cell: within a second it should read `CONFIRMED: stairs 0.7x m at ...`.
@@ -142,6 +144,9 @@ Install:
 Run:
 
     ros2 launch stairs_crossing explore_stairs.launch.py 2>&1 | tee ~/challenge_ws/logs/stairs_runN.log
+
+Merged into the team's maze_explore on the robot on 25 Nov (`integration/apply_to_maze_explore.sh`):
+the competition launch is now `ros2 launch maze_explore explore.launch.py`; the command above is a fallback.
 
 The full lab procedure is in the Obsidian note `notes/stairs-crossing-lab-test-guide.md`.
 The loose files in this folder (explorer_stairs.py, explore_stairs.launch.py, ai_auto_helper.py,

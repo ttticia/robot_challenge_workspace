@@ -44,6 +44,8 @@ git repo, use `patch -p1 --dry-run < ...` and then `patch -p1 < ...`.
 
 ## Apply on the robot (one command)
 
+**Status: applied on the robot on 25 Nov (team version of 18:35). Backup in `~/maze_explore_backup/`.**
+
 `apply_to_maze_explore.sh` does it all: it checks the patch fits (dry run), backs up the two team
 files to `~/maze_explore_backup/` (outside challenge_ws, so colcon never sees two copies), patches,
 rebuilds maze_explore and shows the stairs arguments. Running it twice does nothing the second time.

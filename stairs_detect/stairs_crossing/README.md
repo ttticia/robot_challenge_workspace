@@ -7,6 +7,10 @@ maze_explore's explorer (team code, 25 Nov). Its changes are listed at the top o
 since 25 Nov (run10).
 
     ros2 launch stairs_crossing explore_stairs.launch.py [drive:=false auto_start:=true] + team arguments
+
+Since 25 Nov evening the changes are merged into the team's maze_explore on the robot
+(integration/apply_to_maze_explore.sh), so `ros2 launch maze_explore explore.launch.py` is the
+competition launch and this one is a fallback with the same arguments.
     ros2 run stairs_crossing stair_watch       # detector only, never drives
     ros2 run stairs_crossing keyboard_teleop   # /cmd_vel teleop (lite3_auto first)
 

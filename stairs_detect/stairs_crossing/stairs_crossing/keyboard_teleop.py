@@ -5,7 +5,7 @@ Hold a key to move; let go and the robot stops within 0.6 s.
   w / s   forward / back        a / d   left / right (sideways)
   q / e   turn left / right     space   stop now
   + / -   faster / slower       x or Ctrl+C   stop and quit
-Run on the robot:  export ROS_DOMAIN_ID=4; python3 ~/stairs_detect/keyboard_teleop.py
+Run on the robot:  export ROS_DOMAIN_ID=4; ros2 run stairs_crossing keyboard_teleop
 """
 import select
 import sys
