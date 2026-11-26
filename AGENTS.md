@@ -803,6 +803,9 @@ This computer's heat (2026-11-26):
 - **Logged during every run**: `heat.csv` in the run's log folder
   (`logs/ros/<date>-<time>-.../`), one line every 2 s: temperature, ms throttled in those
   2 s, load, turbo.
+- **Fast-LIO keeps 1 lidar point in 4** (`point_filter_num` 4, was 3; user, 2026-11-26
+  night): about 25 % fewer points per scan. Its `det_range` does not change the load (it only
+  moves Fast-LIO's local map box).
 - **RViz is the biggest avoidable load**: software-rendered over the remote desktop, about
   half a core plus the remote desktop itself. Close it during runs.
 - **Turbo boost is on and cannot be turned off from here**: the setting belongs to the host

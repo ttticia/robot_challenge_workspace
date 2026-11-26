@@ -8,7 +8,7 @@
 /**:
     ros__parameters:
         feature_extract_enable: false
-        point_filter_num: 3
+        point_filter_num: 4          # was 3: keep 1 lidar point in 4, ~25 % less work for Fast-LIO (this computer overheats; 2026-11-26 night)
         max_iteration: 3
         filter_size_surf: 0.3
         filter_size_map: 0.3
