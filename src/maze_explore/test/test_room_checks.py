@@ -17,6 +17,8 @@ class Robot:
     skip_looks = E.skip_looks
     do_side_watch = E.do_side_watch
     look_late_stairs = E.look_late_stairs
+    room_scan = E.room_scan
+    room_side_stairs = E.room_side_stairs
 
     def __init__(self, kind='room', raised=False):
         self.grid = Grid(0.0, 0.0, 0.0, 1.02)
@@ -35,6 +37,7 @@ class Robot:
         self.low_walls = set()               # (cell, e) edges measured as ordinary walls
         self.tall_squares, self.empty_squares = 0, 4
         self.stairs_on, self.stairs_done = True, False
+        self.cell_size, self.room_scan_in = 1.02, 0.10
 
     def raised(self, c, d): return self._raised
 
@@ -55,7 +58,7 @@ def test_the_stair_check_runs_only_on_potential_stairs():
     # user, 2026-11-26 night: only when potential stairs are SEEN (raised / VLM)
     import inspect
     assert "p('room_stairs', False)" in inspect.getsource(E.__init__)
-    r = Robot('room', raised=True)           # something stair-high: the check runs
+    r = Robot('object', raised=True)         # something stair-high: the check runs
     assert r.look_check(C, D, 0.0)
     acts = [a[0] for a in r.queue]
     assert 'stair_check' in acts and acts.count('side_watch') == 2
@@ -63,10 +66,18 @@ def test_the_stair_check_runs_only_on_potential_stairs():
     assert any(abs(t - math.radians(45)) < 1e-6 for t in turns)
     assert any(abs(t + math.radians(45)) < 1e-6 for t in turns)
     assert not r.look_check(C, D, 0.0)       # once only
-    r2 = Robot('room', raised=False)         # nothing stair-high: no stair check
+    r2 = Robot('object', raised=False)       # nothing stair-high: no stair check
     r2.look_check(C, D, 0.0)
     assert 'stair_check' not in [a[0] for a in r2.queue]
     assert [a[0] for a in r2.queue].count('side_watch') == 2   # the side scan stays
+    r3 = Robot('room', raised=True)          # a room with views coming: scanned from
+    r3.look_check(C, D, 0.0)                 # inside at the empty verdict, not here
+    acts = [a[0] for a in r3.queue]
+    assert 'stair_check' in acts and 'side_watch' not in acts
+    r4 = Robot('room', raised=False)         # a skipped look (no views): scanned here
+    r4.no_views.add((C, D))
+    r4.look_check(C, D, 0.0)
+    assert [a[0] for a in r4.queue].count('side_watch') == 2
 
 
 def test_an_object_cell_gets_no_stair_check_unless_stair_high():
@@ -139,11 +150,11 @@ def test_no_side_checks_when_both_side_walls_are_measured_low():
     # late feed is when the odometry jumps; a low wall hides nothing
     from maze_explore.grid import nb
     b = nb(C, D)
-    r = Robot('room')
+    r = Robot('object')
     r.low_walls = {(b, 1), (b, 3)}           # both side edges measured as ordinary walls
     r.look_check(C, D, 0.0)
     assert 'side_watch' not in [a[0] for a in r.queue]
-    r2 = Robot('room')
+    r2 = Robot('object')
     r2.low_walls = {(b, 1)}                  # the other side unmeasured: checks stay
     r2.look_check(C, D, 0.0)
     assert [a[0] for a in r2.queue].count('side_watch') == 2
@@ -158,20 +169,38 @@ def test_confirmed_content_overrides_the_stair_check_and_the_side_scan():
         r.look_check(C, D, 0.0)
         acts = [a[0] for a in r.queue]
         assert 'stair_check' not in acts and 'side_watch' not in acts
-    r2 = Robot('room', raised=True)          # nothing over the walls: both stay
+    r2 = Robot('object', raised=True)        # nothing over the walls: both stay
     r2.look_check(C, D, 0.0)
     acts = [a[0] for a in r2.queue]
     assert 'stair_check' in acts and acts.count('side_watch') == 2
 
 
-def test_an_empty_room_keeps_the_three_point_side_scan():
-    # user, 2026-11-26 night: an empty dead end is where a curtain or the stairs can
-    # hide on a side; the scan is face + 45 left + 45 right with the camera watching
-    r = Robot('room', raised=False)
-    r.tall_squares = 0
-    r.look_check(C, D, 0.0)
+def test_an_empty_room_is_scanned_from_inside():
+    # user, 2026-11-26 night: walk 0.10 m into the empty room, 45 deg left and right
+    # with the camera on, and any side edge seen stair-high gets a depth check
+    from maze_explore.grid import nb
+    r = Robot('room')
+    steps = r.room_scan(C, D)
+    acts = [a[0] for a in steps]
+    assert acts.count('side_watch') == 2 and 'drive' in acts
+    drive = next(a for a in steps if a[0] == 'drive')
+    assert abs(drive[1] - (3 * 1.02 + 0.51 + 0.10)) < 1e-6    # 0.10 m past the edge
+    b = nb(C, D)
+    r.raised = lambda cell, e: (cell, e) == (b, 1)            # stairs beyond the left side
+    r.room_side_stairs(b, D)
     acts = [a[0] for a in r.queue]
-    assert acts.count('side_watch') == 2 and acts.count('turn') >= 3
+    assert acts[-1] == 'stair_check' and r.queue[-1][1:3] == (b, 1)
+    r2 = Robot('room')                       # content beyond that side: a prop, no check
+    r2.raised = lambda cell, e: (cell, e) == (b, 1)
+    r2.tall_squares = 7
+    r2.room_side_stairs(b, D)
+    assert not r2.queue
+
+
+def test_confirmed_stairs_on_a_room_side_free_the_room():
+    import inspect
+    src = inspect.getsource(E.kind)
+    assert "self.stairs_checked.get((b, e)) is True" in src
 
 
 def test_stairs_seen_during_the_approach_get_a_late_check():

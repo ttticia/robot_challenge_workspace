@@ -30,13 +30,16 @@ class Robot:
         self.forced_wall, self.cv_curtains, self.cv_rejected = set(), set(), set()
         self.cv_tall_min, self.job = 0.2, ''
         self.queue, self.events, self.gone = deque(), [], []
-        self.shares, self.talls = {}, {}
+        self.shares, self.talls, self.grounded = {}, {}, set()
 
     def get_logger(self): return self.Log()
     def event(self, text): self.events.append(text)
     def wall_share(self, c, d): return self.shares.get((c, d), 1.0)
     def tall_share(self, sense, c, d): return self.talls.get((c, d))
-    def sense(self): return None
+
+    def sense(self):
+        g = self.grounded
+        return type('S', (), {'solid_base': staticmethod(lambda c, d: 1.0 if (c, d) in g else 0.0)})()
     def update_kinds(self): pass
     def go(self, a, d, how): self.gone.append((a, d, how))
 
@@ -72,14 +75,18 @@ def test_the_robot_walks_towards_a_far_soft_wall_first():
     assert r.gone == [((1, 0), 0, 'walk')] and not r.queue
 
 
-def test_a_tall_edge_is_tried_as_a_curtain_once():
+def test_a_tall_edge_is_asked_of_the_camera_once():
+    # user, 2026-11-26 night: a curtain MUST be confirmed through the camera; the last
+    # resort faces the tall edge and runs cv_verify, it never pushes unconfirmed
     r = Robot()
     r.talls[((1, 0), 0)] = 0.6                # tall along most of it: fabric-like
     assert r.force_tall_curtain((1, 0), r.visited)
     e = ((1, 0), 0)
-    assert e in r.cv_curtains and e in r.curtain_forced
-    assert (nb(*e), opp(0)) in r.cv_curtains
-    assert not r.force_tall_curtain((1, 0), r.visited)      # each edge once
+    assert e in r.curtain_forced and e not in r.cv_curtains   # the camera decides
+    assert [a[0] for a in r.queue] == ['turn', 'hold', 'cv_verify']
+    assert r.queue[-1][1:] == ((1, 0), 0, True)               # final: a no is a wall
+    assert any('asking the camera' in ev for ev in r.events)
+    assert not r.force_tall_curtain((1, 0), r.visited)        # each edge once
 
 
 def test_a_low_or_failed_edge_is_never_forced():
@@ -102,3 +109,45 @@ def test_start_cell_sides_are_left_alone():
 def test_a_failed_push_marks_the_edge_for_good():
     src = __import__('inspect').getsource(E.stuck)
     assert 'push_failed' in src and 'curtain_forced' in src
+
+
+def test_an_edge_standing_on_the_floor_goes_last():
+    # 21:12 run: the first forced candidate was a tall wall standing down to the floor.
+    # A curtain leaves ~0.15 m free under it: grounded edges are tried last, not first.
+    r = Robot()
+    r.visited.add((2, 0))
+    for d in range(4):
+        r.kinds[((2, 0), d)] = 'wall'
+    r.kinds[((1, 0), 0)] = r.kinds[((2, 0), 2)] = 'free'
+    r.talls[((1, 0), 1)] = 0.9                # near, but stands down to the floor
+    r.grounded.add(((1, 0), 1))
+    r.talls[((2, 0), 0)] = 0.9                # a cell away, floor-gap under it
+    assert r.force_tall_curtain((1, 0), r.visited)
+    assert r.gone == [((1, 0), 0, 'walk')]    # walking towards the gapped one first
+    r.gone.clear()
+    assert r.force_tall_curtain((2, 0), r.visited)            # there now: ask the camera
+    assert ((2, 0), 0) in r.curtain_forced and ((1, 0), 1) not in r.curtain_forced
+    assert any('no exit found anywhere else' in e for e in r.events)
+    # the grounded one is still asked about when it is all that is left (last resort)
+    r.queue.clear()
+    assert r.force_tall_curtain((1, 0), r.visited)
+    assert ((1, 0), 1) in r.curtain_forced
+    assert any('stands down to the floor' in e for e in r.events)
+
+
+def test_a_failed_push_is_not_rechecked_as_a_soft_wall():
+    r = Robot()
+    r.shares[((1, 0), 0)] = 0.1               # soft by the map ...
+    r.push_failed.add(((1, 0), 0))            # ... but the push proved it solid
+    assert not r.recheck_soft_wall((1, 0), r.visited)
+
+
+def test_the_first_grid_fit_forgets_the_edge_keyed_memories():
+    # the cells move with the first wide fit: everything keyed by (cell, side) from
+    # before it names the wrong edge (the fit can come late: 19:05 run, never at all)
+    import inspect
+    src = inspect.getsource(E.align_grid)
+    for name in ('curtain_forced', 'push_failed', 'soft_rechecked', 'vlm_stairs',
+                 'stair_rechecked', 'look_checked', 'no_views', 'cv_curtains',
+                 'curtain_latched', 'cv_rejected', 'forced_wall'):
+        assert f'{name}.clear()' in src or f"'{name}'" in src, name

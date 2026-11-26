@@ -60,6 +60,7 @@ class Robot:
         self.start, self.left_start, self.kinds = (0, 0), True, {}
         self.stairs_done, self.ai_pending, self.step = False, None, None
         self.shifted_in, self.no_recentre = None, set()
+        self.rough_cells, self.rough_stand = set(), False
         self.forced_wall, self.gait, self.cur_gait = set(), 'hstep', 'ai'
         self.queue, self.events = deque(), []
 

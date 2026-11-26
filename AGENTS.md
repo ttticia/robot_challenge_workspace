@@ -178,12 +178,17 @@ stairs, start and the last cell.
    `test/test_no_exit.py`): first every wall to an untravelled cell that is not solidly
    mapped (under 40 % of the edge occupied, or a wall only by a resolve timeout or a
    given-up step) is faced once more, nearest first (`recheck_soft_wall`,
-   `no_exit_walls:=false` = off); then the nearest tall edge to an untravelled cell
-   (`cv_tall_min`, 20 % curtain-high) is tried as a curtain, camera confirmation or none
-   (`force_tall_curtain`, `curtain_last:=false` = off): fabric maps as a wall, and a
-   curtain is the one 'wall' the robot can walk through. The push keeps its guards (leg
-   stall, 8 s); failing, the edge is a wall for good (`push_failed`) and the next is
-   tried. Each edge is faced / tried once. Only when nothing is left: the navigation
+   `no_exit_walls:=false` = off); then the robot walks to the nearest tall edge
+   to an untravelled cell (`cv_tall_min`, 20 % curtain-high), faces it and ASKS THE
+   CAMERA (the usual `cv_verify`; `force_tall_curtain`, `curtain_last:=false` = off, and
+   the stage needs `curtain_cv` on): a curtain MUST be confirmed through the camera
+   (user, 2026-11-26 night, after the 21:12 run pushed a tall wall unconfirmed; nothing
+   is ever pushed unconfirmed now). Confirmed = a real curtain, crossed as usual; not
+   confirmed, or no camera frames = a wall, and the next candidate is tried. Edges
+   standing down to the floor (`Sense.solid_base` >= `base_share_max`: a curtain leaves
+   ~0.15 m free under it) go LAST among the candidates. A crossing that still fails makes
+   the edge a wall for good (`push_failed`), and a failed push is physical proof, so the
+   wall recheck of stage one never faces that edge again. Each edge is asked about once. Only when nothing is left: the navigation
    pauses and the robot lies down where it stands (`STOPPED`, not `DONE`; `lie_down:=false` = pause standing).
    `/nav/start` stands it up again and it plans afresh. **Not when the robot is lost**: with
    the pose more than 0.75 m (`lost_dist`) from the nearest known cell centre it pauses
@@ -254,12 +259,18 @@ been explored, and the robot ends the run standing in the final cell.
   0.53 m walls, so such a cell is a prop room.
   (3) **The three-point side scan** (face, then 45° left and right, `side_check_angle`,
   0 = off, 3 s each, `side_check_hold`, with the curtain camera on: `side_watch`,
-  `curtain_node` watches during it) runs for cells with NOTHING confirmed inside (empty
-  or unmeasured rooms: an empty dead end is where a curtain or the stairs can hide on a
-  side), and is skipped for cells with confirmed tall content and when both of the room's
-  side walls are measured ordinary low walls (`Sense.low_wall`: nothing hides behind one;
-  the turns cost ~12 s a look and turning on a late feed is when the odometry jumps,
-  19:42 run). A sighting is verified later like any other. The look's own three views
+  `curtain_node` watches during it) runs for cells with NOTHING confirmed inside, and is
+  skipped for cells with confirmed tall content and when both of the room's side walls
+  are measured ordinary low walls (`Sense.low_wall`: nothing hides behind one; the turns
+  cost ~12 s a look and turning on a late feed is when the odometry jumps, 19:42 run).
+  At `look_check` it covers object cells and skipped looks; **an EMPTY room is scanned
+  from INSIDE** (user, 2026-11-26 night; `room_scan`): at the empty verdict the robot
+  walks until base_link is 0.10 m (`room_scan_in`; 0 or less = from where it stands) past
+  the shared edge, scans 45° left and right in there, and a side edge the lidar shows
+  stair-high (and without confirmed tall content beyond) gets a depth stair check faced
+  from inside (`room_side_stairs`). **Confirmed stairs on a room side free the room**
+  (`kind()`, like a verified curtain): it is entered like any cell and the stairs are
+  crossed from it, last. A sighting is verified later like any other. The look's own three views
   stay at `look_angle` (35°). A look skipped (all missions done, or empty-early) still
   gets these checks (`no_views`): only the views and scene understanding are dropped.
   (4) **No curtain check during a scene check** (user, 2026-11-26 night): the look queues
@@ -326,12 +337,14 @@ been explored, and the robot ends the run standing in the final cell.
   Nothing becomes a wall because of it. The scanner stays on throughout (the job is still
   the look). A code in the `ahead` view gets no approach. Skipped once the code is read.
   Simulated only (`test/test_qr_approach.py`; rendered views decode from 0.65 m in).
-- **Curtain: crossed HEAD ON (user, 2026-11-26 night; unit-tested only)**: square up on the
-  cell's centre line facing the curtain and walk straight through it at `curtain_speed`
-  (0.20 m/s) with `/maze/blind` on, all the way to the centre of the cell behind. The leg
-  stall stop (below) guards the head-on push too. `curtain_sideways:=true` brings back the
-  sideways step of 2026-11-25 (quarter turn, then sideways through), which the next
-  paragraphs describe where they say sideways. **There it turns only if the fabric still covers the
+- **Curtain: crossed SIDEWAYS, then turned away (user, 2026-11-26 night, the last word
+  after a few hours head on; unit-tested only)**: square up on the cell's centre line
+  facing the curtain, quarter turn on the spot, step sideways through at `curtain_speed`
+  (0.20 m/s) with `/maze/blind` on, to the centre of the cell behind. There: centre
+  (`square`), then turn to face AWAY from the curtain (the way of travel, the curtain at
+  the robot's back), so the lidar reads the cell's non-curtain edges for the resolve
+  instead of standing side on. `curtain_sideways:=false` = head on (the leg stall stop
+  guards that push too). **There it turns only if the fabric still covers the
   lidar** (user, 2026-11-26 night; unit-tested only; `do_curtain_clear`): covered = the lidar's
   cloud has shrunk to under 40 % (`fabric_frac`) of what it gave just before the push. Then
   90° to the right and 90° back to the left, twice at most; clear = no turns. `/maze/blind`
@@ -351,7 +364,14 @@ been explored, and the robot ends the run standing in the final cell.
   direction (`edge_along`); after 3 frames in 3 s it is a candidate. From the centre of the
   cell before it (or its own cell) the robot faces the edge for 3 s; a box across the middle
   of the image on 3 frames makes that edge a `curtain`, **also where the map and the height
-  map call it a wall** (and the cell before it is then no longer a dead-end `room`). A push
+  map call it a wall** (and the cell before it is then no longer a dead-end `room`).
+  **The box must belong to THAT edge (user, 2026-11-26 night; unit-tested only):** at
+  verify, each frame's box bearing is re-anchored with `edge_along` from the squared,
+  standing pose; a box whose ray first meets a DIFFERENT closed edge (a curtain a cell
+  over, seen diagonally across the image centre) does not count. The lidar is the depth
+  the camera lacks: an edge is only ever checked once it shows 20 % curtain-high returns
+  of its own (`cv_tall_min`), attachment skips open edges and rays through corner posts,
+  and an ordinary measured wall collects no sightings (`low_wall`). A push
   that fails takes the claim back. The model is not accepted yet (val: 20 of 23 curtains,
   false boxes on 2 of 51 frames without one).
   **Not over a wall (user, 2026-11-25).** The camera sees a curtain OVER a 0.53 m wall and
@@ -644,7 +664,7 @@ Safety behaviour:
 
 | Condition | Reaction |
 |---|---|
-| `/odom` moves more than 0.15 m (`odom_jump_min`; 0.25 for a few hours on 2026-11-26, when a 0.18 m slip during a sidestep onto a ramp cell went unnoticed) + 0.6 m/s × the time since the last message | stand until it has been steady for 1.5 s (`odom_settle`; was 3 s: user, "pausing for too long"), then carry on. Jumps that follow each other within 3 s (`odom_burst_gap`) are one burst and do not add up (user, 2026-11-26: allow some jumping; 05:03 run: /odom swung ±0.3 m sideways for 1.7 s on a late feed, 10 jumps, then held, but 3 jumps in 10 s was a `FAULT` then). `FAULT` (stop for good, relaunch) only when it does not come back: a burst still going after 6 s of standing (`odom_burst_max`), a pose more than 1.5 m from where the burst began (`odom_net_max`), or one jump over 2 m. Unit-tested on the 05:03 trace only. **On uneven floor more is allowed** (user, 2026-11-26; `odom_terrain`, default 2): standing in an uneven cell, or on a step into or out of one, a step of `/odom` counts as a jump only from twice the size (0.30 m), and a burst may last and the pose may end twice as far (12 s, 3.0 m) before `FAULT`; one jump over 2 m is a `FAULT` anywhere |
+| `/odom` moves more than 0.15 m (`odom_jump_min`; 0.25 for a few hours on 2026-11-26, when a 0.18 m slip during a sidestep onto a ramp cell went unnoticed) + 0.6 m/s × the time since the last message | stand until it has been steady for 1.5 s (`odom_settle`; was 3 s: user, "pausing for too long"), then carry on. Jumps that follow each other within 3 s (`odom_burst_gap`) are one burst and do not add up (user, 2026-11-26: allow some jumping; 05:03 run: /odom swung ±0.3 m sideways for 1.7 s on a late feed, 10 jumps, then held, but 3 jumps in 10 s was a `FAULT` then). `FAULT` (stop for good, relaunch) only when it does not come back: a burst still going after 6 s of standing (`odom_burst_max`), a pose more than 1.5 m from where the burst began (`odom_net_max`), or one jump over 2 m. Unit-tested on the 05:03 trace only. **On uneven floor more is allowed** (user, 2026-11-26; `odom_terrain`, default 2): standing in an uneven cell, or on a step into or out of one, a step of `/odom` counts as a jump only from twice the size (0.30 m), and a burst may last and the pose may end twice as far (12 s, 3.0 m) before `FAULT`; one jump over 2 m is a `FAULT` anywhere. Judged by where the robot ARRIVED (`rough_stand`, latched in `arrive()`), not by the cell of the current pose (2026-11-26 night, 20:53 run: standing on the log cell, the first 0.47 m jump put the pose a cell over, the allowance switched off and 1.93 m net was a flat-floor `FAULT`) |
 | Sensor feed late: `/odom` arrives more than 0.30 s (`feed_late`; 0.15 until the 05:30 run, where 11 of 15 pauses began under 0.30 s) later than usual after its stamp (2026-11-26) | stand still until it has been on time for 0.5 s (`feed_settle`); at most 6 s in one go, then carry on for 10 s at 0.10 m/s at most (`feed_slow`; 05:03 run: it went on at 0.30 m/s and odometry swung 5 s later). Every odometry jump on record followed a late feed while the robot was moving (bags of 11-25 and 11-26: 12 late episodes moving, 2 jumps; 24 standing, none). `feed_pause:=false` (node parameter) = off |
 | The map pose moves 0.5 m or more between two ticks (`pose_jump_max`; 2026-11-26 night, unit-tested only) | everything planned is dropped; the robot stands until the pose has been still for 2 s (12 s at most), lines the grid up with the walls again and plans afresh. 10:39 run: a 45° turn "moved" the robot 1.04 m and what it planned from there took the play kitchen for stairs. A slip of a whole cell cannot be seen by the wall fit (walls line up with cell borders either way), so this stops acting on a jumped pose but cannot always put it right |
 | Pose or lidar cloud older than 1 s | stand still until fresh (the action clock waits too) |

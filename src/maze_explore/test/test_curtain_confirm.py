@@ -159,16 +159,21 @@ def test_possible_stairs_that_are_not_stairs_get_a_look(Robot, lidar):
     assert r.kind(LidarSays(lidar), *EDGE) == 'stairs'
 
 
-def test_after_a_curtain_there_are_no_turns(Robot):
+def test_after_a_curtain_centre_then_turn_away(Robot):
+    # user, 2026-11-26 night: through sideways, centre on the cell behind, then turn to
+    # face AWAY from the curtain (the way of travel) for the resolve of the other edges
     r = Robot(cv_on=False)
     if not hasattr(r, 'curtain_turns') or 'curtain_turns' not in __import__('inspect').getsource(type(r).go):
         pytest.skip('the stairs copy keeps its own curtain ending')
     r.kind(LidarSaysCurtain(EDGE), *EDGE)
     r.go(A, 0, 'curtain')
-    acts = [a[0] for a in r.queue]
     push = next(i for i, a in enumerate(r.queue) if a[-1] == 'push')
-    after = acts[push + 1:]
-    assert 'turn' not in after and after[0] == 'curtain_clear'    # turns only if the lidar is covered
+    after = list(r.queue)[push + 1:]
+    kinds = [a[0] for a in after]
+    assert kinds[0] == 'drive' and after[0][-1] == 'square'      # centred on the cell behind
+    turn = next(a for a in after if a[0] == 'turn')
+    assert abs(turn[1] - 0.0) < 1e-6                             # heading 0 = away from the curtain
+    assert 'curtain_clear' in kinds                              # fabric turns only if covered
     r.queue.clear()
     r.curtain_turns = True                                   # the old 180 right / 50 left
     r.go(A, 0, 'curtain')
@@ -207,16 +212,48 @@ def test_the_camera_needs_5_frames_at_0_6():
     assert "p('cv_conf', 0.6)" in src and "p('cv_verify_hits', 5)" in src and "p('cv_verify_time', 4.0)" in src
 
 
-def test_curtain_is_crossed_head_on(Robot):
-    # user, 2026-11-26 night: walk straight through, facing the curtain
+def test_curtain_is_crossed_sideways_by_default(Robot):
+    # user, 2026-11-26 night (last word): sideways again; curtain_sideways:=false = head on
     r = Robot(cv_on=False)
     if not hasattr(r, 'curtain_sideways'):
         pytest.skip('the stairs copy keeps its own curtain crossing')
     r.kind(LidarSaysCurtain(EDGE), *EDGE)
     r.go(A, 0, 'curtain')
     push = [a for a in r.queue if a[-1] == 'push']
-    assert push and push[0][0] == 'drive'
+    assert push and push[0][0] == 'strafe'
     r.queue.clear()
-    r.curtain_sideways = True
+    r.curtain_sideways = False
     r.go(A, 0, 'curtain')
-    assert [a for a in r.queue if a[-1] == 'push'][0][0] == 'strafe'
+    assert [a for a in r.queue if a[-1] == 'push'][0][0] == 'drive'
+
+
+def test_a_box_belonging_to_another_edge_does_not_confirm(Robot):
+    # user, 2026-11-26 night: the camera has no depth, so at verify each box's bearing is
+    # re-anchored from the standing pose; a curtain a cell over, seen diagonally across
+    # the image centre, must not confirm the edge under test
+    r = Robot(cv_on=True)
+    if 'at_edge' not in __import__('inspect').getsource(type(r).do_cv_verify):
+        pytest.skip('the stairs copy keeps its own verify')
+    r.occ = object()                             # a map exists: the re-anchor runs
+    closed = {EDGE, ((1, 1), 0)}                 # the edge under test, and one a cell over
+
+    class S:
+        def low_wall(self, cell, d): return False
+        def edge(self, cell, d): return ('wall' if (cell, d) in closed else 'open', False)
+    r.sense = lambda: S()
+    r.pose = [0.0, 0.0, 0.0]                     # standing in (0, 0) facing EDGE of (1, 0)
+    r.act_t0 = r.t
+    straight = [(r.t + 0.1 * i, True, 0.0) for i in range(5)]       # boxes on this edge
+    aside = [(r.t + 0.1 * i, True, 0.75) for i in range(5)]         # ~43 deg left: (1, 1) side 0
+    from collections import deque as dq
+    r.cv_frames = dq(aside)
+    r.t += 3.1
+    assert r.do_cv_verify(*EDGE, True)
+    assert EDGE not in r.cv_curtains and EDGE in r.cv_rejected      # not this edge's curtain
+    r2 = Robot(cv_on=True)
+    r2.occ, r2.sense, r2.pose = object(), (lambda: S()), [0.0, 0.0, 0.0]
+    r2.act_t0 = r2.t
+    r2.cv_frames = dq((t + 0.0, hit, brg) for t, hit, brg in straight)
+    r2.t += 3.1
+    assert r2.do_cv_verify(*EDGE, True)
+    assert EDGE in r2.cv_curtains                                   # straight ahead: confirmed

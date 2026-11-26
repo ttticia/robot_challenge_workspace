@@ -96,3 +96,31 @@ def test_on_uneven_floor_more_jumping_is_allowed():
     r.odom_terrain, r.on_uneven = 2.0, (lambda: True)
     feed(r, [(0.0, 0.0), (0.0, 0.0), (2.5, 0.0)])
     assert r.faults                                      # one jump over 2 m is a FAULT anywhere
+
+
+def test_the_allowance_holds_when_the_jump_moves_the_pose_off_the_cell():
+    # 20:53 run: standing on the log cell (2, -2), the first 0.47 m jump put the pose a
+    # cell over, on_uneven() read the JUMPED pose, the allowance switched off and net
+    # 1.93 m was a FAULT at the flat limit (1.5) instead of a stand at the doubled one
+    # (3.0). The allowance now comes from where the robot ARRIVED (rough_stand).
+    import inspect
+    from maze_explore.grid import Grid
+    assert 'self.rough_stand = cell in' in inspect.getsource(explorer.Explorer.arrive)
+    r = robot()
+    r.odom_terrain = 2.0
+    r.rough_cells, r.rough_known, r.step = {(2, -2)}, set(), None
+    r.grid, r.pose = Grid(0.0, 0.0, 0.0, 1.02), (3.1, -2.04, 0.0)  # pose reads a cell over
+    r.rough_stand = False
+    r.on_uneven = explorer.Explorer.on_uneven.__get__(r)
+    r.cur_cell = explorer.Explorer.cur_cell.__get__(r)
+    assert not r.on_uneven()                     # by the jumped pose alone: off the cell
+    r.rough_stand = True                         # arrive() latched the log cell
+    assert r.on_uneven()
+    # the 20:53 jumps: 0.47, then 0.30 and 0.29 (under the doubled minimum), then 0.90 m;
+    # net 1.96 m is under the doubled limit of 3.0: the robot stands, no FAULT
+    feed(r, [(0.0, 0.0), (0.47, 0.0), (0.77, 0.0), (1.06, 0.0), (1.96, 0.0)])
+    assert not r.faults
+    r.rough_stand = False                        # the same burst on flat floor is a FAULT
+    r.odom_jumps, r.last_odom = [], None
+    feed(r, [(0.0, 0.0), (0.47, 0.0), (0.77, 0.0), (1.06, 0.0), (1.96, 0.0)])
+    assert r.faults
