@@ -176,3 +176,38 @@ def test_a_qr_code_seen_without_a_survivor_changes_nothing():
     m.scene((0, 1), 'workshop', qr=True, now=0.0)
     m.scene((1, 2), 'clinic', humans=True, now=0.0)
     assert set(by_task(m.reports(now=5.0))) == {'M03'}
+
+
+def test_a_report_the_server_marks_wrong_lets_the_next_sighting_take_the_mission():
+    from task_reporter.missions import Missions
+    m = Missions('group04_grp4')
+    m.scene((1, 0), 'workshop', objects=['hand_tools'], hazards=['chemical'])
+    first = {p['task_id']: p for p in m.reports()}
+    assert first['M01']['pos'] == [1.02, 0.0]
+    m.refused(first['M01'])                            # evaluated wrong by the server
+    assert m.reports() == []                           # nothing else known: it stands
+    m.scene((2, 1), 'market', objects=['hand_tools'], hazards=['flammable'])
+    again = {p['task_id']: p for p in m.reports()}
+    assert again['M01']['pos'] == [2.04, 1.02]         # the next sighting is reported instead
+    assert 'M02' not in again                          # M02 was fine: its first sighting holds
+
+
+def test_what_counts_as_successful():
+    pytest = __import__('pytest')
+    node = pytest.importorskip('task_reporter.task_reporter')
+    ok = node.successful
+    assert ok('{"status": "accepted", "task_id": "M01", "message": "Submission recorded"}')
+    assert ok('{"status":"accepted","evaluation":{"scene_type":true,"pos":true,"label":true},"score":10}')
+    assert not ok('{"status":"accepted","evaluation":{"scene_type":false,"pos":true},"score":0}')
+    assert not ok('{"status": "rejected", "reason": "Invalid scene_type"}')
+    assert not ok('not json')
+
+
+def test_the_course_follows_maze_side():
+    from task_reporter.missions import course_url
+    base = 'http://192.168.10.141:8001/task_report'
+    assert course_url(base, 'L') == base + '_A'              # maze on the left = course A
+    assert course_url(base, 'R') == base + '_B'              # maze on the right = course B
+    assert course_url(base, 'r ') == base + '_B'
+    assert course_url(base + '_A', 'R') == base + '_A'       # a course named by hand wins
+    assert course_url(base, '') == '' and course_url(base, 'X') == ''     # no guess: nothing posted

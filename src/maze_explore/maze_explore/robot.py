@@ -7,8 +7,13 @@ RUG = 0x21010401         # RUG gait, general gear
 AI_ON = 0x21010528       # enter AI state
 AI_GAIT = 0x2101052A     # AI basic gait
 AI_OFF = 0x2101052B      # leave AI state
+FLAT_SLOW = 0x21010300   # flat gait, slow (state 0: the gait the robot stands up in)
+FLAT_MEDIUM = 0x21010307 # flat gait, medium (state 4)
+FLAT_FAST = 0x21010303   # flat gait, fast (state 5)
+STAND_SIT = 0x21010202   # stand / sit TOGGLE: a standing robot lies down. Send it once
 
-GAITS = {'hstep': HSTEP, 'rug': RUG}
+GAITS = {'hstep': HSTEP, 'rug': RUG, 'flat_slow': FLAT_SLOW, 'flat_medium': FLAT_MEDIUM,
+         'flat_fast': FLAT_FAST}
 
 
 def start_sequence(gait):

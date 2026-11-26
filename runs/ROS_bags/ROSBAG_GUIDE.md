@@ -58,13 +58,21 @@ rec_test run5                                   # terminal 2, once the launch ha
 explore_go                                      # terminal 3
 ```
 
-Recorded: `/tf`, `/tf_static`, `/rosout`, compressed colour, `/cloud_registered_body`
-(Fast-LIO's cloud), `/odom`, `/scan`, `/map`, `/simple_cmd`, `/cmd_vel`,
-`/explore/status`, `/explore/event`, `/explore/cells`, `/maze/body_height`.
+`rec_lean` is the same recorder (one preset since 2026-11-26).
 
-Only the colour stream comes from the robot; the rest is published on this computer. Every
-topic taken from the robot is one more copy across the bridge, so the raw lidar, the IMUs
-and `camera_info` are left out on purpose.
+Recorded: `/tf`, `/tf_static`, `/rosout`, `/cloud_registered_body` (Fast-LIO's cloud),
+`/odom`, `/scan`, `/map`, `/simple_cmd`, `/cmd_vel`, `/explore/status`, `/explore/event`,
+`/explore/cells`, `/maze/body_height`, `/scene/result`, `/qr/read`,
+`/mission/task_completed`, `/mission/result`, `/curtain/seen`.
+
+Kept light on purpose: everything is published on this computer; from the robot only its
+small transforms in `/tf`. **No camera and no `/livox/imu`.** Each can be added for one run:
+`rec_test run5 -- /camera/color/image_raw/compressed` (needed by `bag_video.py`) or
+`rec_test run5 -- /livox/imu`. Scene images are saved in `logs/scene` either way.
+`/livox/imu` was in the preset for one run (04:42 on 2026-11-26, bag `run1`): the feed was
+late 26 % of that run (0, 11 and 5 % in the three bags before), the IMU arrived at 109 Hz
+instead of 200, and the run ended in `FAULT`. Not proven to be the recorder's doing, but
+record the IMU on practice runs only. About 55 MB a minute.
 
 ### 2.2 Hand-driven run: `rec_manual`
 

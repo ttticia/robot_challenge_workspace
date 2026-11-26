@@ -98,7 +98,7 @@ at any time with `lite3_manual`.
 |---|---|
 | `explore.launch.py drive:=false auto_start:=true` | **Dry run.** Everything live, nothing sent to the robot. The log shows what it sees around its cell and what it would do. Do this first in a new arena |
 | `explore.launch.py explore:=false` | Mapping only, for hand-driven runs (`rec_manual`) |
-| `explore.launch.py v_max:=0.15` | Slower walking (default 0.20 m/s) |
+| edit `config/speeds.yaml` (`v_max: 0.15`) | Slower walking (default 0.20 m/s). All speeds are in that file, read at each launch; `v_max` is no longer a launch argument |
 | `explore.launch.py gait:=rug` | RUG general gear instead of the default H-Step gait |
 | `explore.launch.py auto_start:=true` | Starts without waiting for `/nav/start` |
 | `explore.launch.py stair_check:=false` | No depth-camera stair check; the lidar alone decides what is stairs |
@@ -134,12 +134,14 @@ rec_list                 # what each one records
 - Start the recording after Terminal 1 says `ready` and **before** `explore_go`.
 - They start recording at once, with no `explore_check` first.
 - Bags go to `~/challenge_ws/runs/ROS_bags/<name>/`.
-- `rec_test` records: transforms, compressed colour, Fast-LIO's cloud, `/odom`, `/scan`,
-  `/map`, the commands sent (`/cmd_vel`, `/simple_cmd`), and the explorer's
-  `/explore/status`, `/explore/event`, `/explore/cells`.
-  Compressed colour is the only stream it takes from the robot: every topic recorded from
-  the robot is one more copy across the bridge. `rec_manual` adds the raw lidar, both IMUs,
-  leg odometry and the controller, so use it only for hand-driven runs.
+- `rec_test` (and `rec_lean`, the same recorder since 2026-11-26) records: transforms,
+  Fast-LIO's cloud, `/odom`, `/scan`, `/map`, the commands sent (`/cmd_vel`,
+  `/simple_cmd`), the explorer's `/explore/status`, `/explore/event`, `/explore/cells`, and
+  the scene / QR / mission / curtain results. No camera and no `/livox/imu` (add `--
+  /camera/color/image_raw/compressed` or `-- /livox/imu` for one run).
+  The robot's small transforms are the only stream it takes from the robot: every topic recorded from the robot is one more copy across the bridge.
+  `rec_manual` adds the camera, the raw lidar, the body IMU, leg odometry and the
+  controller, so use it only for hand-driven runs.
 - Neither records depth: one raw depth subscriber slows every stream from the robot.
 - Bags are zstd-compressed message by message (`REC_COMPRESS=0` turns it off). `ros2 bag`
   tools and `bag_video.py` read them as usual; reading the `.db3` with plain sqlite gives

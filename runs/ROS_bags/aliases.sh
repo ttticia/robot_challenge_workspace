@@ -9,8 +9,8 @@
 
 _REC=~/challenge_ws/runs/ROS_bags/record.sh
 
-alias rec_test="$_REC explore"           # real autonomous test run of maze_explore (explore.launch.py)
-alias rec_lean="$_REC lean"              # as rec_test without the camera: local topics only, no load on the robot bridge
+alias rec_test="$_REC explore"           # autonomous run of maze_explore (explore.launch.py): local topics only, no camera, no IMU
+alias rec_lean="$_REC explore"           # the same recorder as rec_test (one preset since 2026-11-26)
 alias rec_manual="$_REC manual"          # hand-driven run with maze_explore mapping (explore:=false)
 alias rec_curtain="$_REC curtain"        # curtain detection test by hand (curtain_node running, always:=true)
 alias rec_img="$_REC img"                # camera only: /camera/color/image_raw/compressed

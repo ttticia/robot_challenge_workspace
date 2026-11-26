@@ -89,7 +89,9 @@ class RunGate:
         if look != bool(self.perceive) or self.perceive is None:
             self.perceive = look
             if self.logger is not None:
-                self.logger.info(f'{self.name} {"ON (explorer look)" if look else "off"}')
+                self.logger.info(f'{self.name} ' + (
+                    'ON (explorer look)' if look else
+                    'idle: it switches on by itself at the next room / object look'))
 
     def on_status(self, status):
         was = self.active

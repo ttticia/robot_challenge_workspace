@@ -21,7 +21,7 @@ Put the robot in the start cell facing roughly into the maze. It may be off-cent
 about 0.3 m) and at an angle (up to about 30 degrees): the walls are used to line up.
 
 Useful launch arguments: `drive:=false` (decides and logs, sends nothing), `explore:=false`
-(mapping only, for hand-driven bags), `v_max:=0.15`, `gait:=rug` (RUG general gear; the default is `hstep`, H-Step, since 2026-11-24).
+(mapping only, for hand-driven bags), speeds in `config/speeds.yaml` (not launch arguments), `gait:=rug` (RUG general gear; the default is `hstep`, H-Step, since 2026-11-24).
 
 Navigation only: `plain:=true` turns off the scene understanding trigger, stairs, curtains and
 terrain handling in one go. Each also has its own switch: `scene_understanding:=false`,
@@ -125,8 +125,7 @@ only during the look. Do not also run `team_perception`'s `robot.launch.py`.
 Each analysed look goes out on `/scene/result`. `task_reporter` (a package of its own,
 also started here, `report:=false` = off) turns those and the QR text on `/qr/read`
 into the five mission reports and POSTs each one, as `group_id`
-(`group04_grp4`), to `report_url` (default `http://192.168.10.141:8001/task_report_B`,
-course B). Every report has the seven keys and a position. The QR report needs no VLM.
+(`group04_grp4`), to `report_url` (default `http://192.168.10.141:8001/task_report` plus `_A` or `_B` by `maze_side`: L = course A, R = course B). Every report has the seven keys and a position. The QR report needs no VLM.
 The server's reply, with its per-field evaluation, is printed in the launch terminal.
 Individual frames, the stitched JPEG and `results.jsonl` are saved below
 `~/challenge_ws/logs/scene/junctions_*`. Use `scene_understanding:=false` to

@@ -120,7 +120,10 @@ MISSIONS = {
 # Candidate task_ids per task_type (M03 / M05 are two different survivors).
 TASK_IDS = {'object': ('M01',), 'hazard': ('M02',),
             'survivor': ('M03', 'M05'), 'qr': ('M04',)}
-TASK_REPORT_URL = 'http://192.168.10.141:8001/task_report_B'    # _B = course B
+# The course is not fixed (user, 2026-11-26): maze on the left (L) = course A, on the right
+# (R) = course B, as TASK_REPORT_URL + '_A' / '_B'. task_reporter does the real posting.
+TASK_REPORT_URL = 'http://192.168.10.141:8001/task_report'
+TASK_REPORT_COURSES = {'L': 'A', 'R': 'B'}
 # Arena grid: cell centres 1.02 m apart, (0, 0) = start cell centre, +x the
 # robot's initial forward direction, +y its left.
 CELL_SIZE = 1.02
@@ -427,9 +430,12 @@ def mission_reports(scene, pos):
     return reports
 
 
-def send_task_report(report, url=TASK_REPORT_URL, timeout=5.0):
+def send_task_report(report, url=None, timeout=5.0, maze_side=''):
     """
     POST one validated task report to the scoring server.
+
+    The address is `url` if given, else TASK_REPORT_URL with the course of
+    `maze_side` (L = _A, R = _B). With neither, ValueError: no course is guessed.
 
     Returns the server's JSON reply ({"status": "accepted" | "rejected",
     ...}). Only the latest valid submission per task_id is scored, so a
@@ -441,6 +447,11 @@ def send_task_report(report, url=TASK_REPORT_URL, timeout=5.0):
     valid, error = validate_scene_result(report)
     if not valid:
         raise ValueError(error)
+    if url is None:
+        course = TASK_REPORT_COURSES.get(str(maze_side or '').strip().upper()[:1])
+        if course is None:
+            raise ValueError("no course: give url, or maze_side 'L' (course A) / 'R' (course B)")
+        url = f'{TASK_REPORT_URL}_{course}'
     reply = requests.post(url, json=report, timeout=timeout)
     reply.raise_for_status()
     return reply.json()

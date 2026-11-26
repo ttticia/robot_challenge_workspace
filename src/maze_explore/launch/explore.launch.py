@@ -17,6 +17,7 @@ The explorer waits for:  ros2 topic pub --once /nav/start std_msgs/msg/Empty
 import os
 import re
 import signal
+import sys
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -52,8 +53,9 @@ ARGS = {
     'scene_camera_topic': ('/camera/color/image_raw', 'RGB image topic for the VLM'),
     'report': ('true', 'task_reporter: turn room results and QR reads into the mission '
                        'reports and POST them to the scoring server'),
-    'report_url': ('http://192.168.10.141:8001/task_report_B',
-                   'scoring server (task_report_B = course B)'),
+    'report_url': ('http://192.168.10.141:8001/task_report',
+                   'scoring server. The course follows maze_side: L = ..._A, R = ..._B. '
+                   'An address ending in _A or _B is used as it is'),
     'group_id': ('group04_grp4', 'our id on the scoring server'),
     'm01_object': ('hand_tools', 'the object mission M01 asks for (medical_equipment, '
                                  'hand_tools, food, water, utensils)'),
@@ -83,9 +85,12 @@ ARGS = {
                             'then takes that edge as a curtain even if it maps as a wall'),
     'plain': ('false', 'true: navigation only = scene_understanding, stairs, curtains and '
                        'terrain all off, whatever their own arguments say'),
-    'v_max': ('0.20', 'top walking speed, m/s'),
+    'flat_gait': ('flat_slow', 'gait on plain floor: flat_slow, flat_medium, flat_fast or rug. '
+                               '`gait` is then the one for uneven terrain'),
+    'gait_switch': ('true', 'false: `gait` for the whole run, no switching by floor'),
+    'maze_rows': ('5', 'rows of the maze along the start heading; the end cell is the one '
+                       'cell of the row after. 0 = find the exit from the map alone'),
     'stair_rails': ('false', 'handrails must also show in the lidar'),
-    'ai_speed': ('0.5', 'walking speed on the stairs in AI mode, m/s'),
     'stair_min_hits': ('5', 'stair check also passes with this many hits in the whole look'),
     'stair_check_time': ('4.5', 'seconds the stair check looks'),
     'ai_wz': ('0.0', 'most IMU yaw correction in the AI walk, rad/s (0 = none)'),
@@ -96,6 +101,8 @@ ARGS = {
     'ai_auto': ('true', 'send AUTO after the AI gait so /cmd_vel drives the stairs'),
     'ai_reanchor': ('true', 'after the stairs, move the cell grid to where the walk put the robot'),
     'reanchor_min': ('0.15', 'm of pose error before the grid is re-anchored'),
+    'maze_side': ('', 'maze on the right (R) or on the left (L) of the start cell; asked for '
+                      'in the terminal when not given here'),
     'stand_height': ('0.30', 'base_link height used when the floor cannot be measured'),
 }
 
@@ -118,6 +125,28 @@ def name_node_logs(log_dir):
     return []
 
 
+def ask_maze_side():
+    """R or L (user, 2026-11-26: asked at the start of every launch, saved as maze_side).
+    maze_side:=R|L on the command line answers it. Not asked where nobody can answer or it
+    is not needed: --show-args, mapping only. No terminal to ask in (a script) = an error."""
+    given = [a.split(':=', 1)[1] for a in sys.argv if a.startswith('maze_side:=')]
+    if given:
+        side = given[-1].strip().upper()
+        if side not in ('R', 'L'):
+            raise RuntimeError(f"maze_side:={given[-1]}: must be R or L. Nothing was started.")
+        return side
+    if any(a in ('-s', '--show-args', '--show-arguments', 'explore:=false') for a in sys.argv):
+        return ''
+    if not sys.stdin.isatty():
+        raise RuntimeError('maze_side is not given and there is no terminal to ask in. Nothing '
+                           'was started. Launch again with maze_side:=R or maze_side:=L.')
+    while True:
+        side = input('Is the maze on the right (R) or on the left (L)? ').strip().upper()
+        if side in ('R', 'L'):
+            return side
+        print('Please type R or L.')
+
+
 def generate_launch_description():
     # Every package this file starts must be known to this terminal BEFORE anything is
     # started. A launch that fails part-way (11:34 on 2026-11-24: task_reporter was built
@@ -132,6 +161,7 @@ def generate_launch_description():
                 f"package '{package}' is not known in this terminal. Nothing was started. "
                 'Run: source ~/challenge_ws/install/setup.bash (after colcon build '
                 '--symlink-install if it was never built), then launch again.') from None
+    ARGS['maze_side'] = (ask_maze_side(), ARGS['maze_side'][1])
     config = os.path.join(get_package_share_directory('maze_explore'), 'config')
     c = {k: LaunchConfiguration(k) for k in ARGS}
     env = {'OMP_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1'}
@@ -213,6 +243,7 @@ def generate_launch_description():
                      "'", c['explore'], "'.lower() == 'true' and '", c['report'],
                      "'.lower() == 'true'"])),
                  parameters=[{'group_id': c['group_id'], 'report_url': c['report_url'],
+                              'maze_side': ParameterValue(c['maze_side'], value_type=str),
                               'm01_object': c['m01_object'],
                               'm02_hazard': ParameterValue(c['m02_hazard'], value_type=str),
                               'post': True, 'missions': 'all'}]),
@@ -227,7 +258,13 @@ def generate_launch_description():
             (explorer := Node(
                  package='maze_explore', executable='maze_explorer', name='maze_explorer',
                  output='screen', additional_env=env, condition=IfCondition(c['explore']),
-                 parameters=[{'drive': val('drive', bool), 'auto_start': val('auto_start', bool),
+                 # speeds.yaml first: all the speeds (walk, terrain, stairs, curtain, QR,
+                 # turning) are set there, not by launch arguments
+                 parameters=[os.path.join(config, 'speeds.yaml'),
+                             {'drive': val('drive', bool), 'auto_start': val('auto_start', bool),
+                              'flat_gait': c['flat_gait'], 'gait_switch': val('gait_switch', bool),
+                              'maze_rows': val('maze_rows', int),
+                              'maze_side': ParameterValue(c['maze_side'], value_type=str),
                               'gait': c['gait'], 'enter_rooms': val('enter_rooms', bool),
                               'stair_check': val('stair_check', bool),
                               'stairs': feature('stairs'), 'curtains': feature('curtains'),
@@ -239,10 +276,8 @@ def generate_launch_description():
                                   *unless_plain('qr')]), value_type=bool),
                               'push_stop': val('push_stop', bool),
                               'look_check': val('look_check', bool),
-                              'v_max': val('v_max', float),
                               'stair_rails': val('stair_rails', bool),
                               'ai_auto': val('ai_auto', bool),
-                              'ai_speed': val('ai_speed', float),
                               'ai_wz': val('ai_wz', float),
                               'ai_walk_cells': val('ai_walk_cells', float),
                               'ai_body_clear': val('ai_body_clear', float),

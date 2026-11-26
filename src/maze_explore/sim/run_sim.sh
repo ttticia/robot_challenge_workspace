@@ -39,7 +39,7 @@ nice -n 19 python3 "$PKG/sim/fake_maze_lite3.py" --ros-args -p maze:="$(realpath
 SIM=$!
 sleep 3
 nice -n 19 ros2 launch maze_explore explore.launch.py fastlio:=false cloud_topic:=/livox/points \
-    auto_start:=true stand_height:=0.35 "$@" > "$LOG/launch.log" 2>&1 &
+    auto_start:=true stand_height:=0.35 maze_side:=L "$@" > "$LOG/launch.log" 2>&1 &
 LAUNCH=$!
 ros2 topic echo /explore/event std_msgs/msg/String --field data > "$LOG/events.log" 2>&1 &
 EV=$!

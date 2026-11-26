@@ -165,6 +165,10 @@ def watching(status):
     Not while it turns either: the explorer drops those frames (their heading is not known),
     so running the model on them would be wasted work. One exception inside a look: the
     explorer's own curtain check before the views (act=cv_verify)."""
+    # Not while the depth camera is open (2026-11-26): raw depth already slows every stream
+    # from the robot; the colour stream is given up for those seconds.
+    if ' act=stair_check ' in status:
+        return False
     if not status.startswith('RUN ') or ' act=turn ' in status:
         return False
     # ... except while the explorer checks for a curtain BEFORE a look's views are taken

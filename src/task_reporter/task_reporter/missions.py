@@ -25,6 +25,9 @@ correct response", and the server keeps only the latest report per task_id). So:
     best: the room where scene understanding saw a survivor AND a QR code (seen, not
     read) is M03 at once. With neither, the first survivor found is M03 and the second M05 (user,
     2026-11-25; on 2026-11-24 10:54 a lone survivor went out as M05 and scored 0).
+  - A report the server marks as not successful (rejected, or evaluated with a field
+    wrong: practice mode) lets go of M01 / M02: the next sighting elsewhere is reported
+    in its place (`refused`, user 2026-11-26).
   - The first sighting holds the mission. The same target seen again elsewhere does not
     replace it. A report is sent again only when the SAME finding is known better (its
     room is named, a survivor's QR code is read).
@@ -81,6 +84,21 @@ def check(report):
     return True, ''
 
 
+COURSES = {'L': 'A', 'R': 'B'}       # maze on the left = course A, on the right = course B
+
+
+def course_url(report_url, maze_side):
+    """The scoring server's address for this run's course (user, 2026-11-26): the course
+    follows maze_side, L = A, R = B, as '<report_url>_A' / '<report_url>_B'. A report_url
+    that already ends in _A or _B is a course chosen by hand and is used as it is.
+    Returns '' when neither says which course: nothing must be posted to a guessed one."""
+    url = str(report_url or '').strip().rstrip('/')
+    if url.endswith(('_A', '_B')):
+        return url
+    course = COURSES.get(str(maze_side or '').strip().upper()[:1])
+    return f'{url}_{course}' if url and course else ''
+
+
 class Missions:
     def __init__(self, group_id='', cell_size=1.02, qr_wait=15.0, m01_object=M01_LABEL,
                  m02_hazard=''):
@@ -101,6 +119,7 @@ class Missions:
         self.qr_seen = None    # room where a survivor AND a QR code were seen (not read)
         self.sent = {}         # task_id -> last payload handed out
         self.seen = {}         # (cell, 'object' | 'hazard' | 'survivor', label) -> first time
+        self.bad = {'M01': set(), 'M02': set()}   # cells whose report the server marked wrong
 
     # ---- observations ---------------------------------------------------------------------
     def scene(self, cell, scene_type, objects=(), hazards=(), humans=False, now=0.0,
@@ -177,6 +196,16 @@ class Missions:
         elif near is not None and self.qr_near is None:
             self.qr_near = tuple(near)
 
+    def refused(self, payload):
+        """The server did not mark this report as successful (user, 2026-11-26). For M01
+        and M02 the sighting it came from gives up the mission: the next one seen elsewhere
+        is reported in its place (until then the server keeps this report). Survivors are
+        left as they are: there are only two, and a code read later re-sorts them."""
+        task = payload.get('task_id')
+        if task in self.bad and self.sent.get(task) == payload:
+            pos = payload.get('pos') or [0, 0]
+            self.bad[task].add((round(pos[0] / self.cell_size), round(pos[1] / self.cell_size)))
+
     # ---- reports --------------------------------------------------------------------------
     def pos(self, cell):
         return [round(cell[0] * self.cell_size, 2), round(cell[1] * self.cell_size, 2)]
@@ -189,11 +218,11 @@ class Missions:
         """Every report that is new or has changed since it was last handed out."""
         want = {}
         # the first sighting holds the mission: a later one elsewhere does not replace it
-        for cell in list(self.objects)[:1]:
+        for cell in [c for c in self.objects if c not in self.bad['M01']][:1]:
             if cell in self.scenes:
                 want['M01'] = self.payload('M01', 'object', self.scenes[cell], self.m01_object,
                                            self.pos(cell))
-        for cell, label in list(self.hazards.items())[:1]:
+        for cell, label in [i for i in self.hazards.items() if i[0] not in self.bad['M02']][:1]:
             if cell in self.scenes:
                 want['M02'] = self.payload('M02', 'hazard', self.scenes[cell], label,
                                            self.pos(cell))

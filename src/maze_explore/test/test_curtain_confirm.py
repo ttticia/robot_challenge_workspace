@@ -1,3 +1,4 @@
+import math
 """Lidar curtain = candidate only; the camera must confirm before a push (user, 2026-11-25).
 Driven without ROS: the explorer's own kind / go / do_cv_verify run on a stand-in. Run for
 both explorers: maze_explore's and the stairs copy (stairs_crossing/explorer_stairs.py)."""
@@ -35,8 +36,14 @@ class Stand:
         self.curtain_latched, self.links = set(), {}
         self.curtains_on, self.cv_on, self.stairs_on, self.stair_check_on = True, cv_on, True, False
         self.terrain_on, self.stairs_checked, self.exit_cell = False, {}, None
+        self.exit_d, self.exit_weak, self.exit_open = None, {}, set()
         self.cv_verify_time, self.cv_verify_hits, self.cv_frames = 3.0, 3, deque()
         self.gait = 'hstep'
+        self.cv_first = False          # these tests are about the checks after a candidate exists
+        self.maze_rows, self.gait_switch, self.cur_gait, self.rough_cells = 0, False, 'hstep', set()
+        self.curtain_right, self.curtain_left = math.pi, math.radians(50.0)
+        self.curtain_turns = False
+        self.gait_for_step = lambda a, b, rough: None
         self.low = False               # Sense.low_wall for every edge
 
     def now(self): return self.t
@@ -149,3 +156,19 @@ def test_possible_stairs_that_are_not_stairs_get_a_look(Robot, lidar):
     assert r.kind(LidarSays(lidar), *EDGE) == 'object'          # a prop: looked at, not entered
     r.stairs_checked[EDGE] = True
     assert r.kind(LidarSays(lidar), *EDGE) == 'stairs'
+
+
+def test_after_a_curtain_there_are_no_turns(Robot):
+    r = Robot(cv_on=False)
+    if not hasattr(r, 'curtain_turns') or 'curtain_turns' not in __import__('inspect').getsource(type(r).go):
+        pytest.skip('the stairs copy keeps its own curtain ending')
+    r.kind(LidarSaysCurtain(EDGE), *EDGE)
+    r.go(A, 0, 'curtain')
+    acts = [a[0] for a in r.queue]
+    after = acts[acts.index('strafe') + 1:]
+    assert 'turn' not in after and after[0] == 'hold'        # user, 2026-11-26: stand 1 s, go on
+    r.queue.clear()
+    r.curtain_turns = True                                   # the old 180 right / 50 left
+    r.go(A, 0, 'curtain')
+    acts = [a[0] for a in r.queue]
+    assert acts[acts.index('strafe') + 1:].count('turn') == 3

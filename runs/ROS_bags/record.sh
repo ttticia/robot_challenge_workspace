@@ -9,8 +9,12 @@
 #   manual      hand-driven demonstration run with maze_explore explore.launch.py
 #               explore:=false: lidar, odometry, /scan, /map, tf, colour, controller.
 #               No depth: one raw depth subscriber slows every bridge stream (guide 2.6)
-#   explore     autonomous maze_explore run: cloud, odometry, /scan, /map, tf, colour,
-#               commands sent, explorer status / events
+#   explore     autonomous maze_explore run (rec_test and rec_lean, one preset since
+#               2026-11-26; `lean` is the same): cloud, odometry, /scan, /map, tf, commands
+#               sent, explorer status / events, scene / QR / mission results, curtain
+#               sightings. Nothing heavy from the robot: no camera, no /livox/imu (add
+#               one for a single run with `-- /camera/color/image_raw/compressed` or
+#               `-- /livox/imu`)
 #   curtain     curtain detection test, hand-driven, with curtain_node running
 #               (`ros2 run maze_explore curtain_node --ros-args -p always:=true`): colour,
 #               the node's /curtain/seen + /curtain/status, tf, and /odom /scan /map if the
@@ -60,17 +64,22 @@ preset_topics() {
     #   /leg_odom2 /imu/data        robot's own odometry and body tilt (terrain, stairs)
     #   /explore/*                  the explorer's state, if it runs (drive:=false)
     manual)     echo "$A $B /livox/lidar /livox/imu /cloud_registered_body /imu/data /leg_odom2 $E /handle_state /commands/joy_raw /simple_cmd /cmd_vel /maze/body_height /explore/status /explore/event /explore/cells" ;;
-    # Autonomous maze_explore run (explore.launch.py). Every topic taken from the robot is one
-    # more copy across the bridge, so the only one here is the compressed colour stream; the
-    # rest is published on this computer: Fast-LIO's cloud, odometry, the map, what the
-    # explorer decided and sent.
-    # Left out on purpose: raw lidar, /imu/data, /leg_odom2, /handle_state, camera_info.
-    explore)    echo "$A /camera/color/image_raw/compressed /cloud_registered_body $E /simple_cmd /cmd_vel /explore/status /explore/event /explore/cells /maze/body_height" ;;
-    # As explore, without the camera: NOTHING here costs a copy of a heavy stream across the
-    # bridge (2026-11-25; /tf carries the robot's own small transforms too). For runs where
-    # the lidar feed must not be touched at all; scene images are still saved by
-    # junction_trigger in logs/scene.
-    lean)       echo "$A /cloud_registered_body $E /simple_cmd /cmd_vel /explore/status /explore/event /explore/cells /maze/body_height /scene/result /qr/read /mission/task_completed" ;;
+    # Autonomous maze_explore run (explore.launch.py); rec_test and rec_lean both record
+    # this (user, 2026-11-26: one preset, and not heavy). Everything here is published on
+    # this computer (Fast-LIO's cloud, odometry, the map, what the explorer decided and
+    # sent, what perception found); from the robot only its own small transforms in /tf.
+    # /livox/imu was in this preset for ONE run (04:42 on 2026-11-26, bag run1) and is out
+    # again: that run had the feed late 26 % of the time (0, 11 and 5 % in the three bags
+    # before it), /livox/imu arrived at 109 Hz instead of 200, and it ended in FAULT in the
+    # start cell. Not proven to be the recorder's second copy of that stream, but Fast-LIO
+    # lives on it. To record it on a practice run: `rec_test <name> -- /livox/imu`.
+    # NOT in: the compressed colour stream. It was the one heavy copy across the bridge in
+    # the old rec_test, on top of lidar, IMU and curtain_node's copy of it (the bridge
+    # saturates at about four). Scene images are saved by junction_trigger in logs/scene;
+    # for a bag with the camera add `-- /camera/color/image_raw/compressed` (bag_video.py
+    # needs it). Also left out: raw lidar, /imu/data, /leg_odom2, /handle_state.
+    # Disk: about 55 MB a minute, nearly all of it the cloud.
+    explore|lean) echo "$A /cloud_registered_body $E /simple_cmd /cmd_vel /explore/status /explore/event /explore/cells /maze/body_height /scene/result /qr/read /mission/task_completed /mission/result /curtain/seen" ;;
     # Curtain detection test by hand: what the camera saw and what curtain_node said about
     # each frame (boxes, confidence, direction), so misses and false boxes can be found
     # afterwards. /curtain/image is NOT recorded: it is raw (2.7 MB/s) and makes the node
@@ -298,14 +307,16 @@ if [[ -f "$OUT/metadata.yaml" ]]; then
     python3 - "$OUT" "$PRESET" <<'PY' || true
 import glob, sqlite3, sys
 out, preset = sys.argv[1:]
-need = {'/odom': 9, '/scan': 8, '/cloud_registered_body': 9,
-        '/camera/color/image_raw/compressed': 20}
+need = {'/odom': 9, '/scan': 8, '/cloud_registered_body': 9}
 if preset == 'curtain':
     need = {'/camera/color/image_raw/compressed': 20, '/curtain/seen': 2, '/odom': 9, '/scan': 8}
 if preset == 'manual':
-    need.update({'/livox/imu': 150, '/livox/lidar': 9, '/imu/data': 150, '/handle_state': 40})
+    need.update({'/livox/lidar': 9, '/imu/data': 150, '/handle_state': 40,
+                 '/camera/color/image_raw/compressed': 20})
 db = sqlite3.connect('file:%s?mode=ro' % glob.glob(out + '/*.db3')[0], uri=True)
 ids = {n: i for i, n in db.execute('select id, name from topics')}
+if '/livox/imu' in ids:               # recorded on request (-- /livox/imu)
+    need.setdefault('/livox/imu', 150)
 for topic, hz_min in need.items():
     ts = [r[0] * 1e-9 for r in db.execute('select timestamp from messages where topic_id = ? '
                                           'order by timestamp', (ids.get(topic, -1),))]
@@ -318,7 +329,7 @@ for topic, hz_min in need.items():
         topic, hz, span, gap, '   SLOW (needs >= %d)' % hz_min if hz < hz_min else ''))
 PY
     [[ "$PRESET" == curtain ]] && echo "/odom and /scan only count if the mapping launch ran; a SLOW /curtain/seen means the node fell behind."
-    echo "SLOW /odom, /scan or (manual) /livox/imu: the map and pose in this bag cannot be trusted."
+    echo "SLOW /odom, /scan or /livox/imu: the map and pose in this bag cannot be trusted."
     echo "A longest gap near 1 s is a stall in the robot's feed: the explorer stands still through it."
   fi
   if (( ${#missing[@]} )); then

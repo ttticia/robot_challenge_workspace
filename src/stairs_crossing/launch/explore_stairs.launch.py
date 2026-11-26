@@ -59,8 +59,11 @@ ARGS = {
     'scene_camera_topic': ('/camera/color/image_raw', 'RGB image topic for the VLM'),
     'report': ('true', 'task_reporter: turn room results and QR reads into the mission '
                        'reports and POST them to the scoring server'),
-    'report_url': ('http://192.168.10.141:8001/task_report_B',
-                   'scoring server (task_report_B = course B)'),
+    'report_url': ('http://192.168.10.141:8001/task_report',
+                   'scoring server. The course follows maze_side: L = ..._A, R = ..._B. '
+                   'An address ending in _A or _B is used as it is'),
+    'maze_side': ('', 'maze on the left (L = course A) or on the right (R = course B) of the '
+                      'start cell. Needed for the reports: without it nothing is posted'),
     'group_id': ('group04_grp4', 'our id on the scoring server'),
     'm01_object': ('hand_tools', 'the object mission M01 asks for (medical_equipment, '
                                  'hand_tools, food, water, utensils)'),
@@ -220,6 +223,7 @@ def generate_launch_description():
                      "'", c['explore'], "'.lower() == 'true' and '", c['report'],
                      "'.lower() == 'true'"])),
                  parameters=[{'group_id': c['group_id'], 'report_url': c['report_url'],
+                              'maze_side': ParameterValue(c['maze_side'], value_type=str),
                               'm01_object': c['m01_object'],
                               'm02_hazard': ParameterValue(c['m02_hazard'], value_type=str),
                               'post': True, 'missions': 'all'}]),

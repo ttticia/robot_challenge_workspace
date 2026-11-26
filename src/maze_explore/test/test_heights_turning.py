@@ -24,7 +24,7 @@ def test_heights_only_while_not_turning(module):
     except ImportError as e:
         pytest.skip(f'{module}: {e}')
     added = []
-    r = NS(t=100.0, pose=(0.0, 0.0, 0.0), blind_until=0.0, clouds=deque(), last_odom=None,
+    r = NS(feed_check=lambda stamp: None, t=100.0, pose=(0.0, 0.0, 0.0), blind_until=0.0, clouds=deque(), last_odom=None,
            last_yaw=None, turned_at=-1e9, heights_turn_max=0.2, heights_settle=0.3,
            odom_jumps=[], odom_grace_until=0.0, odom_hold_until=0.0, state='RUN',
            heights=NS(add=lambda x, y, h: added.append(len(h))))

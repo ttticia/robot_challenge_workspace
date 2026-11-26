@@ -280,7 +280,76 @@ def test_between_two_ways_on_the_dead_end_goes_first():
     # other sides: finish that one first
     j = next_job(kinds, {a, (0, 1)}, cur=a, facing=0, walls_beyond={(a, 0): 0, (a, 1): 3}, **args)
     assert (j['job'], j['d']) == ('visit', 1)
-    j = next_job(kinds, {a, (0, 1)}, cur=a, facing=0, walls_beyond={(a, 0): 2, (a, 1): 2}, **args)
-    assert (j['job'], j['d']) == ('visit', 0)          # no difference: least turning decides
+    # neither is a dead end: the one furthest from the far row first (user, 2026-11-26).
+    # Straight on is cell (2, 1), row 2; to the left is cell (1, 2), row 1.
+    j = next_job(kinds, {a, (0, 1)}, cur=a, facing=0, walls_beyond={(a, 0): 2, (a, 1): 1}, **args)
+    assert (j['job'], j['d']) == ('visit', 1)          # even with fewer walls seen there
     j = next_job(kinds, {a, (0, 1)}, cur=a, facing=0, **args)
-    assert (j['job'], j['d']) == ('visit', 0)          # nothing known: as before
+    assert (j['job'], j['d']) == ('visit', 1)
+    # same row on both sides: most walls seen, then least turning
+    kinds = {(a, 0): 'wall', (a, 1): 'free', (a, 2): 'free', (a, 3): 'free'}
+    j = next_job(kinds, {a, (0, 1)}, cur=a, facing=3, **args)
+    assert (j['job'], j['d']) == ('visit', 3)
+    j = next_job(kinds, {a, (0, 1)}, cur=a, facing=3, walls_beyond={(a, 1): 2, (a, 3): 1}, **args)
+    assert (j['job'], j['d']) == ('visit', 1)
+
+
+def test_junction_hierarchy_and_explored_cells():
+    # user, 2026-11-26: room, path, stairs, curtain; a looked-at cell is explored; an open
+    # edge into a cell travelled through is not checked
+    a = (1, 1)
+    args = dict(closed=set(), links={}, exit_cell=None, looked=set())
+    kinds = {(a, 0): 'curtain', (a, 1): 'stairs', (a, 2): 'free', (a, 3): 'wall'}
+    j = next_job(kinds, {a, (0, 1)}, cur=a, facing=0, greeted={(a, 0)}, **args)
+    assert (j['job'], j['d']) == ('stairs', 1)          # curtain ahead, but stairs go first
+    # an object cell open on two sides: looked at from one, not again from the other
+    b = (1, 2)
+    kinds = {(a, 0): 'object', (a, 1): 'free', (a, 2): 'free', (a, 3): 'wall',
+             (b, 0): 'wall', (b, 1): 'wall', (b, 2): 'wall', (b, 3): 'free'}
+    c = (2, 2)                                          # the object cell is (2, 1)
+    kinds.update({(c, 0): 'wall', (c, 1): 'wall', (c, 2): 'free', (c, 3): 'object'})
+    kinds[(b, 0)] = 'free'
+    seen = dict(args, looked={(a, 0)})
+    j = next_job(kinds, {a, b, c, (0, 1)}, cur=c, facing=0, greeted=set(), **seen)
+    assert j['job'] == 'done'
+    # a "room" that is a cell the robot has already been in gets no look
+    kinds = {(a, 0): 'room', (a, 1): 'wall', (a, 2): 'free', (a, 3): 'wall'}
+    j = next_job(kinds, {a, (0, 1), (2, 1)}, cur=a, facing=0, greeted=set(), **args)
+    assert j['job'] == 'done'
+
+
+def test_a_room_with_nothing_taller_than_its_walls_is_empty():
+    walls = [((0, 0), 1), ((0, 0), 3), ((0, 0), 2), ((1, 0), 1), ((1, 0), 3), ((1, 0), 0)]
+    g, s = world(walls)
+    assert s.kind((0, 0), 0, may_exit=False) == 'room'
+    assert s.tall_inside((0, 0), 0) == (0, False)        # far wall not measured: not confirmed
+    for cell, d in walls[3:]:
+        x, y = g.box(cell, d, np.linspace(-0.5, 0.5, 40), [0.0])
+        for _ in range(3):
+            s.hm.add(x.ravel(), y.ravel(), np.full(x.size, 0.53))
+    assert s.tall_inside((0, 0), 0) == (0, True)         # walls only: empty
+    x, y = g.box((1, 0), 1, np.linspace(-0.3, 0.3, 20), [-0.03, -0.08])     # a poster board, left wall
+    for _ in range(3):
+        s.hm.add(x.ravel(), y.ravel(), np.full(x.size, 0.9))
+    n, measured = s.tall_inside((0, 0), 0)
+    assert n >= 4 and measured
+    # something tall at the room's corner only (the end of a neighbour's curtain): not counted
+    g, s = world(walls)
+    x, y = g.box((1, 0), 1, [0.45, 0.50, 0.55], [-0.05, 0.0, 0.05])     # near corner, left
+    for _ in range(3):
+        s.hm.add(x.ravel(), y.ravel(), np.full(x.size, 0.95))
+    assert s.tall_inside((0, 0), 0)[0] == 0
+
+
+def test_stairs_ahead_are_not_kept_waiting_by_curtains_at_the_sides():
+    # 04:42 robot run, 2026-11-26: start cell, stairs ahead, lidar "curtains" left and right
+    a = (0, 0)
+    kinds = {(a, 0): 'stairs', (a, 1): 'curtain', (a, 2): 'wall', (a, 3): 'curtain'}
+    args = dict(closed=set(), links={}, exit_cell=None, looked=set())
+    j = next_job(kinds, {a}, cur=a, facing=0, greeted=set(), **args)
+    assert (j['job'], j['d']) == ('stairs', 0)
+    links = {(a, 0): ('stairs', (2, 0))}                 # stairs crossed: now the curtains
+    j = next_job(kinds, {a}, cur=a, facing=0, greeted=set(), **dict(args, links=links))
+    assert j['job'] == 'greet' and j['d'] in (1, 3) and j['path'] == []
+    j = next_job(kinds, {a}, cur=a, facing=0, greeted={(a, j['d'])}, **dict(args, links=links))
+    assert j['job'] == 'curtain'

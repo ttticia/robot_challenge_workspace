@@ -28,6 +28,7 @@ def push(sure, solid_at=None, leg=True):
                                  push_stalled=E.push_stalled))
     r = R()
     r.side_speed, r.push_stop, r.push_sure, r.blind_until = 0.10, True, sure, 0.0
+    r.curtain_speed = 0.10
     r.push_stall, r.push_stall_time, r.push_stall_grace, r.push_stall_min = True, 1.5, 0.7, 0.03
     r.leg, r.leg_sub, r.leg_topic = deque(maxlen=200), None, '/leg_odom2'
     r.create_subscription = lambda *a: 'sub'
@@ -69,3 +70,23 @@ def test_without_leg_odometry_nothing_changes():
     assert not gave_up and r.pose[0] > 0.95
     r, gave_up = push(sure=True, solid_at=0.30, leg=False)
     assert gave_up and gave_up[0][0] > 8.0                 # the 8 s no-progress rule alone
+
+
+def test_pose_during_a_crossing_is_the_held_map_pose_with_fresh_odometry():
+    # simulator, 2026-11-26: with the scans off SLAM stops renewing map -> odom, the pose
+    # froze and the stale-pose rule stopped the robot for good in the middle of the push
+    import math
+    from types import SimpleNamespace as NS
+    explorer = pytest.importorskip('maze_explore.explorer')
+
+    def tf(x, y, yaw, sec):
+        return NS(transform=NS(translation=NS(x=x, y=y, z=0.0),
+                               rotation=NS(x=0.0, y=0.0, z=math.sin(yaw / 2), w=math.cos(yaw / 2))),
+                  header=NS(stamp=NS(sec=sec, nanosec=0)))
+    frames = {('map', 'odom'): tf(1.0, 2.0, math.pi / 2, 100),          # old: SLAM is not fed
+              ('odom', 'base_level'): tf(0.5, 0.0, 0.1, 160)}           # fresh
+    r = NS(curtain_blind=True, pose=None, pose_time=None,
+           tf_buffer=NS(lookup_transform=lambda a, b, t: frames[(a, b)]))
+    r.read_pose_blind = lambda: explorer.Explorer.read_pose_blind(r)
+    assert explorer.Explorer.read_pose(r)
+    assert r.pose == pytest.approx((1.0, 2.5, math.pi / 2 + 0.1)) and r.pose_time == 160

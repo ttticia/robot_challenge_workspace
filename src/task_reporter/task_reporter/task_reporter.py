@@ -23,7 +23,7 @@ is, checks the format (missions.check) and submits. It imports nothing from them
        whether a mission asks for it or not.
        /mission/task_completed (std_msgs/String), one message per report, and with
        `post:=true` + a `group_id` the same JSON by HTTP POST to `report_url`
-       (practice server, live since 2026-11-24: .../task_report_B for course B, user 2026-11-25).
+       (practice server, live since 2026-11-24: .../task_report_A or _B: the course follows maze_side, L = A, R = B, user 2026-11-26).
        Every report has the seven keys and a position, M04 too (user, 2026-11-24).
        `missions` picks which go out: 'all' (default) or e.g. 'M04'.
        A report goes out again when its content changes (the server scores the latest valid
@@ -47,7 +47,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
-from task_reporter.missions import check, look_cell, Missions
+from task_reporter.missions import check, course_url, look_cell, Missions
 
 
 class TaskReporter(Node):
@@ -64,7 +64,10 @@ class TaskReporter(Node):
         p('qr_wait', 15.0)             # s a survivor's room waits for its QR code before it is sent
         p('cell_size', 1.02)
         p('group_id', '')              # group##_XXXX; empty = nothing is posted
-        p('report_url', 'http://192.168.10.141:8001/task_report_B')   # _B = course B
+        # The course is not fixed (user, 2026-11-26): it follows maze_side, L = course A,
+        # R = course B (missions.course_url). A report_url ending in _A / _B overrides it.
+        p('report_url', 'http://192.168.10.141:8001/task_report')
+        p('maze_side', '')             # L or R, from explore.launch.py
         p('post', False)               # HTTP POST to report_url (needs group_id)
         p('missions', 'all')           # which reports go out: 'all' or e.g. 'M04' / 'M01,M04'
         p('m01_object', 'hand_tools')  # the object mission M01 asks for (the mission given)
@@ -72,13 +75,23 @@ class TaskReporter(Node):
         p('post_timeout', 3.0)
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self.qr_window = float(g('qr_cell_window'))
-        self.url, self.timeout = g('report_url'), float(g('post_timeout'))
-        self.posting = bool(g('post')) and bool(g('group_id'))
+        self.url, self.timeout = course_url(g('report_url'), g('maze_side')), float(g('post_timeout'))
+        self.posting = bool(g('post')) and bool(g('group_id')) and bool(self.url)
+        if bool(g('post')) and not self.url:
+            self.get_logger().error(
+                f"no course: maze_side is '{g('maze_side')}' (need L or R) and report_url "
+                f"'{g('report_url')}' names none. NOTHING WILL BE POSTED")
+        else:
+            self.get_logger().info(f"reports go to {self.url} (maze_side '{g('maze_side')}')")
         want = str(g('missions')).replace(' ', '')
         self.only = None if want.lower() == 'all' else set(want.split(','))
         self.missions = Missions(g('group_id'), float(g('cell_size')), float(g('qr_wait')),
                                  g('m01_object'), g('m02_hazard'))
         self.pub = self.create_publisher(String, g('task_completed_topic'), 10)
+        # What the server said to each posted report (user, 2026-11-26), JSON: task_id,
+        # ok (accepted and, where the reply carries an evaluation, every field right),
+        # reply. The explorer counts a mission as done only on ok.
+        self.result_pub = self.create_publisher(String, '/mission/result', 10)
         self.seen_pub = self.create_publisher(String, '/mission/sightings', QoSProfile(
             depth=1, reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -127,10 +140,13 @@ class TaskReporter(Node):
                         answer = r.read().decode(errors='replace')
                     log = self.get_logger().info if '"accepted"' in answer else self.get_logger().error
                     log(f'{payload["task_id"]} server: {answer.strip()[:200]}')
+                    self.result(payload, successful(answer), answer)
                     break
                 except urllib.error.HTTPError as e:      # answered, but refused
+                    answer = e.read().decode(errors='replace')
                     self.get_logger().error(f'{payload["task_id"]} rejected: HTTP {e.code} '
-                                            f'{e.read().decode(errors="replace")[:200]}')
+                                            f'{answer[:200]}')
+                    self.result(payload, False, answer)
                     break
                 except Exception as e:                   # no answer: try again
                     self.get_logger().warn(f'{payload["task_id"]} post failed (try {attempt} '
@@ -139,6 +155,14 @@ class TaskReporter(Node):
             else:
                 self.get_logger().error(f'{payload["task_id"]} NOT delivered after 3 tries: '
                                         f'{payload}')
+                self.result(payload, False, 'not delivered', refuse=False)
+
+    def result(self, payload, ok, answer, refuse=True):
+        if not ok and refuse:
+            self.missions.refused(payload)
+            self.get_logger().warn(f'{payload["task_id"]} not marked successful by the server')
+        self.result_pub.publish(String(data=json.dumps(
+            {'task_id': payload['task_id'], 'ok': bool(ok), 'reply': answer.strip()[:300]})))
 
     def on_capture(self, msg):
         try:
@@ -196,6 +220,20 @@ class TaskReporter(Node):
             cell = self.last_capture[0]
         self.missions.qr(msg.data, cell, self.robot_cell)       # the text exactly as decoded
         self.flush()
+
+
+def successful(answer):
+    """The server's reply marks the report as successful: status accepted and, where it
+    carries an evaluation (practice mode), every evaluated field right. The competition
+    reply has no evaluation: accepted is all there is to go by."""
+    try:
+        r = json.loads(answer)
+    except ValueError:
+        return False
+    if not isinstance(r, dict) or r.get('status') != 'accepted':
+        return False
+    marks = r.get('evaluation')
+    return all(marks.values()) if isinstance(marks, dict) else True
 
 
 def main():
