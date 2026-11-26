@@ -12,6 +12,11 @@ check() {   # topic, minimum Hz
     r=$(rate "$1"); r=${r:-0}
     if [ "$r" -ge "$2" ]; then echo "  ok     $1  ${r} Hz"; else echo "  NO-GO  $1  ${r} Hz (needs >= $2)"; ok=0; fi
 }
+# This computer first (2026-11-26): hot, throttled, or RViz / a simulator / tests running =
+# Fast-LIO falls behind, the feed reads late and the odometry jumps.
+if python3 -m maze_explore.heat 2>/dev/null; then :; else
+    [ $? = 1 ] && ok=0 || echo "  ?      heat check not available (source ~/challenge_ws/install/setup.bash)"
+fi
 echo "sensor rates:"
 check /livox/imu 150
 check /livox/lidar 9
@@ -50,4 +55,4 @@ if [ -n "$helpers" ] && [ $ok = 1 ]; then
         echo "NO-GO: needs a y at the keyboard to proceed (no terminal here)."; exit 1
     fi
 fi
-if [ $ok = 1 ]; then echo "GO"; else echo "NO-GO: slow streams come from the robot / bridge side (or its host being busy), not from this stack. Wait or ask the lab, then check again."; exit 1; fi
+if [ $ok = 1 ]; then echo "GO"; else echo "NO-GO. A hot or busy computer: cool it, close RViz / simulators / tests. Slow streams with a cool, idle computer come from the robot / bridge side: wait or ask the lab. Then check again."; exit 1; fi

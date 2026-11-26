@@ -54,8 +54,8 @@ def look_cell(cell, side):
 def check(report):
     """Is this report fit to submit? Returns (ok, reason).
 
-    The booklet's format (seven keys, the fixed vocabulary), and stricter than it in one
-    point: every report must carry a position, the QR report too (user, 2026-11-24)."""
+    The booklet's format (seven keys, the fixed vocabulary). M01, M02, M03 and M05 must
+    carry a position; the QR report M04 must NOT (pos null: the server rejects it otherwise)."""
     if not isinstance(report, dict) or tuple(report) != KEYS:
         return False, 'not exactly the seven keys, in order: ' + ', '.join(KEYS)
     if not all(isinstance(report[k], str) for k in KEYS if k != 'pos'):
@@ -73,7 +73,13 @@ def check(report):
     if report['label'] not in allowed:
         return False, f'label {report["label"]!r} is not valid for a {kind} task'
     pos = report['pos']
-    if not (isinstance(pos, list) and len(pos) == 2 and all(
+    if kind == 'qr':
+        # The server refuses a QR report with a position (08:01 run, 2026-11-26, HTTP 422:
+        # "QR requires nonempty message, null pos, empty label, and empty/permitted
+        # scene_type"). Until then every report carried one (user, 2026-11-24).
+        if pos is not None:
+            return False, 'the QR report must have pos null (the server rejects a position)'
+    elif not (isinstance(pos, list) and len(pos) == 2 and all(
             isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
             for v in pos)):
         return False, 'pos must be [x, y] (every report carries a position)'
@@ -252,8 +258,7 @@ class Missions:
         if self.qr_text is not None:
             # Only the message is scored, but the server rejects an unknown scene type.
             scene = self.scenes.get(self.qr_cell) or next(iter(self.scenes.values()), 'kitchen')
-            where = self.qr_cell or self.qr_near or (0, 0)
-            want['M04'] = self.payload('M04', 'qr', scene, '', self.pos(where), self.qr_text)
+            want['M04'] = self.payload('M04', 'qr', scene, '', None, self.qr_text)   # pos null
         out = [p for t, p in sorted(want.items()) if self.sent.get(t) != p]
         for p in out:
             self.sent[p['task_id']] = p

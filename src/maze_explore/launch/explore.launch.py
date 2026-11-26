@@ -22,7 +22,7 @@ import sys
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 import launch.logging
-from launch.actions import (DeclareLaunchArgument, EmitEvent, OpaqueFunction,
+from launch.actions import (DeclareLaunchArgument, EmitEvent, ExecuteProcess, OpaqueFunction,
                             RegisterEventHandler, SetEnvironmentVariable)
 from launch.event_handlers import OnProcessExit, OnShutdown
 from launch.events import matches_action
@@ -48,7 +48,7 @@ ARGS = {
     'drive': ('true', 'false: velocity goes to /explore/cmd_vel_preview, no mode requests'),
     'auto_start': ('false', 'start exploring without waiting for /nav/start'),
     'cloud_topic': ('/cloud_registered_body', 'cloud for wall_scan (sim: /livox/points)'),
-    'gait': ('hstep', 'walking gait: hstep (H-Step, high stepping) or rug (RUG general gear)'),
+    'gait': ('hstep', 'gait on uneven floor: hstep (RUG H-Step) or normal'),
     'scene_understanding': ('true', 'analyse stitched room and object looks with the VLM'),
     'scene_camera_topic': ('/camera/color/image_raw', 'RGB image topic for the VLM'),
     'report': ('true', 'task_reporter: turn room results and QR reads into the mission '
@@ -85,7 +85,7 @@ ARGS = {
                             'then takes that edge as a curtain even if it maps as a wall'),
     'plain': ('false', 'true: navigation only = scene_understanding, stairs, curtains and '
                        'terrain all off, whatever their own arguments say'),
-    'flat_gait': ('flat_slow', 'gait on plain floor: flat_slow, flat_medium, flat_fast or rug. '
+    'flat_gait': ('normal', 'gait on flat floor: normal (Move mode normal gait) or hstep. '
                                '`gait` is then the one for uneven terrain'),
     'gait_switch': ('true', 'false: `gait` for the whole run, no switching by floor'),
     'maze_rows': ('5', 'rows of the maze along the start heading; the end cell is the one '
@@ -103,6 +103,9 @@ ARGS = {
     'reanchor_min': ('0.15', 'm of pose error before the grid is re-anchored'),
     'maze_side': ('', 'maze on the right (R) or on the left (L) of the start cell; asked for '
                       'in the terminal when not given here'),
+    'heat_check': ('true', 'false: no heat / load check of this computer before the launch'),
+    'floor_check': ('false', 'true: a depth-camera look at the floor before walking into each new '
+                             'cell (it slows every stream from the robot for 1-3 s each time)'),
     'stand_height': ('0.30', 'base_link height used when the floor cannot be measured'),
 }
 
@@ -147,6 +150,34 @@ def ask_maze_side():
         print('Please type R or L.')
 
 
+def heat_gate():
+    """Before anything starts (user, 2026-11-26): is this computer cool and idle enough?
+    Hot (75 C or more), being throttled, or RViz / a simulator / a test run going = the
+    reasons are printed and the launch asks before it goes on (no terminal: it only
+    warns). Under load the processor hits 100 C within seconds and is throttled, Fast-LIO
+    falls behind and the odometry jumps. heat_check:=false skips it; not made for
+    explore:=false or --show-args."""
+    if any(a in ('-s', '--show-args', '--show-arguments', 'explore:=false', 'heat_check:=false')
+           for a in sys.argv):
+        return
+    try:
+        from maze_explore import heat
+        ok, lines = heat.check()
+    except Exception as e:                       # never let the check itself stop a run
+        print(f'heat check skipped: {e}')
+        return
+    print('this computer:')
+    print('\n'.join(lines))
+    if ok:
+        return
+    if not sys.stdin.isatty():
+        print('WARNING: starting anyway (no terminal to ask at). Expect a late sensor feed.')
+        return
+    answer = input('NO-GO for this computer. Start anyway? [y/N] ').strip().lower()
+    if not answer.startswith('y'):
+        raise RuntimeError('Not started: this computer is too hot or too busy. Nothing was started.')
+
+
 def generate_launch_description():
     # Every package this file starts must be known to this terminal BEFORE anything is
     # started. A launch that fails part-way (11:34 on 2026-11-24: task_reporter was built
@@ -162,6 +193,7 @@ def generate_launch_description():
                 'Run: source ~/challenge_ws/install/setup.bash (after colcon build '
                 '--symlink-install if it was never built), then launch again.') from None
     ARGS['maze_side'] = (ask_maze_side(), ARGS['maze_side'][1])
+    heat_gate()
     config = os.path.join(get_package_share_directory('maze_explore'), 'config')
     c = {k: LaunchConfiguration(k) for k in ARGS}
     env = {'OMP_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1'}
@@ -182,6 +214,11 @@ def generate_launch_description():
     return LaunchDescription(
         [DeclareLaunchArgument(k, default_value=v, description=d) for k, (v, d) in ARGS.items()] + [
             SetEnvironmentVariable('ROS_LOG_DIR', log_dir),
+            # this computer's temperature and throttling, one line every 2 s, into the run's
+            # log folder (heat.csv): after a fault it shows whether the computer was the cause
+            ExecuteProcess(cmd=['python3', '-m', 'maze_explore.heat', '--log',
+                                os.path.join(log_dir, 'heat.csv')],
+                           name='heat_log', output='log', condition=IfCondition(c['explore'])),
             RegisterEventHandler(OnShutdown(on_shutdown=[
                 OpaqueFunction(function=lambda context: name_node_logs(log_dir))])),
             Node(package='fast_lio', executable='fastlio_mapping', output='screen',
@@ -262,6 +299,7 @@ def generate_launch_description():
                  # turning) are set there, not by launch arguments
                  parameters=[os.path.join(config, 'speeds.yaml'),
                              {'drive': val('drive', bool), 'auto_start': val('auto_start', bool),
+                              'floor_check': val('floor_check', bool),
                               'flat_gait': c['flat_gait'], 'gait_switch': val('gait_switch', bool),
                               'maze_rows': val('maze_rows', int),
                               'maze_side': ParameterValue(c['maze_side'], value_type=str),

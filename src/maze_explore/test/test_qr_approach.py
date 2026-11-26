@@ -36,6 +36,8 @@ class Robot:
         self.turn_kp, self.pivot_kp, self.pivot_vx, self.pivot_vy = 1.5, 1.5, 0.12, 0.10
         self.ai_walking, self.block_memory, self.front_seen = False, 60.0, []
         self.pivot_offset, self.pivot_slack = 0.0, 0.03
+        self.terrain_w_max, self.rough_cells = 0.3, set()
+        self.turn_timeout = 6.0
         self.scene_results, self.qr_read_t, self.qr_t0 = {}, -1e9, 100.0
         self.step = ('stale',)
         self.events, self.cmd, self.backwards = [], (0.0, 0.0, 0.0), False

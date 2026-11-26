@@ -27,7 +27,7 @@ def push(sure, solid_at=None, leg=True):
                                  leg_watch=E.leg_watch, on_leg=E.on_leg,
                                  push_stalled=E.push_stalled))
     r = R()
-    r.side_speed, r.push_stop, r.push_sure, r.blind_until = 0.10, True, sure, 0.0
+    r.terrain_push_speed, r.push_stop, r.push_sure, r.blind_until = 0.10, True, sure, 0.0
     r.curtain_speed = 0.10
     r.push_stall, r.push_stall_time, r.push_stall_grace, r.push_stall_min = True, 1.5, 0.7, 0.03
     r.leg, r.leg_sub, r.leg_topic = deque(maxlen=200), None, '/leg_odom2'

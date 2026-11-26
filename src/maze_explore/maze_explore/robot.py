@@ -7,18 +7,32 @@ RUG = 0x21010401         # RUG gait, general gear
 AI_ON = 0x21010528       # enter AI state
 AI_GAIT = 0x2101052A     # AI basic gait
 AI_OFF = 0x2101052B      # leave AI state
-FLAT_SLOW = 0x21010300   # flat gait, slow (state 0: the gait the robot stands up in)
-FLAT_MEDIUM = 0x21010307 # flat gait, medium (state 4)
-FLAT_FAST = 0x21010303   # flat gait, fast (state 5)
 STAND_SIT = 0x21010202   # stand / sit TOGGLE: a standing robot lies down. Send it once
 
-GAITS = {'hstep': HSTEP, 'rug': RUG, 'flat_slow': FLAT_SLOW, 'flat_medium': FLAT_MEDIUM,
-         'flat_fast': FLAT_FAST}
+# The only two gaits (user, 2026-11-26):
+#   'hstep'  = RUG H-Step, for uneven floor
+#   'normal' = the normal gait of Move mode, for flat floor: 0x21010300 ("flat gait, slow",
+#              state 0, the gait the robot stands up in). NOT RUG general gear: that was the
+#              plain-floor gait for an hour that night by mistake.
+# The robot must never switch to grip (user). In the 09:06 run the controller showed grip
+# on the uneven blocks; the only gait command sent there was H-Step (0x21010407), so why
+# grip showed is not known. Nothing here can request the grip code, RUG general or the
+# other two flat speeds: they are not in GAITS, and FORBIDDEN is refused by the sender.
+NORMAL = 0x21010300
+GRIP = 0x21010402
+FORBIDDEN = (GRIP, 0x21010307, 0x21010303)      # grip; flat medium / fast (never run here)
+GAITS = {'hstep': HSTEP, 'normal': NORMAL}
+
+
+def gait(name):
+    """One of the two gait names: 'hstep' stays, everything else ('rug', 'flat_slow',
+    a typo) is 'normal'."""
+    return name if name in GAITS else 'normal'
 
 
 def start_sequence(gait):
     """Walking gait, then navigation mode."""
-    return [MOVE, GAITS[gait], AUTO]
+    return [MOVE, GAITS.get(gait, NORMAL), AUTO]
 
 
 def ai_enter_sequence():
@@ -27,4 +41,4 @@ def ai_enter_sequence():
 
 
 def ai_leave_sequence(gait):
-    return [AI_OFF, MANUAL, MOVE, GAITS[gait], AUTO]
+    return [AI_OFF, MANUAL, MOVE, GAITS.get(gait, NORMAL), AUTO]

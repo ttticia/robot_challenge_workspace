@@ -179,6 +179,6 @@ terminal shows `Camera on for an explorer look` and `Camera off`.
   squares of its interior stand 0.06 m or more above the floor (below object height;
   `terrain_min`, `terrain_squares`). The robot enters it **sideways**: at the centre of the cell
   before it turns on the spot until its body is square to the way in (the nearer quarter turn),
-  then steps sideways to the next centre at 0.10 m/s (`side_speed`), with its length centred in
+  then steps sideways to the next centre at `terrain_push_speed` (`config/speeds.yaml`), with its length centred in
   the opening (`side_offset`). The obstacle stop then looks to the side it steps towards.
   It publishes `terrain: sideways into cell ...` on `/explore/event`. No special gait.

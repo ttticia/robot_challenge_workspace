@@ -254,7 +254,7 @@ def test_slam_gets_no_scans_while_odometry_is_not_to_be_trusted():
 def test_grid_corrections_use_the_walls_near_the_robot():
     src = __import__('inspect').getsource(E.align_grid)
     assert 'radius = 4.0 if wide else self.grid_fit_radius' in src
-    assert "p('grid_fit_radius', 2.0)" in __import__('inspect').getsource(E.__init__)
+    assert "p('grid_fit_radius', 4.0)" in __import__('inspect').getsource(E.__init__)   # 2 m was refused too often
 
 
 def test_a_look_is_made_from_10_cm_before_the_rooms_edge():
@@ -271,3 +271,149 @@ def test_a_look_is_made_from_10_cm_before_the_rooms_edge():
     assert r.run(30.0)
     assert r.pose[0] + r.fp_front == pytest.approx(0.51 - 0.10, abs=0.04)     # nose 0.10 m before the edge
     assert not r.backwards
+
+
+def test_turns_are_slower_in_an_uneven_cell():
+    def rate(uneven):
+        r = Robot()
+        if uneven:
+            r.rough_cells = {(0, 0)}
+        r.queue.append(('turn', math.pi / 2, 2.0))
+        top = 0.0
+        for _ in range(40):
+            r.run(0.1)
+            top = max(top, abs(r.cmd[2]))
+        return top
+    assert rate(False) == pytest.approx(0.5) and rate(True) == pytest.approx(0.3)
+
+
+def drifted(off):
+    """Walls of a 3 x 3 block of cells, mapped `off` m along x from where the grid has them."""
+    xs, ys = [], []
+    for k in range(4):                                   # lines at -0.51, 0.51, 1.53, 2.55
+        line = np.arange(-0.51, 2.551, 0.05)
+        xs += list(np.full(len(line), -0.51 + 1.02 * k) + off); ys += list(line - 1.02)
+        xs += list(line + off); ys += list(np.full(len(line), -0.51 + 1.02 * k) - 1.02)
+    logs = []
+    me = NS(occ=NS(occupied_points=lambda: (np.array(xs), np.array(ys))), aligned=True,
+            grid=Grid(0.0, 0.0, 0.0, 1.02), pose=(1.02, 0.0, 0.0), reanchor_fit=0,
+            grid_fit_radius=4.0, arrive_fit_deg=8.0, arrive_fit_m=0.20, start_pose=None,
+            left_start=True, start=(0, 0), start_u_max=0.12, logs=logs, event=logs.append)
+    me.anchor_start = lambda g: g
+    me.get_logger = lambda: NS(info=lambda text, **k: logs.append(text),
+                               warn=lambda text, **k: logs.append(text))
+    return me
+
+
+def test_realign_on_arrival_brings_back_a_grid_the_small_correction_gives_up_on():
+    me = drifted(0.15)
+    E.align_grid(me)                                      # before a planning step: 0.08 m at most
+    assert me.grid.x0 == 0.0 and any('not corrected' in l for l in me.logs)
+    E.align_grid(me, arrived=True)                        # on arrival: up to 0.20 m
+    assert me.grid.x0 == pytest.approx(0.15, abs=0.03)
+    assert any('realigned on arrival' in l for l in me.logs)
+    far = drifted(0.35)                                   # beyond 0.20 m: not guessed
+    E.align_grid(far, arrived=True)
+    assert far.grid.x0 == 0.0
+
+
+def test_the_realign_waits_for_a_still_pose():
+    src = __import__('inspect').getsource(E.do_resolve)
+    assert 'self.align_grid(arrived=True)' in src and 'if not still and self.elapsed() < 4.0' in src
+
+
+def test_a_turn_that_goes_nowhere_is_given_up_in_about_ten_seconds():
+    class Stuck(Robot):                         # the robot does not respond at all
+        def send(self, vx=0.0, vy=0.0, wz=0.0):
+            self.cmd = (0.0, 0.0, 0.0)
+    def gave_up_after(turn, uneven=False):
+        r = Stuck()
+        if uneven:
+            r.rough_cells = {(0, 0)}
+        r.queue.append(('turn', turn, 2.0))
+        assert r.run(60.0)
+        return r.t - 100.0
+    assert 8.0 < gave_up_after(math.pi / 2) < 11.5          # 6 + 1.5 * (pi / 2) / 0.5 = 10.7 s
+    assert gave_up_after(math.radians(45)) < 9.0
+    assert 20.0 < gave_up_after(math.radians(179), uneven=True) < 23.0     # slower turn: longer limit
+
+
+def test_a_lost_pose_is_not_called_no_exit():
+    import inspect
+    src = inspect.getsource(E.plan)
+    lost = src.index('if off > self.lost_dist:')
+    assert lost < src.index("self.event(f'no exit found") and "'STOPPED'" in src[lost:lost + 900]
+    assert 'STAND_SIT' not in src[lost:src.index('# Everything reachable is explored and no exit is known')]
+    assert "p('lost_dist', 0.75)" in inspect.getsource(E.__init__)
+
+
+def test_the_walk_up_to_a_room_is_made_from_uneven_cells_too():
+    import inspect
+    assert 'self.look_gap_uneven or not (uneven and self.terrain_on)' in inspect.getsource(E.plan)
+    assert "p('look_gap_uneven', True)" in inspect.getsource(E.__init__)
+
+
+def through(edges, visited, kinds, rough=False):
+    """edges: {(cell, side): 'wall' | 'open' | 'unknown'} for the cells not visited yet."""
+    said = []
+    me = NS(visited=set(visited), closed=set(), kinds=kinds, rough_cells=set(), skip_through=True,
+            is_rough=lambda c, d: rough, event=said.append)
+    sense = NS(edge=lambda cell, e: (edges.get((cell, e), 'wall'), False))
+    return E.through_cells(me, sense), said
+
+
+def test_a_path_cell_that_only_leads_to_explored_cells_is_not_entered():
+    # (1, 1) is open from (1, 0); its other ways out go to (0, 1) and (2, 1), both visited
+    kinds = {((1, 0), 1): 'free'}
+    edges = {((1, 1), 0): 'open', ((1, 1), 2): 'open', ((1, 1), 1): 'wall'}
+    skip, said = through(edges, {(1, 0), (0, 1), (2, 1)}, kinds)
+    assert skip == {(1, 1)} and 'not entered' in said[0]
+    skip, _ = through(edges, {(1, 0), (0, 1)}, kinds)               # (2, 1) not visited yet
+    assert skip == set()
+    unseen = dict(edges)
+    unseen[((1, 1), 1)] = 'unknown'
+    skip, _ = through(unseen, {(1, 0), (0, 1), (2, 1)}, kinds)
+    assert skip == set()                                             # one side not seen: go and see
+    skip, _ = through(edges, {(1, 0), (0, 1), (2, 1)}, kinds, rough=True)
+    assert skip == set()                                             # uneven cells are crossed for points
+    skip, _ = through({}, {(1, 0)}, kinds)                           # walled all round: a room, not this rule
+    assert skip == set()
+
+
+def test_the_planner_does_not_send_the_robot_into_such_a_cell():
+    from maze_explore.plan import next_job
+    a, b = (1, 0), (1, 1)
+    kinds = {(a, 1): 'free', (a, 0): 'wall', (a, 2): 'wall', (a, 3): 'wall'}
+    args = dict(closed=set(), links={}, cur=a, facing=0, looked=set(), greeted=set(), exit_cell=None)
+    assert next_job(kinds, {a}, **args)['job'] == 'visit'
+    assert next_job(kinds, {a} | {b}, **args)['job'] != 'visit'      # what plan() passes when b is skipped
+
+
+def test_a_skipped_path_cell_is_entered_when_nothing_else_is_left():
+    import inspect
+    from maze_explore.plan import next_job
+    src = inspect.getsource(E.plan)
+    assert "if through and j['job'] not in ('visit', 'look'):" in src and 'entered after all' in src
+    a, b, other = (1, 0), (1, 1), (2, 0)
+    args = dict(closed=set(), links={}, cur=a, facing=0, looked=set(), greeted=set(), exit_cell=None)
+    # something else is still unexplored: (2, 0) ahead. The skipped cell (1, 1) is left alone.
+    kinds = {(a, 1): 'free', (a, 0): 'free', (a, 2): 'wall', (a, 3): 'wall'}
+    j = next_job(kinds, {a, b}, **args)
+    assert j['job'] == 'visit' and (j['cell'], j['d']) == (a, 0)
+    # nothing else left: with the skip the planner has no visit; without it, it enters (1, 1)
+    kinds = {(a, 1): 'free', (a, 0): 'wall', (a, 2): 'wall', (a, 3): 'wall'}
+    assert next_job(kinds, {a, b}, **args)['job'] not in ('visit', 'look')
+    j = next_job(kinds, {a}, **args)
+    assert j['job'] == 'visit' and (j['cell'], j['d']) == (a, 1)
+
+
+def test_a_junction_cell_is_skipped_the_same_way():
+    # user, 2026-11-26 night: the rule holds for junction cells too. (1, 1) opens on all
+    # four sides; entered from (1, 0), its other three ways go to cells already visited.
+    kinds = {((1, 0), 1): 'free'}
+    edges = {((1, 1), 0): 'open', ((1, 1), 1): 'open', ((1, 1), 2): 'open'}
+    been = {(1, 0), (2, 1), (1, 2), (0, 1)}
+    skip, said = through(edges, been, kinds)
+    assert skip == {(1, 1)} and len(said) == 1
+    skip, _ = through(edges, been - {(1, 2)}, kinds)          # one of its ways is new: enter it
+    assert skip == set()

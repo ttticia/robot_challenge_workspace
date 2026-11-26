@@ -77,3 +77,22 @@ def test_jumps_in_the_grace_window_or_on_the_stairs_do_not_count():
     r.ai_walking = True
     feed(r, [(0.0, 0.0)] + [(0.4 * i, 0.0) for i in range(1, 12)])
     assert r.faults == []
+
+
+def test_on_uneven_floor_more_jumping_is_allowed():
+    # user, 2026-11-26. 08:37 run: 0.35 m then 0.76 m in the uneven cell (1, -1), FAULT at 1.68 m
+    def run(uneven):
+        r = robot()
+        r.odom_terrain, r.on_uneven = 2.0, (lambda: uneven)
+        feed(r, [(0.0, 0.0), (0.0, 0.0), (0.25, 0.0)])                 # a 0.25 m slip
+        slips = len(r.warned)
+        feed(r, [(0.25, 0.0)] * 40 + [(0.60, 0.0), (1.36, 0.0), (1.93, 0.0)])   # 0.35, 0.76, 0.57 m
+        return slips, r.faults
+    slips, faults = run(False)
+    assert slips == 1 and faults                         # plain floor: a jump, then a FAULT (1.68 m)
+    slips, faults = run(True)
+    assert slips == 0 and faults == []                   # uneven floor: not counted, and no FAULT
+    r = robot()
+    r.odom_terrain, r.on_uneven = 2.0, (lambda: True)
+    feed(r, [(0.0, 0.0), (0.0, 0.0), (2.5, 0.0)])
+    assert r.faults                                      # one jump over 2 m is a FAULT anywhere

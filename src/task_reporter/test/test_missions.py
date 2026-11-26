@@ -25,7 +25,7 @@ def test_survivor_with_qr_is_m03_and_its_text_is_m04_unchanged():
     r = by_task(m.reports(now=1.0))
     assert (r['M03']['task_type'], r['M03']['scene_type'], r['M03']['pos']) == \
         ('survivor', 'kitchen', [2.04, 3.06])
-    assert r['M04']['message'] == 'Please help me. ' and r['M04']['pos'] == [2.04, 3.06]
+    assert r['M04']['message'] == 'Please help me. ' and r['M04']['pos'] is None   # server: QR has no pos
     assert r['M04']['task_type'] == 'qr' and 'M05' not in r
 
 
@@ -64,15 +64,17 @@ def test_qr_read_outside_a_room_still_reports_m04():
     m.qr('Please help me.', None)
     r = by_task(m.reports())
     assert set(r) == {'M04'} and r['M04']['scene_type'] == 'kitchen'
-    assert r['M04']['pos'] == [0.0, 0.0]               # every report carries a position
+    assert r['M04']['pos'] is None                     # the QR report has pos null
 
 
-def test_qr_position_falls_back_to_where_the_robot_stood_then_takes_the_room():
+def test_the_qr_report_never_carries_a_position():
+    # 08:01 run, 2026-11-26: HTTP 422 "QR requires nonempty message, null pos, empty label,
+    # and empty/permitted scene_type" for an M04 report with a position
     m = Missions('g')
     m.qr('Please help me.', None, near=(2, 1))
-    assert by_task(m.reports())['M04']['pos'] == [2.04, 1.02]
+    assert by_task(m.reports())['M04']['pos'] is None
     m.qr('Please help me.', (2, 2))
-    assert by_task(m.reports())['M04']['pos'] == [2.04, 2.04]
+    assert 'M04' not in by_task(m.reports())           # nothing changes when its room becomes known
 
 
 def test_every_report_has_the_seven_keys_and_a_position():
@@ -85,7 +87,10 @@ def test_every_report_has_the_seven_keys_and_a_position():
     for p in r.values():
         assert list(p) == ['group_id', 'task_id', 'task_type', 'scene_type', 'label', 'pos',
                            'message']
-        assert len(p['pos']) == 2 and all(isinstance(v, float) for v in p['pos'])
+        if p['task_id'] == 'M04':
+            assert p['pos'] is None
+        else:
+            assert len(p['pos']) == 2 and all(isinstance(v, float) for v in p['pos'])
 
 
 def test_check_accepts_the_booklet_example_and_refuses_bad_reports():
@@ -95,9 +100,9 @@ def test_check_accepts_the_booklet_example_and_refuses_bad_reports():
     for change in ({'pos': None}, {'scene_type': 'junction'}, {'label': 'radioactive'},
                    {'task_type': 'hazard'}, {'group_id': 'group04'}, {'message': 'x'}):
         assert not check(dict(good, **change))[0], change
-    qr = dict(good, task_id='M04', task_type='qr', label='', message='Please help me.')
+    qr = dict(good, task_id='M04', task_type='qr', label='', message='Please help me.', pos=None)
     assert check(qr)[0]
-    assert not check(dict(qr, pos=None))[0]            # the QR report carries a position too
+    assert not check(dict(qr, pos=[1.02, 2.04]))[0]    # the server rejects a QR report with a position
     assert not check(dict(qr, message=''))[0]
 
 
@@ -154,7 +159,7 @@ def test_positions_are_the_looked_at_cell_in_whole_cells_of_1_02():
     m.scene(looked, 'clinic', humans=True, now=0.0)
     m.qr('Please help me.', looked, near=(2, -1))
     got = {r['task_id']: r['pos'] for r in m.reports(now=1.0)}
-    assert got['M03'] == [2.04, -2.04] and got['M04'] == [2.04, -2.04]
+    assert got['M03'] == [2.04, -2.04] and got['M04'] is None
     for i in range(-6, 7):                           # every cell: an exact multiple, 2 decimals
         assert m.pos((i, -i)) == [float(f'{i * 1.02:.2f}'), float(f'{-i * 1.02:.2f}')]
 

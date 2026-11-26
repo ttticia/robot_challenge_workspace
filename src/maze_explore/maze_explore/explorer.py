@@ -62,8 +62,13 @@ class Explorer(Node):
         # that is not uneven either -> flat_gait; into an uneven cell -> gait. Standing in an
         # uneven cell nothing is switched. gait_switch false = `gait` for the whole run.
         # The flat gaits have never been run on this robot (robot_info.md 6.3).
-        self.flat_gait = p('flat_gait', 'flat_slow').value   # flat_slow | flat_medium | flat_fast | rug
+        # Two gaits only (user, 2026-11-26): 'hstep' (RUG H-Step) on uneven floor and
+        # 'normal' (the normal gait of Move mode, 0x21010300; not RUG general) on flat
+        # floor. The robot must never switch to grip (robot.py).
+        self.flat_gait = robot.gait(p('flat_gait', 'normal').value)
+        self.gait = robot.gait(self.gait)
         self.gait_switch = p('gait_switch', True).value
+        self.gait_settle = p('gait_settle', 1.0).value     # s standing after a gait change
         self.cur_gait = self.flat_gait if self.gait_switch else self.gait
         self.rough_cells = set()      # cells entered as uneven terrain
         # The last cell (user, 2026-11-26): the maze is maze_rows rows deep along the start
@@ -74,9 +79,14 @@ class Explorer(Node):
         # end_turn AWAY from maze_side (user, 2026-11-26, later the same day) and lies down.
         self.maze_rows = p('maze_rows', 5).value
         self.end_gap = p('end_gap', 0.10).value            # m, nose to the open edge
-        self.end_turn = math.radians(p('end_turn', 15.0).value)
+        self.end_turn = math.radians(p('end_turn', 0.0).value)    # deg away from maze_side; 0 = parallel
+        self.end_side_gap = p('end_side_gap', 0.20).value  # m, flank to the wall away from the maze
+        self.end_lie_down = p('end_lie_down', False).value # lie down at the end stop (it stays standing)
         self.lie_down = p('lie_down', True).value
         self.lying = False            # lying down in a pause (no exit found)
+        self.lost_dist = p('lost_dist', 0.75).value   # m from the nearest known cell centre = lost
+        self.skip_through = p('skip_through', True).value   # see through_cells()
+        self.through_said = set()
         # The way into the end cell can read wrong (user, 2026-11-26): beyond it is open
         # floor with little for the lidar to hit, so the opening may stay 'unknown', or
         # something may read as tall in there. Row maze_rows + 1 holds nothing but the end
@@ -144,7 +154,10 @@ class Explorer(Node):
         self.look_depth = p('look_depth', True).value    # depth stair check before a look (no terrain verdict)
         # Uneven terrain is entered SIDEWAYS (user, 2026-11-24): turn on the spot at the cell
         # centre until the body is square to the way in, then step sideways into the cell.
-        self.side_speed = p('side_speed', 0.10).value      # m/s sideways into uneven terrain
+        self.terrain_sideways = p('terrain_sideways', False).value   # true: sideways, as until 2026-11-26
+        self.terrain_push = p('terrain_push', True).value            # no obstacle stop onto uneven floor
+        self.terrain_push_time = p('terrain_push_time', 10.0).value  # s without progress before giving up
+        self.terrain_push_speed = p('terrain_push_speed', 0.13).value   # m/s of that push (speeds.yaml)
         self.side_offset = p('side_offset', 0.075).value   # m the base_link line is moved
         #    towards the nose, so the body (0.27 m ahead, 0.42 m behind) is centred in the way in
         self.terrain_min = p('terrain_min', 0.06).value    # m above the floor = uneven
@@ -155,6 +168,12 @@ class Explorer(Node):
         # depth-camera check runs before walking in, and reads the floor there too (user,
         # 2026-11-25). The camera's verdict, when it has one, beats the lidar's.
         self.terrain_depth = p('terrain_depth', True).value
+        # No depth look at the floor before each new cell any more (user, 2026-11-26): each one
+        # opened raw depth for 1-3 s, which slows every stream from the robot, and the feed
+        # was already late. Uneven floor is then told by the lidar alone (Sense.rough), which
+        # sees little of the next cell's floor from the cell before. The floor is still
+        # read when a stair check runs anyway. floor_check:=true brings the looks back.
+        self.floor_check = p('floor_check', False).value
         self.terrain_seen_min = p('terrain_seen_min', 25).value   # 40 until 2026-11-26 (user:
         #    fewer depth checks; the lidar's reading from further back is taken on less)
         self.rough_checked = {}       # (cell, d) -> True | False | None (camera saw too little)
@@ -169,7 +188,7 @@ class Explorer(Node):
         # at that angle (so it goes in almost sideways, the camera sweeping that wall from
         # close up), then steps back out. A code read at any moment ends the move.
         self.qr_approach = p('qr_approach', False).value
-        self.qr_wait = p('qr_wait', 8.0).value             # s for the VLM answer after the views
+        self.qr_wait = p('qr_wait', 4.0).value             # s for the VLM answer after the views (8 until 2026-11-26)
         self.qr_angle = math.radians(p('qr_angle', 75.0).value)
         self.qr_speed = p('qr_speed', 0.08).value          # m/s while stepping in and out
         self.qr_hold = p('qr_hold', 1.5).value             # s standing at the far end
@@ -186,7 +205,10 @@ class Explorer(Node):
         self.empty_squares = p('empty_squares', 4).value   # 5 cm squares seen tall = not empty
         # user, 2026-11-26: a room the lidar already shows to be empty when the robot plans
         # (it sees all round) gets no look at all: no turns, no views, no QR scan.
-        self.empty_early = p('empty_early', True).value
+        # Off by default since the evening of 2026-11-26 (user): a room is no longer skipped
+        # without any look. With the grid a few cm off, a board on a wall can fall outside
+        # the cell, the room reads empty, and a mission in it would never be seen.
+        self.empty_early = p('empty_early', False).value
         # user, 2026-11-26: once all five missions have a report the scoring SERVER marked
         # as successful (task_reporter passes its answer on, missions_topic), rooms and
         # props are no longer looked at; what is left is paths, stairs, curtains and the
@@ -200,8 +222,10 @@ class Explorer(Node):
         self.scene_results = {}       # looked-at cell -> the /scene/result for it
         self.qr_read_t = -1e9         # time of the last /qr/read
         self.qr_t0 = 0.0              # start of the look under way
-        self.look_hold = p('look_hold', 1.5).value
+        self.look_hold = p('look_hold', 1.0).value        # s per view (1.5 until 2026-11-26)
+        self.look_quick = p('look_quick', True).value     # pre-look checks only where they can matter
         self.look_gap = p('look_gap', 0.10).value     # m, nose to the room's edge for a look
+        self.look_gap_uneven = p('look_gap_uneven', True).value   # walk up from uneven cells too
         #                                               (negative = look from the cell centre)
         self.greet_hold = p('greet_hold', 2.0).value
         self.cmd_gap = p('cmd_gap', 1.5).value         # s between mode requests
@@ -266,9 +290,11 @@ class Explorer(Node):
         #    11-26, commanded motion taken out): 1 cm AHEAD of base_link, quartiles 3.5 cm
         #    ahead to 1 cm behind. So it is base_link itself.
         self.pivot_slack = p('pivot_slack', 0.03).value     # m the pivot may drift uncorrected
+        self.turn_timeout = p('turn_timeout', 6.0).value    # s added to the time a turn should take
+        self.terrain_w_max = p('terrain_w_max', 0.3).value  # rad/s, top turn rate on uneven floor
         self.turn_ff = p('turn_forward', 0.02).value     # m/s forward at full turn rate: the
         #                                                  Lite3 drifts ~9 cm back per 90 deg
-        self.recentre = p('recentre', 0.20).value         # m off the cell centre from which the
+        self.recentre = p('recentre', 0.28).value         # m off the cell centre from which the
         #                    robot walks back onto it before the next job (10:03 run, 11-24: a
         #                    look was made 0.5 m ahead of the centre, between two cells)
         self.recentre_tries = 0
@@ -326,6 +352,11 @@ class Explorer(Node):
         self.depth_info_topic = p('depth_info_topic', '/camera/depth/camera_info').value
         self.stairs_checked = {}      # (cell, d) -> True (stairs) | False (not) | 'lidar' (no depth)
         self.stair_agree = p('stair_agree', True).value          # lidar must agree with the camera
+        # Depth against lidar (see kind()): a cell the depth camera has seen clear
+        # (depth_clear_min of its 121 squares read, nothing stair_gate_min high) is free.
+        self.depth_clear_on = p('depth_clear', True).value
+        self.depth_clear_min = p('depth_clear_min', 60).value
+        self.depth_clear = set()      # (cell, d) the camera has seen clear
         self.stair_lidar_top = p('stair_lidar_top', 0.38).value  # m it must show in the cell
         self.stair_lidar_clouds = p('stair_lidar_clouds', 10).value
         self.heights_n = 0            # clouds put into the height map since it was (re)started
@@ -344,8 +375,10 @@ class Explorer(Node):
         # of /odom counts as a jump from odom_jump_min (was 0.15 m) above what the robot can
         # walk; after one the robot stands odom_settle (was 3 s); jumps within
         # odom_burst_gap of each other still count as one burst for the FAULT rule.
-        self.odom_jump_min = p('odom_jump_min', 0.25).value
+        self.odom_jump_min = p('odom_jump_min', 0.15).value   # 0.25 for a few hours: a 0.18 m
+        #    slip during a sidestep onto a ramp cell then went unnoticed (08:01 run)
         self.odom_burst_gap = p('odom_burst_gap', 3.0).value
+        self.odom_terrain = p('odom_terrain', 2.0).value   # x the jump size and FAULT limits on uneven floor
         self.odom_settle = p('odom_settle', 1.5).value   # s of pause after one odometry jump
         self.odom_jumps = []                  # times of the jumps of the burst under way
         self.odom_burst_from = (0.0, 0.0)     # /odom position just before that burst
@@ -382,7 +415,14 @@ class Explorer(Node):
         self.map_blind = p('map_blind', True).value
         self.map_blind_after = p('map_blind_after', 1.0).value
         self.map_blind_until = 0.0
-        self.grid_fit_radius = p('grid_fit_radius', 2.0).value   # m, walls used for corrections
+        # Realign on arrival in every cell (user, 2026-11-26; see align_grid)
+        self.arrive_fit = p('arrive_fit', True).value
+        self.arrive_fit_deg = p('arrive_fit_deg', 8.0).value
+        self.arrive_fit_m = p('arrive_fit_m', 0.20).value
+        # Back to 4 m (2026-11-26): with 2 m the correction was refused 9 times out of 16
+        # in the 07:45 run (4 of 19 with 4 m in the 05:57 run), the grid drifted and
+        # cells' own walls read as objects inside them.
+        self.grid_fit_radius = p('grid_fit_radius', 4.0).value   # m, walls used for corrections
         # Re-anchor after a jump (user, 2026-11-26). The robot stands from the first jump
         # of a burst on, so where it believed itself just before is still where it is.
         # Once Fast-LIO has settled (no jump for odom_settle s, the pose still for 1 s,
@@ -660,7 +700,13 @@ class Explorer(Node):
             # the lidar stream Fast-LIO catches up in one step (run3, 2026-11-24: 0.48 m in
             # 0.40 s after a 1 s stall, pose fine afterwards), so one jump only pauses the
             # robot. A runaway keeps jumping or goes far: that latches.
-            big = getattr(self, 'odom_jump_min', 0.25) + 0.6 * dt
+            # More is allowed on uneven floor (user, 2026-11-26): there the odometry is known
+            # to slip, so a step counts as a jump only from odom_terrain times the usual
+            # size, and the FAULT limits (how long a burst may last, how far the pose may
+            # end from where it began) are wider by the same factor.
+            rough = getattr(self, 'odom_terrain', 1.0) \
+                if getattr(self, 'on_uneven', lambda: False)() else 1.0
+            big = getattr(self, 'odom_jump_min', 0.15) * rough + 0.6 * dt
             if jump > big and self.ai_walking:   # stairs copy: expected on the steps
                 self.odom_jumps = []
             elif jump > big:
@@ -674,8 +720,8 @@ class Explorer(Node):
                 # third. FAULT is for odometry that does not come back: a burst still
                 # going after odom_burst_max s of standing, a pose that ends up more than
                 # odom_net_max from where the burst began, or one jump over 2 m.
-                burst_max = getattr(self, 'odom_burst_max', 6.0)
-                net_max = getattr(self, 'odom_net_max', 1.5)
+                burst_max = getattr(self, 'odom_burst_max', 6.0) * rough
+                net_max = getattr(self, 'odom_net_max', 1.5) * rough
                 if not self.odom_jumps or now - self.odom_jumps[-1] > getattr(self, 'odom_burst_gap', 3.0):
                     self.odom_jumps, self.odom_burst_from = [], (x0, y0)
                 self.odom_jumps.append(now)
@@ -702,6 +748,19 @@ class Explorer(Node):
                 self.map_blind_until = max(getattr(self, 'map_blind_until', 0.0), now
                                            + self.odom_settle + getattr(self, 'map_blind_after', 1.0))
         self.last_odom = (t, p.x, p.y)
+
+    def on_uneven(self):
+        """The robot stands in an uneven cell, or is on a step into or out of one."""
+        try:
+            known = self.rough_cells | getattr(self, 'rough_known', set())
+            if not known or self.grid is None or self.pose is None:
+                return False
+            cells = {self.cur_cell()}
+            if self.step:
+                cells.update({self.step[0], self.step[2]})
+            return bool(cells & known)
+        except Exception:
+            return False
 
     def jump_report(self, jump, dt):
         """One log line per odometry jump with what could explain it (2026-11-26: two
@@ -782,6 +841,10 @@ class Explorer(Node):
         self.vel_pub.publish(m)
 
     def simple_cmd(self, code):
+        if code in robot.FORBIDDEN:           # grip, and the untested flat gaits: never
+            self.get_logger().error(f'/simple_cmd 0x{code:08X} is not allowed (grip, or a '
+                                    'gait that is not one of the two): NOT sent')
+            return
         self.get_logger().info(f'/simple_cmd 0x{code:08X}' + ('' if self.sending() else ' (not sent)'))
         if self.sending():
             self.cmd_pub.publish(MotionSimpleCMD(cmd_code=code, size=0, type=0))
@@ -840,7 +903,7 @@ class Explorer(Node):
         self.state, self.why = 'RUN', ''
         self.get_logger().info(f"exploring (maze_side: {self.maze_side or 'not given'})")
 
-    def align_grid(self):
+    def align_grid(self, arrived=False):
         """Line the grid up with the walls in the map. Returns True when this call was the
         first fit that worked.
 
@@ -863,6 +926,13 @@ class Explorer(Node):
         if anchoring:                        # stairs copy: just re-anchored after the stairs
             max_yaw, max_shift, radius = math.radians(10), 0.25, 1.6
             self.reanchor_fit -= 1
+        elif arrived and not wide:
+            # Realign on arrival (user, 2026-11-26): the robot has just stopped at a cell
+            # centre and stands still, the best moment to line the cells up with the
+            # walls again. Wider limits than the small correction before each planning
+            # step (3 deg / 0.08 m, which was refused once the grid had drifted further
+            # than that: 9 of 16 in the 07:45 run), still well under half a cell.
+            max_yaw, max_shift = math.radians(self.arrive_fit_deg), self.arrive_fit_m
         px, py = self.occ.occupied_points()
         near = np.hypot(px - self.pose[0], py - self.pose[1]) < radius
         g, q = fit_grid(self.grid, px[near], py[near], max_yaw, max_shift)
@@ -891,6 +961,7 @@ class Explorer(Node):
             self.cv_rejected.clear()
             self.cv_pending.clear()
             self.cv_seen.clear()
+            self.depth_clear.clear()
             if moved > 0.10:
                 self.no_recentre.clear()      # the cells have really moved: centres are new
             self.get_logger().info(f'grid lined up with the walls: turned {turned:+.1f} deg, '
@@ -900,6 +971,10 @@ class Explorer(Node):
             self.reanchor_fit = 0
             self.event(f'grid fitted after re-anchoring: {turned:+.1f} deg, {moved:.2f} m '
                        f'(quality {q:.2f})')
+        if arrived:
+            self.get_logger().info(f'grid realigned on arrival: {turned:+.1f} deg, {moved:.2f} m '
+                                   f'(quality {q:.2f})')
+            return False
         self.get_logger().info(f'grid corrected: {turned:+.1f} deg, {moved:.2f} m '
                                f'(quality {q:.2f})', throttle_duration_sec=10.0)
         return False
@@ -952,6 +1027,16 @@ class Explorer(Node):
         checked = self.stairs_checked.get((cell, d))
         if checked is True:
             return 'stairs'
+        clear = (cell, d) in getattr(self, 'depth_clear', ())
+        if clear and k in ('stairs', 'blocked', 'object'):
+            # The depth camera has read this cell's floor and found it flat with nothing
+            # stair_gate_min or higher in it, while the lidar says something stands
+            # there (user, 2026-11-26). The camera looked straight at it: the cell is
+            # walked into, with the obstacle stop on; stopped = the side becomes a wall.
+            # 07:45 run: three such 'object' cells boxed the robot in after six cells.
+            # Looked at FIRST, then walked into (user, 2026-11-26): a poster or sign on its
+            # walls must still be shown to scene understanding.
+            k = 'free' if (cell, d) in self.looked else 'object'
         if checked is False and k in ('stairs', 'blocked'):
             # Looked at and not stairs: then it is something standing in that cell, a prop.
             # It gets a look (scene understanding) like any object cell and is not entered.
@@ -967,7 +1052,8 @@ class Explorer(Node):
         # stairs copy: never walk normally into a stair-high cell. If the depth check did not
         # confirm stairs (or had no frames), a 'free' side that is stair-high counts as blocked
         # (terrain is 0.25 m at most, stair_raise_min is 0.28 m). 2026-11-25: climbed in H-Step.
-        if checked in (False, 'lidar') and k == 'free' and self.stairs_on and self.raised(cell, d):
+        if checked in (False, 'lidar') and k == 'free' and self.stairs_on and not clear \
+                and self.raised(cell, d):
             k = 'blocked'
         if k == 'room' and any((b, e) in self.cv_curtains or (b, e) in self.curtain_latched
                                for e in range(4)):
@@ -1050,6 +1136,7 @@ class Explorer(Node):
                            f'(sides {", ".join(map(str, ways))})')
         self.step = None
         self.shifted_in = None
+        self.no_recentre.discard(cell)        # a new stay in this cell
         self.queue.appendleft(('resolve', cell))
 
     # ---- planning -----------------------------------------------------------------------
@@ -1135,8 +1222,21 @@ class Explorer(Node):
             if k == 'free' and b not in self.visited:
                 beyond[(c, d)] = sum(sense.edge(b, e)[0] == 'wall' for e in range(4) if e != opp(d))
         self.skip_looks()
-        j = next_job(self.kinds, self.visited, self.closed, self.links, cur, facing,
-                     self.looked, self.greeted, self.exit_cell, self.enter_rooms, beyond)
+        through = self.through_cells(sense)
+        j = next_job(self.kinds, self.visited | through, self.closed, self.links,
+                     cur, facing, self.looked, self.greeted, self.exit_cell, self.enter_rooms, beyond)
+        if through and j['job'] not in ('visit', 'look'):
+            # Nothing else is left to explore: the rule gives way and the skipped path
+            # cells are entered after all (user, 2026-11-26 night), before any curtain,
+            # stairs or the exit.
+            k = next_job(self.kinds, self.visited, self.closed, self.links,
+                         cur, facing, self.looked, self.greeted, self.exit_cell, self.enter_rooms, beyond)
+            if k['job'] == 'visit':
+                target = nb(k['cell'], k['d'])
+                if target not in getattr(self, 'through_taken', set()):
+                    self.through_taken = getattr(self, 'through_taken', set()) | {target}
+                    self.event(f'cell {target} entered after all: nothing else is left unexplored')
+                j = k
         job = f"{j['job']} cell {j['cell']} side {j['d']} via {len(j['path'])} cells"
         if job != self.job:
             here = ' '.join(self.kinds.get((cur, k), '-') for k in range(4))
@@ -1169,10 +1269,13 @@ class Explorer(Node):
             # Up to the room first (user, 2026-11-26): forward until the nose is look_gap
             # (0.10 m) before the edge shared with the room, base_link 0.14 m ahead of the
             # cell centre, and the three views are made from there. The obstacle stop is
-            # on and nothing becomes a wall if it ends short. Not from an uneven cell:
-            # there turns are made at the centre only.
+            # on and nothing becomes a wall if it ends short. From an uneven cell too
+            # (user, 2026-11-26 night: in the 09:06 run two looks were made from the centre
+            # of a ramp cell, 0.51 m from the room instead of 0.10 m). The three views are
+            # then turned 0.14 m off that cell's centre: look_gap_uneven:=false = from the
+            # centre there, as before.
             uneven = c in self.rough_cells or c in getattr(self, 'rough_known', ())
-            if self.look_gap >= 0 and not (uneven and self.terrain_on):
+            if self.look_gap >= 0 and (self.look_gap_uneven or not (uneven and self.terrain_on)):
                 kx, ky = self.grid.centre(c)
                 reach = self.cell_size / 2 - self.look_gap - self.fp_front
                 q.extend([('turn', h, 3.0), ('call', lambda: setattr(self, 'step', None)),
@@ -1185,21 +1288,26 @@ class Explorer(Node):
         elif j['job'] in ('curtain', 'stairs'):
             self.go(c, d, j['job'])
         elif j['job'] == 'exit':
-            # The end stop (user, 2026-11-26). `c` has the way out on side exit_d. With
-            # the row rule c is the cell BEFORE the end cell: walk into the end cell first.
-            # Then on to where the nose (fp_front ahead of base_link) is end_gap short of
-            # the open far edge, still inside the cell; turn end_turn AWAY from maze_side
-            # (maze on the left = turn right; user, 2026-11-26: was towards it)
-            # (about the spot, not the cell centre); lie down. That ends the run.
+            # The end stop (user, 2026-11-26 night). `c` has the way out on side exit_d.
+            # With the row rule c is the cell BEFORE the end cell: walk into the end cell
+            # first. The robot ends STANDING (it used to lie down), parallel to the side
+            # walls (it used to turn 15 deg), with its nose (fp_front ahead of base_link)
+            # end_gap short of the open far edge, and its flank end_side_gap from the side
+            # wall on the side OPPOSITE to maze_side (maze on the left = by the right
+            # wall). That ends the run.
             d = self.exit_d
             h = self.grid.heading(d)
             end = c if self.maze_rows <= 0 or c[0] >= self.maze_rows else nb(c, d)
             ex, ey = self.grid.centre(end)
             reach = self.cell_size / 2 - self.end_gap - self.fp_front
-            tx, ty = ex + reach * math.cos(h), ey + reach * math.sin(h)
             side = {'L': -1.0, 'R': 1.0}.get(str(getattr(self, 'maze_side', '')).upper()[:1], 0.0)
             if not side:
-                self.get_logger().warn('maze_side not given (L / R): no turn at the end')
+                self.get_logger().warn('maze_side not given (L / R): ending on the centre line')
+            # sideways from the centre line, to the left (+): towards the wall away from the maze
+            lat = side * max(0.0, self.cell_size / 2 - self.end_side_gap - self.fp_half_width)
+            lx, ly = -lat * math.sin(h), lat * math.cos(h)
+            ex, ey = ex + lx, ey + ly                   # the line the robot walks in on
+            tx, ty = ex + reach * math.cos(h), ey + reach * math.sin(h)
             # A possible exit only: a step like any other, so that being stopped on the
             # way in makes this side a wall (stuck()) and the next candidate is tried. A
             # plain open way keeps the old rule: not reached = STOPPED, for a human.
@@ -1213,21 +1321,31 @@ class Explorer(Node):
                           ('call', lambda: (setattr(self, 'step', None), self.visited.add(end)))])
             def reached():
                 off = math.hypot(tx - self.pose[0], ty - self.pose[1])
-                if off > 0.20:        # something was in the way: do not lie down out here
+                if off > 0.20:        # something was in the way: this is not the end stop
                     self.halt('STOPPED', f'end stop not reached ({off:.2f} m short): finish by '
                                          'hand, or clear the way and send /nav/start')
             q.extend([('drive', tx, ty, h, 'creep'), ('drive', tx, ty, h, 'square'),
-                      ('call', reached)])
-            if side:
+                      ('call', reached), ('turn', h, 2.0, 'here')])       # parallel to the side walls
+            if side and self.end_turn > 0:              # off by default (end_turn 0)
                 q.append(('turn', wrap(h + side * self.end_turn), 2.0, 'here'))
             q.extend([('hold', 1.0),
-                      ('event', f'exit: stopped in the end cell {end}, nose {self.end_gap:.2f} m '
-                                f'before its open edge' + (f', turned {math.degrees(self.end_turn):.0f} '
-                                f'deg {"left" if side > 0 else "right"}' if side else ''))])
-            if self.lie_down:
+                      ('event', f'exit: stopped in the end cell {end}, standing, nose {self.end_gap:.2f} m '
+                                f'before its open edge'
+                                + (f', {self.end_side_gap:.2f} m from the {"left" if side > 0 else "right"} '
+                                   f'wall' if side else ', on the centre line'))])
+            if self.end_lie_down:                       # off by default: the robot stays standing
                 q.extend([('cmd', robot.STAND_SIT), ('event', 'exit: lying down'), ('hold', 2.0)])
             q.append(('call', lambda: self.halt('DONE', 'in the end cell')))
         else:
+            if off > self.lost_dist:
+                # Not with a pose like this (user, 2026-11-26 night; 09:06 run: 2.37 m
+                # from every known cell, it still said 'no exit found' and lay down).
+                # The robot is lost, not finished: pause standing and say so.
+                self.event(f'lost: the pose is {off:.2f} m from the nearest known cell centre '
+                           f'({cur}); not concluding that there is no exit')
+                self.halt('STOPPED', f'pose {off:.2f} m from every known cell: the robot is lost '
+                                     '(map or odometry). Put it right or relaunch; /nav/start goes on')
+                return
             # Everything reachable is explored and no exit is known (user, 2026-11-26):
             # the navigation pauses and the robot lies down where it stands. STOPPED, not
             # DONE: /nav/start stands it up again and it plans afresh.
@@ -1242,6 +1360,47 @@ class Explorer(Node):
                            + (', lying down' if self.lie_down else '')
                            + '. /nav/start to stand up and go on')))
 
+    def through_cells(self, sense):
+        """Path cells that need not be entered (user, 2026-11-26 night): not visited yet, open
+        from a visited cell, and CONFIRMED to lead only to explored cells: EVERY other side
+        of the cell is a mapped wall or an open way into a cell the robot has been in.
+        Walking in would show nothing new. One side that is unknown, or open into a cell
+        not visited yet, is enough to keep the cell on the list of things to visit. And
+        the rule gives way when nothing else is left to explore (plan()): then these
+        cells are entered after all. Never an uneven cell
+        (crossing it scores) and never a cell with all three other sides walled (that is
+        a room, which gets a look). skip_through:=false = every open cell is entered."""
+        if not getattr(self, 'skip_through', True):
+            return set()
+        been = self.visited | self.closed
+        out = set()
+        for (c, d), k in self.kinds.items():
+            b = nb(c, d)
+            if k != 'free' or b in been or b in out:
+                continue
+            if b in self.rough_cells or b in getattr(self, 'rough_known', ()) or self.is_rough(c, d):
+                continue
+            ways = 0
+            for e in range(4):
+                if e == opp(d):
+                    continue
+                state = sense.edge(b, e)[0]
+                if state == 'wall':
+                    continue
+                if state == 'open' and nb(b, e) in been:
+                    ways += 1
+                    continue
+                ways = -1                     # unknown, or open into somewhere new
+                break
+            if ways > 0:
+                out.add(b)
+        new = out - getattr(self, 'through_said', set())
+        if new:
+            self.through_said = getattr(self, 'through_said', set()) | new
+            for b in sorted(new):
+                self.event(f'cell {b} not entered: every way out of it leads to a cell already explored')
+        return out
+
     def look_check(self, c, d, h):
         """Queue the stairs and curtain checks that come before a room / object look.
         Returns False when there is nothing (left) to check."""
@@ -1251,6 +1410,12 @@ class Explorer(Node):
         # the terrain check: the cell is only looked into, never walked into. For a few
         # hours that day there was no depth check here at all. look_depth:=false = none.
         stairs = self.look_depth and self.stair_check_on and (c, d) not in self.stairs_checked
+        # Shorter looks (user, 2026-11-26; a look took about 22 s in the 07:45 run, the
+        # three views only 10 of them). The stair check is made only when the lidar shows
+        # something stair-high in that cell, and the curtain check only for an edge the
+        # curtain camera has pointed at. look_quick:=false = both before every look.
+        if stairs and self.look_quick and not self.raised(c, d):
+            stairs = False
         edge = None
         if self.cv_on:                        # the first closed edge straight ahead
             cx, cy = self.grid.centre(c)
@@ -1260,6 +1425,8 @@ class Explorer(Node):
                 edge = None
             elif edge is not None and self.sense().low_wall(*edge):
                 edge = None               # an ordinary wall: nothing for the camera to check
+            elif edge is not None and self.look_quick and not self.camera_pointed(*edge):
+                edge = None               # the camera has never pointed there: no check
         self.look_checked.add((c, d))
         if not stairs and edge is None:
             return False
@@ -1322,7 +1489,7 @@ class Explorer(Node):
         stairs = self.stair_check_on and (a, d) not in self.stairs_checked and (
             how == 'stairs' or (how == 'walk' and b not in self.visited and self.raised(a, d)))
         # the lidar has hardly seen the floor in there: let the depth camera read it
-        terrain = (self.terrain_on and self.terrain_depth and how == 'walk'
+        terrain = (self.terrain_on and self.terrain_depth and self.floor_check and how == 'walk'
                    and b not in self.visited and (a, d) not in self.rough_checked
                    and b not in self.rough_known and b not in self.rough_cells
                    and self.sense().floor_seen(a, d) < self.terrain_seen_min
@@ -1338,7 +1505,8 @@ class Explorer(Node):
         if rough:
             self.rough_cells.add(b)   # now, not on arrival: a step that ends short of the
             #                           centre still counts as arrived (stuck()), on terrain
-        if how == 'walk' and self.terrain_on and rough:
+        if how == 'walk' and self.terrain_on and rough and self.terrain_sideways:
+            # (off by default since 2026-11-26, user: uneven cells are entered HEAD ON)
             # Uneven cell ahead: turn on the spot until the body is square to the way in
             # (whichever quarter turn is nearer), then step sideways to the next centre.
             body = min((wrap(h + math.pi / 2), wrap(h - math.pi / 2)),
@@ -1349,14 +1517,22 @@ class Explorer(Node):
                       ('call', lambda: setattr(self, 'step', (a, d, b))),
                       ('strafe', bx, by, h, body),
                       ('call', lambda: (self.walked.update({(a, d), (b, opp(d))}),
-                                        self.rough_cells.add(b), self.arrive(b)))])
+                                        self.rough_cells.add(b), self.arrive(b),
+                                        self.trust_step(b)))])
         elif how == 'walk':
+            # Head first. Into an uneven cell too (user, 2026-11-26: "do not enter uneven
+            # terrain sideways, enter head on"): at the uneven-terrain speed (terrain_push_speed),
+            # and on arrival the robot is taken as centred (trust_step: odometry slips on
+            # the ramps).
             bx, by = self.grid.centre(b)
+            if rough:
+                q.append(('event', f'terrain: head on into cell {b} from cell {a} side {d}'))
             q.extend([('turn', h, 4.0), ('call', lambda: setattr(self, 'step', (a, d, b))),
-                      ('drive', bx, by, h, 'normal'),
+                      ('drive', bx, by, h, 'rough' if rough else 'normal'),
                       ('call', lambda: (self.walked.update({(a, d), (b, opp(d))}),
                                         self.rough_cells.add(b) if rough else None,
-                                        self.arrive(b)))])
+                                        self.arrive(b),
+                                        self.trust_step(b) if rough else None))])
         elif how == 'curtain' and self.cv_on and (a, d) not in self.cv_curtains \
                 and (a, d) not in self.links:
             # A lidar candidate: the camera has the last word before any push. Confirmed ->
@@ -1499,6 +1675,9 @@ class Explorer(Node):
                                     f'({"uneven" if rough else "plain"} floor), was {self.cur_gait}'))
         for code in robot.start_sequence(want):
             self.queue.extend([('cmd', code), ('hold', self.cmd_gap)])
+        # stand gait_settle more after the last command before anything moves (user,
+        # 2026-11-26: the step used to begin while the gait was still changing)
+        self.queue.append(('hold', self.gait_settle))
         self.queue.append(('call', lambda: setattr(self, 'cur_gait', want)))
         self.cur_gait = want          # go() runs again before these are done: queue it once
 
@@ -1705,6 +1884,11 @@ class Explorer(Node):
             verdict = False
             text = (f'not stairs: floor read first, nothing {self.stair_gate_min:.2f} m or higher '
                     f'in the cell (at most {mem["gate_high"]} squares); stair detector not run')
+            seen = max((n for _, n in mem['rough']), default=0)
+            if getattr(self, 'depth_clear_on', False) and seen >= self.depth_clear_min:
+                self.depth_clear.add((cell, d))
+                text += (f'. The camera saw {seen} of 121 squares of that cell, all clear: '
+                         'it can be walked into, whatever the lidar shows in it')
         else:
             verdict = False
             text = f'not stairs ({mem["hits"]} of {mem.get("looked", 0)} frames; last: {mem["why"]})'
@@ -1964,11 +2148,25 @@ class Explorer(Node):
                     f'pivot moved {math.hypot(dx, dy) * 100:.0f} cm')
             return mem['ok'] >= 3
         mem['ok'] = 0
-        if self.elapsed() > 25.0:
-            self.get_logger().warn(f'turn timed out {math.degrees(err):.0f} deg short')
+        top = self.w_max
+        if self.grid is not None and self.terrain_w_max > 0:
+            here = self.cur_cell()
+            if here in self.rough_cells or here in getattr(self, 'rough_known', ()):
+                # slower on uneven floor (user, 2026-11-26; 07:42 run: the sensor feed
+                # went late and Fast-LIO diverged during a 0.5 rad/s turn on a tile)
+                top = min(top, max(self.terrain_w_max, self.min_spin))
+        # Given up after the time the turn should take at its top rate, half as much
+        # again, plus turn_timeout (6 s): about 10 s for a quarter turn, 20 s for a half
+        # turn on uneven floor. It was 25 s whatever the turn (09:06 run: six turns that
+        # went nowhere cost 2.5 minutes).
+        if 'limit' not in mem:
+            mem['limit'] = self.turn_timeout + 1.5 * abs(mem['turn']) / max(top, 0.1)
+        if self.elapsed() > mem['limit']:
+            self.get_logger().warn(f'turn timed out {math.degrees(err):.0f} deg short '
+                                   f'(after {mem["limit"]:.0f} s)')
             self.send()
             return True
-        wz = clamp(self.turn_kp * err, -self.w_max, self.w_max)
+        wz = clamp(self.turn_kp * err, -top, top)
         wz = math.copysign(max(abs(wz), self.min_spin), wz)
         vx = vy = 0.0
         if math.hypot(dx, dy) > self.pivot_slack:             # drifted: steer the pivot back
@@ -2032,14 +2230,23 @@ class Explorer(Node):
         mem.setdefault('best', along)
         if along < mem['best'] - 0.05:
             mem['best'], mem['t'] = along, self.now()
-        if self.now() - mem.setdefault('t', self.now()) > (12.0 if mode == 'ai' else 8.0):
+        # no progress: 8 s (12 s in AI mode; terrain_push_time when pushing onto uneven floor)
+        patience = 12.0 if mode == 'ai' else getattr(self, 'terrain_push_time', 10.0) \
+            if mode == 'rough' and getattr(self, 'terrain_push', True) else 8.0
+        if self.now() - mem.setdefault('t', self.now()) > patience:
             self.send()
             self.get_logger().warn(f'{mode} drive: no progress, {along:.2f} m short')
             return self.stuck(mode, along)
         if abs(herr) > math.radians(25):
             self.send(wz=math.copysign(max(self.min_spin, min(self.w_max, 1.5 * abs(herr))), herr))
             return False
-        checked = mode in ('normal', 'creep', 'recentre') or (mode == 'push' and self.push_stop
+        # Onto uneven floor the robot PUSHES (user, 2026-11-26 night): the blocks and ramps
+        # themselves rise into the obstacle stop's window and the feet take time to find
+        # their way up, so the stop is off for that step and it is given longer before
+        # 'no progress' (09:06 run: 'rough drive: no progress, 0.65 m short' after 8 s).
+        # terrain_push:=false = stop and 8 s as on plain floor.
+        pushing = mode == 'rough' and getattr(self, 'terrain_push', True)
+        checked = (mode in ('normal', 'rough', 'creep', 'recentre') and not pushing) or (mode == 'push' and self.push_stop
                                                   and not self.push_sure)
         if checked and along > 0.10 and self.front_blocked():
             self.send()
@@ -2049,7 +2256,8 @@ class Explorer(Node):
                 return self.stuck(mode, along)
             return False
         mem['blocked'] = 0
-        top = {'ai': self.ai_speed, 'push': self.curtain_speed, 'creep': 0.10, 'recentre': 0.10}.get(mode, self.v_max)
+        top = {'ai': self.ai_speed, 'push': self.curtain_speed, 'creep': 0.10, 'recentre': 0.10,
+               'rough': getattr(self, 'terrain_push_speed', 0.13)}.get(mode, self.v_max)
         self.send(vx=clamp(1.0 * along, 0.08, top), vy=clamp(0.8 * lat, -0.10, 0.10),
                   wz=clamp(1.5 * herr, -0.4, 0.4))
         return False
@@ -2101,6 +2309,15 @@ class Explorer(Node):
             herr = wrap(mem['yaw0'] - self.imu_yaw)
         self.send(vx=self.ai_speed, wz=clamp(0.8 * herr, -self.ai_wz, self.ai_wz))
         return False
+
+    def trust_step(self, cell):
+        """Just arrived in an uneven cell by a sideways step: take the robot as centred
+        there, whatever the pose says (user, 2026-11-26). Odometry is known to slip
+        during that step (08:01 run: 0.18 m off on arrival, then the shift onto the
+        'centre' shuffled for 8 s and ended 0.25 m off). So no shift and no walk back
+        onto the centre for this stay in the cell."""
+        self.shifted_in = cell
+        self.no_recentre.add(cell)
 
     def do_shift(self, tx, ty):
         """Step onto (tx, ty) WITHOUT turning: forward and sideways only, the heading the
@@ -2186,7 +2403,7 @@ class Explorer(Node):
             return False
         mem['blocked'] = 0
         # wanted velocity in the map frame, then into the body frame as it stands now
-        top = self.curtain_speed if mode == 'push' else self.side_speed
+        top = self.curtain_speed if mode == 'push' else self.terrain_push_speed   # sideways onto uneven floor
         v, w = clamp(1.0 * along, 0.06, top), clamp(0.8 * lat, -0.10, 0.10)
         wx, wy = v * c - w * s, v * s + w * c
         self.send(vx=wx * math.cos(yaw) + wy * math.sin(yaw),          # send() never lets
@@ -2414,6 +2631,21 @@ class Explorer(Node):
         self.send()
         if self.elapsed() < 1.2:               # one map update
             return False
+        mem = self.act_mem
+        if self.arrive_fit and not mem.get('fitted'):
+            # stand until the pose is still (0.7 s within 3 cm / 2 deg), 4 s at most, then
+            # line the grid up with the walls from here
+            now = self.now()
+            recent = [q for t_, q in getattr(self, 'poses', ()) if now - t_ <= 0.7]
+            still = len(recent) >= 4 and all(
+                math.hypot(q[0] - self.pose[0], q[1] - self.pose[1]) < 0.03
+                and abs(wrap(q[2] - self.pose[2])) < math.radians(2) for q in recent)
+            if not still and self.elapsed() < 4.0:
+                self.why = 'arrived: waiting for the pose to be still before realigning'
+                return False
+            mem['fitted'] = True
+            if self.aligned and now >= getattr(self, 'map_blind_until', 0.0):
+                self.align_grid(arrived=True)
         self.update_kinds()
         unknown = [d for d in range(4) if self.kinds.get((cell, d)) == 'unknown']
         if not unknown or cell in self.closed:
