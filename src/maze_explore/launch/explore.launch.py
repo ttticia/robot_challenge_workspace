@@ -90,6 +90,8 @@ ARGS = {
     'gait_switch': ('true', 'false: `gait` for the whole run, no switching by floor'),
     'maze_rows': ('5', 'rows of the maze along the start heading; the end cell is the one '
                        'cell of the row after. 0 = find the exit from the map alone'),
+    'start_stairs': ('false', 'true: one FULL stair check of the way out before leaving the '
+                              'start cell (the detector runs whatever the lidar shows)'),
     'stair_rails': ('false', 'handrails must also show in the lidar'),
     'stair_min_hits': ('5', 'stair check also passes with this many hits in the whole look'),
     'stair_check_time': ('4.5', 'seconds the stair check looks'),
@@ -304,6 +306,7 @@ def generate_launch_description():
                               'maze_rows': val('maze_rows', int),
                               'maze_side': ParameterValue(c['maze_side'], value_type=str),
                               'gait': c['gait'], 'enter_rooms': val('enter_rooms', bool),
+                              'start_stairs': val('start_stairs', bool),
                               'stair_check': val('stair_check', bool),
                               'stairs': feature('stairs'), 'curtains': feature('curtains'),
                               'terrain': feature('terrain'),

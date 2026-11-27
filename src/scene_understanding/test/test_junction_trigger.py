@@ -128,3 +128,47 @@ def test_explorer_stitches_only_matching_views(monkeypatch):
     assert len(frames) == 3
     node.image_callback(4)
     assert node.explore_work.empty()
+
+
+def test_other_explorer_events_do_not_drop_a_waiting_view(monkeypatch):
+    """22:34 run, 2026-11-26: 'missions: M04 marked successful' came 15 ms after
+    'room left', before the left frame, and the whole look was skipped as incomplete."""
+    from queue import Queue
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    import numpy as np
+    from scene_understanding import junction_trigger as module
+
+    class Probe(module.JunctionTrigger):
+        def __init__(self):
+            self.explore_pending = self.explore_key = self.latest_receive_time = None
+            self.explore_views = {}
+            self.explore_work = Queue()
+            self.trigger_count = 0
+
+        def get_logger(self):
+            return Mock()
+
+        def _robot_position(self):
+            return None, 'No TF'
+
+    def image_callback(node, value):
+        node.latest_receive_time = 10.2
+        node.latest_stamp = SimpleNamespace(sec=value, nanosec=0)
+        node.latest_frame = np.full((2, 3, 3), value, dtype=np.uint8)
+
+    node = Probe()
+    monkeypatch.setattr(module.time, 'monotonic', lambda: 10.0)
+    monkeypatch.setattr(module.ImageSubscriber, 'image_callback', image_callback)
+    for view, value in [('centre', 2), ('left', 1), ('right', 3)]:
+        node.explore_event_callback(SimpleNamespace(data=f'room {view} cell (1, 0) side 0'))
+        node.explore_event_callback(SimpleNamespace(
+            data='missions: M04 marked successful by the server; still open: M01'))
+        node.image_callback(value)
+    _, _, _, _, _, metadata, _, frames = node.explore_work.get_nowait()
+    assert metadata['cell'] == [1, 0] and len(frames) == 3
+
+    node.explore_event_callback(SimpleNamespace(data='room centre cell (2, 0) side 0'))
+    node.explore_event_callback(SimpleNamespace(data='empty room cell (3, 0) (from cell (2, 0) side 0)'))
+    assert node.explore_pending is None              # an empty room still ends the look

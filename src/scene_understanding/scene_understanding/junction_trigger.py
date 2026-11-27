@@ -524,9 +524,16 @@ class JunctionTrigger(ImageSubscriber):
             r'(room|object) (centre|left|right) cell \((-?\d+), (-?\d+)\) side ([0-3])',
             msg.data,
         )
-        self.explore_pending = None
         if not match:
+            # Other explorer events (missions, grid, curtain ...) say nothing about the
+            # look: they must not drop a view still waiting for its frame (22:34 run,
+            # 2026-11-26: "missions: M04 marked successful" 15 ms after "room left" lost
+            # the left view, and room (1, 0) never reached the VLM). An empty room ends
+            # the look (no right view follows).
+            if msg.data.startswith('empty room'):
+                self.explore_pending = None
             return
+        self.explore_pending = None
         kind, view, i, j, side = match.groups()
         key = (kind, int(i), int(j), int(side))
         if view == 'centre':

@@ -247,6 +247,28 @@ class Sense:
         measured = (~np.isnan(self.hm.top_at(x, y))).any(axis=1).mean()
         return bool(measured >= self.p['low_wall_seen'])
 
+    def tall_width(self, cell, d, half=0.45, step=0.05, hole=1):
+        """Width (m) of the widest stretch of the edge on side d seen curtain-high (0.65 m
+        and more; HeightMap.tall, twice), over the edge's middle 2 * half (0.90 m: the
+        corner posts left out). Holes of up to `hole` squares inside the stretch are
+        bridged (the 1-3 cm split, folds). None when no height along the edge is measured.
+        A curtain spans its whole opening; a prop, a person or a post behind a wall does
+        not (user, 2026-11-27: a curtain must be wider than 0.7 m)."""
+        x, y = self.grid.box(cell, d, np.arange(-half, half + 1e-3, step), ACROSS)
+        if not (~np.isnan(self.hm.top_at(x, y))).any():
+            return None
+        tall = self.hm.tall_at(x, y).any(axis=1)
+        best, run, gap = 0, 0, 0
+        for t in tall:
+            if t:
+                run, gap = run + gap + 1, 0
+                best = max(best, run)
+            elif run and gap < hole:
+                gap += 1
+            else:
+                run, gap = 0, 0
+        return best * step
+
     def tall_inside(self, cell, d):
         """(squares, measured) for the cell behind side d, its three other walls included:
         how many 5 cm squares were seen taller than an ordinary wall (HeightMap.tall, twice

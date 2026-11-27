@@ -152,6 +152,12 @@ def test_possible_stairs_that_are_not_stairs_get_a_look(Robot, lidar):
     r = Robot()
     r.stair_check_on = True
     r.raised = lambda cell, d: False
+    if lidar == 'blocked' and "k == 'blocked' and self.stair_check_on and self.raised(cell, d)" \
+            in __import__('inspect').getsource(type(r).kind):
+        # user, 2026-11-26 night: a full stair check only on potential stairs seen by the
+        # lidar; blocked with nothing stair-high is no candidate
+        assert r.kind(LidarSays(lidar), *EDGE) == 'blocked'
+        r.raised = lambda cell, d: True
     assert r.kind(LidarSays(lidar), *EDGE) == 'stairs'          # a candidate: checked at once
     r.stairs_checked[EDGE] = False                              # the depth camera: not stairs
     assert r.kind(LidarSays(lidar), *EDGE) == 'object'          # a prop: looked at, not entered
@@ -257,3 +263,58 @@ def test_a_box_belonging_to_another_edge_does_not_confirm(Robot):
     r2.t += 3.1
     assert r2.do_cv_verify(*EDGE, True)
     assert EDGE in r2.cv_curtains                                   # straight ahead: confirmed
+
+
+def _lidar_robot(Robot, share, rough=False):
+    r = Robot(cv_on=True)
+    if not hasattr(type(r), 'curtain_lidar_check') and 'curtain_lidar_check' not in \
+            __import__('inspect').getsource(type(r).do_cv_verify):
+        pytest.skip('the stairs copy keeps its own verify')
+    import importlib
+    E = importlib.import_module('maze_explore.explorer').Explorer
+    r.curtain_lidar_check = E.curtain_lidar_check.__get__(r)
+    r.curtain_flat = E.curtain_flat.__get__(r)
+    r.heights, r.cv_tall_min, r.rough_known = object(), 0.2, set()
+    r.tall_share = lambda sense, c, d: share
+    low = r.low
+
+    class S:
+        def low_wall(self, c, d): return low
+        def rough(self, c, d): return rough
+    r.sense = lambda: S()
+    return r
+
+
+def test_the_lidar_check_comes_before_the_camera(Robot):
+    # user, 2026-11-26 night: lidar check, then camera check, before it is a curtain
+    r = _lidar_robot(Robot, share=0.05)          # measured low: fails the lidar check
+    if 'curtain_lidar_check' not in __import__('inspect').getsource(type(r).do_cv_verify):
+        pytest.skip('the stairs copy keeps its own verify')
+    r.act_t0 = r.t                               # no wait: the camera is never asked
+    assert r.do_cv_verify(*EDGE, True)
+    assert EDGE not in r.cv_curtains and EDGE in r.cv_rejected
+    assert any('lidar check failed' in e for e in r.events)
+    r2 = _lidar_robot(Robot, share=None)         # unmeasured: cannot pass either
+    r2.act_t0 = r2.t
+    assert r2.do_cv_verify(*EDGE, True) and EDGE not in r2.cv_curtains
+    r3 = _lidar_robot(Robot, share=0.6)          # lidar passes: now the camera decides
+    assert r3.verify(EDGE, hits=6) and EDGE in r3.cv_curtains
+    r4 = _lidar_robot(Robot, share=0.6)          # lidar passes, camera says no
+    assert r4.verify(EDGE, hits=0) and EDGE not in r4.cv_curtains
+
+
+def test_a_curtain_hangs_only_between_flat_cells(Robot):
+    # user, 2026-11-26 night: a curtain will only be at an edge of a flat cell
+    r = _lidar_robot(Robot, share=0.9, rough=True)   # the cell behind reads uneven
+    if 'curtain_lidar_check' not in __import__('inspect').getsource(type(r).do_cv_verify):
+        pytest.skip('the stairs copy keeps its own verify')
+    r.act_t0 = r.t
+    assert r.do_cv_verify(*EDGE, True) and EDGE not in r.cv_curtains
+    assert any('uneven' in e for e in r.events)
+    r2 = _lidar_robot(Robot, share=0.9)
+    r2.rough_cells = {A}                         # the robot's own cell is uneven
+    r2.act_t0 = r2.t
+    assert r2.do_cv_verify(*EDGE, True) and EDGE not in r2.cv_curtains
+    import inspect, importlib
+    src = inspect.getsource(importlib.import_module('maze_explore.explorer').Explorer.kind)
+    assert "and flat:" in src and "k == 'curtain' and not flat" in src

@@ -178,9 +178,10 @@ stairs, start and the last cell.
    `test/test_no_exit.py`): first every wall to an untravelled cell that is not solidly
    mapped (under 40 % of the edge occupied, or a wall only by a resolve timeout or a
    given-up step) is faced once more, nearest first (`recheck_soft_wall`,
-   `no_exit_walls:=false` = off); then the robot walks to the nearest tall edge
-   to an untravelled cell (`cv_tall_min`, 20 % curtain-high), faces it and ASKS THE
-   CAMERA (the usual `cv_verify`; `force_tall_curtain`, `curtain_last:=false` = off, and
+   `no_exit_walls:=false` = off); then the robot walks to the nearest edge to an
+   untravelled cell that the camera has seen as a curtain at least once (`cv_seen`, not
+   rejected; not by height since the night of 2026-11-26), centres facing it and ASKS THE
+   CAMERA (and then the gap, as for any curtain) (the usual `cv_verify`; `force_tall_curtain`, `curtain_last:=false` = off, and
    the stage needs `curtain_cv` on): a curtain MUST be confirmed through the camera
    (user, 2026-11-26 night, after the 21:12 run pushed a tall wall unconfirmed; nothing
    is ever pushed unconfirmed now). Confirmed = a real curtain, crossed as usual; not
@@ -248,8 +249,10 @@ been explored, and the robot ends the run standing in the final cell.
   clear and the robot walked into the dead end.
 - **Room checks (user, 2026-11-26 night; unit-tested only, `test/test_room_checks.py`)**:
   before the views of a room / object look:
-  (1) **The depth stair check runs only on potential stairs** (user, later that night):
-  the lidar shows something stair-high (`raised`), or the VLM said stairs (`vlm_stairs`).
+  (1) **The full stair check runs only on potential stairs SEEN BY THE LIDAR** (user,
+  later that night): `raised` (something 0.28 m or higher in the cell). A `blocked`
+  cell is no stairs candidate without it, and a VLM "stairs" answer (`vlm_stairs`)
+  reopens the check only where the lidar shows stair-high too.
   `room_stairs:=true` = at every room, as for a few hours that evening.
   (2) **Confirmed content overrides the stair check** (user; 20:12 run: the prop room
   behind (1, 0), 7 squares at 0.65 m or more, got the check and the close recheck on a
@@ -276,11 +279,16 @@ been explored, and the robot ends the run standing in the final cell.
   (4) **No curtain check during a scene check** (user, 2026-11-26 night): the look queues
   no `cv_verify` of its own (`look_curtain:=true` = as before); a candidate ahead of the
   room comes from the side scan's sightings or the usual check outside looks.
-  (5) **Stairs seen during the approach** (user, 2026-11-26 night; `look_late_stairs`):
-  the look's stair check runs from the cell centre, before the walk up to the room; a
-  cell that shows stair-high only after the approach (0.14 m ahead, three views of lidar)
-  and was never checked gets one depth check as the look ends — never a cell with
-  confirmed tall content, never once the stairs are crossed.
+  (5) **Stairs are always checked BEFORE scene understanding** (user, 2026-11-26 night;
+  `look_late_stairs`): the look's stair check runs from the cell centre, before the walk
+  up to the room; a cell that shows stair-high only once the robot stands up at the room
+  (0.14 m ahead) and was never checked gets the depth check right there, before the first
+  view. **Stairs found = scene understanding is not triggered**: the rest of the look is
+  called off (no view events, so `junction_trigger` never gets the third view that sends
+  the prompt) and the cell counts as looked at; the planner then treats it as stairs.
+  Never a cell with confirmed tall content, never once the stairs are crossed. No stair
+  check is queued after the views any more (the in-room side checks of an empty room
+  come after its views, but an empty room sends nothing to the VLM).
 - **Rooms**: not entered by default (`enter_rooms:=false`). From the cell before, the robot
   looks centre, 35° left and 35° right (`look_angle`; user, 2026-11-26: 25°, 30°, 45°, then 35°), holds 1.0 s each (`look_hold`; 1.5 until that evening) and publishes
   `room centre|left|right cell (i, j) side d` on `/explore/event`. For the look it first walks
@@ -365,6 +373,26 @@ been explored, and the robot ends the run standing in the final cell.
   cell before it (or its own cell) the robot faces the edge for 3 s; a box across the middle
   of the image on 3 frames makes that edge a `curtain`, **also where the map and the height
   map call it a wall** (and the cell before it is then no longer a dead-end `room`).
+  **YOLO PROPOSES, THE LIDAR CONFIRMS (user, 2026-11-27; unit-tested only,
+  `test/test_curtain_width.py`; never run on the robot).** A camera sighting (or a tall
+  lidar edge the camera has pointed at, `cv_first`) is only a candidate. To confirm it the
+  robot turns to the edge, shifts onto the cell centre and turns square (`cv_verify`); then
+  the LIDAR decides: curtain-high returns (0.65 m and more) along at least 20 % of the edge
+  (`cv_tall_min`) AND one stretch of them WIDER than 0.7 m (`curtain_width`,
+  `Sense.tall_width`: over the middle 0.90 m of the edge, holes of one 5 cm square bridged).
+  Passes = a curtain, no camera frames needed at the check (`cv_verify_camera:=true` = the
+  camera must also see it on 5 frames). Fails, or the height not measured = a wall for
+  good (`cv_rejected`). The one-sure-box rule is off (`cv_sure` 1.0) and the lie-down gap
+  check stays off (`curtain_gap:=false`). The no-exit last resort only tries edges YOLO
+  has seen. Known weak point: a tall frame wall (0.84 m, `stairs10`) passes the lidar test
+  if YOLO fires on it. `curtain_height:=false` = the camera alone (2026-11-26 night): the
+  gap check (`curtain_gap:=true`) or the camera hit count confirms.
+  With `curtain_cv:=false` there are no curtains at all. A stop while lying: `/nav/start`
+  stands it up first (`lying`). **A curtain hangs only between two FLAT cells** (user, same night;
+  `curtain_flat`, `curtain_flat_only:=false` = off): an edge beside a cell known uneven
+  (`rough_cells`, `rough_known`) or read uneven by the lidar (`Sense.rough`) never reads
+  as a curtain in `kind()` (latched and camera-confirmed ones included), collects no
+  camera sightings, and fails the lidar check.
   **The box must belong to THAT edge (user, 2026-11-26 night; unit-tested only):** at
   verify, each frame's box bearing is re-anchored with `edge_along` from the squared,
   standing pose; a box whose ray first meets a DIFFERENT closed edge (a curtain a cell
@@ -389,6 +417,12 @@ been explored, and the robot ends the run standing in the final cell.
   frames at all (`curtain_node` down), = the edge is a wall for good. `curtain_cv:=false`
   = the lidar decides alone, as before. Do not merge `curtain_cv`: it deletes the
   navigation code; bring files over one by one. Never run on the robot so far.
+- **Full stair check before leaving the start cell (user, 2026-11-26 night; unit-tested
+  only; OFF by default, on only when named at launch: `start_stairs:=true`)**: the stairs often stand right ahead of the start
+  (19:05, 19:14, 21:12 runs), so before the robot moves out of the start cell it squares
+  up facing the way out and runs one FULL check (`full`): the detector runs whatever the
+  lidar shows and the floor-first gate is off for it; the floor is read in the same
+  check. The one exception to "full checks only on potential stairs seen by the lidar".
 - **Stair check (2026-11-24)**: before walking into an unvisited cell where the lidar shows
   something 0.28 m or higher, and before any stairs crossing, the robot squares up, stands
   still and runs the teammates' depth-camera detector (package `stairs`: `src/stairs/stairs/stair_levels.py`, copied from
@@ -468,8 +502,9 @@ been explored, and the robot ends the run standing in the final cell.
   in `config/speeds.yaml`, the one speed for uneven floor; `side_speed` is gone), in the
   H-Step gait, and on arrival is taken as centred (`trust_step`). **It pushes** (user,
   2026-11-26 night): the obstacle stop is off for that step, because the blocks and ramps
-  themselves rise into its window, and 'no progress' is called after 10 s, not 8
-  (`terrain_push`, `terrain_push_time`; 09:06 run: given up 0.65 m short after 8 s).
+  themselves rise into its window, and 'no progress' is called after 15 s, not 8
+  (`terrain_push`, `terrain_push_time`; 09:06 run: given up 0.65 m short after 8 s; 10 s
+  until the night of 2026-11-26, then 15 s, user).
   So a wall or prop in a cell wrongly read as uneven is not stopped for either. Odometry jumped on almost
   every sideways step onto a ramp cell that day. `terrain_sideways:=true` (node parameter)
   brings the sideways entry back; what follows describes it.
@@ -576,6 +611,12 @@ been explored, and the robot ends the run standing in the final cell.
   against 3 deg and 0.08 m, which was refused as soon as the grid had drifted further than
   that. Not while scans to SLAM are off. It moves the CELLS onto the map; the SLAM map
   itself cannot be moved. `arrive_fit:=false` = off.
+- **Reorient on arrival (user, 2026-11-26 night; unit-tested only, `test/test_reorient.py`)**:
+  after that fit, once the cell's sides are known (`do_resolve`), the robot turns on the
+  spot to the nearest grid direction when its body is more than 5 deg (`reorient_deg`) off
+  it (`queue_reorient`, a normal `turn` action). Not during the stairs sequence, while scans
+  to SLAM are off, or in the end row (the end stop squares up itself). Facing an unknown
+  side already ends square. `reorient:=false` (node parameter) = off.
 - **Slower turns on uneven floor (user, 2026-11-26; unit-tested only)**: in an uneven cell
   the turn rate is capped at 0.3 rad/s (`terrain_w_max` in `config/speeds.yaml`;
   `w_max`, 0.6, elsewhere). 07:42 run: the sensor feed went late and Fast-LIO diverged during a 0.5 rad/s
@@ -671,6 +712,8 @@ Safety behaviour:
 | Something knee-high or taller 6–20 cm ahead while walking, and while pushing (`push_stop`) | stop; after 8 ticks give up the step |
 | No progress for 8 s (12 s in AI mode) | give up the step |
 | A turn that does not finish | given up after the time it should take at its top rate, half as much again, plus 6 s (`turn_timeout`): about 10 s for a quarter turn. It was 25 s whatever the turn (09:06 run: six turns that went nowhere cost 2.5 minutes) |
+| Told to turn, not turning at all: under 3° after 3 s (`turn_kick_after`; 2026-11-26 night, 22:15 run: right after the AI leave sequence a 143° turn did not move the robot a degree in 12 s, pose fresh; stopped by hand; unit-tested only) | Move → gait → navigation mode is sent again and the turn starts over, at most once a minute (`turn_kick_gap`), so a robot that really cannot turn still times out. A pose-jump hold no longer runs the turn's clock (it used to time a turn out while the robot stood as told) |
+| Camera curtain sightings while the pose cannot be trusted (22:15 run: one steady false box was pinned on three edges as the pose jumped after the stairs) | ignored during the stairs sequence, a pose-jump or odometry hold, scans-to-SLAM off, and 3 s after each (`pose_trust_from`); frames still count for a camera check |
 | A step given up | the side becomes a wall, robot creeps back to the cell centre. In AI mode: `STOPPED`, take over by hand (`lite3_ai_off`), then `/nav/start` |
 | `/explore/stop` | `STOPPED`; `/nav/start` resumes, and first sends Move → gait → navigation mode again (about 4.5 s standing), so a controller takeover or `lite3_ai_off` in between needs no `lite3_auto` (2026-11-25) |
 
@@ -680,7 +723,7 @@ Safety behaviour:
 |---|---|---|
 | `/nav/start`, `/explore/stop` | `std_msgs/Empty` | in |
 | `/explore/status` | `String` | `STATE cell=… job=[…] act=… why`, 10 Hz. States: `WAIT`, `READY`, `RUN`, `DONE`, `STOPPED`, `FAULT` |
-| `/explore/event` | `String` | `curtain …`, `room centre\|left\|right …`, `stairs: …`, `terrain: …`, `exit …`, each with cell and side. Meant for perception and logging |
+| `/explore/event` | `String` | `curtain …`, `room centre\|left\|right …`, `stairs: …`, `terrain: …`, `exit …`, each with cell and side. Meant for perception and logging. `junction_trigger` ignores events other than look views (`room|object centre|left|right …`) and `empty room …`: until 2026-11-26 night ANY event dropped a view still waiting for its frame (22:34 run: room (1, 0) lost to a `missions: …` event 15 ms after `room left`) |
 | `/explore/cells` | `MarkerArray` | visited cells and the kind of each side, frame `map` (RViz) |
 | `/maze/blind` | `Bool` | True while pushing through a curtain |
 | `/curtain/seen`, `/curtain/status` | `String` | `curtain_node` (on by default; `curtain_cv:=false` = off): JSON per camera frame with the curtain boxes and their direction; `UNAVAILABLE: why` / `IDLE` / `RUNNING` |

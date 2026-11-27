@@ -135,6 +135,10 @@ class Explorer(Node):
         # stricter since the night of 2026-11-26 (user): 0.6 and 5 frames (were 0.5 and 3);
         # the model gave false boxes on 2 of 51 frames without a curtain in validation
         self.cv_conf = p('cv_conf', 0.6).value
+        # One centred box above cv_sure at the edge under check = a confirmed curtain at once
+        # (user, 2026-11-26 night); no hit count, no gap check. cv_sure:=1.0 = off.
+        # Off since 2026-11-27 (user): the lidar confirms, never the camera alone.
+        self.cv_sure = p('cv_sure', 1.0).value
         self.cv_hits = p('cv_hits', 3).value                 # frames, within cv_window s
         self.cv_window = p('cv_window', 3.0).value
         self.cv_verify_time = p('cv_verify_time', 4.0).value   # s facing the edge (3 until 5 frames were needed)
@@ -165,7 +169,7 @@ class Explorer(Node):
         # centre until the body is square to the way in, then step sideways into the cell.
         self.terrain_sideways = p('terrain_sideways', False).value   # true: sideways, as until 2026-11-26
         self.terrain_push = p('terrain_push', True).value            # no obstacle stop onto uneven floor
-        self.terrain_push_time = p('terrain_push_time', 10.0).value  # s without progress before giving up
+        self.terrain_push_time = p('terrain_push_time', 15.0).value  # s without progress before giving up (user, 2026-11-26 night: 15, was 10)
         self.terrain_push_speed = p('terrain_push_speed', 0.13).value   # m/s of that push (speeds.yaml)
         self.side_offset = p('side_offset', 0.075).value   # m the base_link line is moved
         #    towards the nose, so the body (0.27 m ahead, 0.42 m behind) is centred in the way in
@@ -202,6 +206,30 @@ class Explorer(Node):
         self.room_stairs = p('room_stairs', False).value
         self.vlm_stairs = set()       # edges the VLM says hold stairs: rechecked with depth
         self.look_curtain = p('look_curtain', False).value  # cv_verify before a look's views
+        self.curtain_lidar_first = p('curtain_lidar_first', True).value  # lidar check before the camera
+        self.curtain_flat_only = p('curtain_flat_only', True).value      # curtains only between flat cells
+        # YOLO proposes, the lidar confirms (user, 2026-11-27): a curtain is a camera
+        # candidate whose edge the lidar shows curtain-high (0.65 m and more) along one
+        # stretch WIDER than curtain_width (0.7 m; Sense.tall_width). No gap check.
+        # curtain_height:=false = the camera alone (2026-11-26 night).
+        self.curtain_height = p('curtain_height', True).value
+        self.curtain_width = p('curtain_width', 0.7).value
+        # true = the camera must also see it on cv_verify_hits frames at the check (as until
+        # 2026-11-26); false (default) = a camera sighting + the lidar check is a curtain.
+        self.cv_verify_camera = p('cv_verify_camera', False).value
+        # OFF (user, 2026-11-26 night: "don't use lie down check at all"); curtain_gap:=true
+        # brings the lie-down gap check back.
+        self.curtain_gap = p('curtain_gap', False).value    # lie down and look for the gap
+        self.gap_settle = p('gap_settle', 3.0).value        # s after the lie-down command
+        self.gap_time = p('gap_time', 3.0).value            # s of lidar clouds while lying
+        self.gap_low = (p('gap_low_lo', 0.04).value, p('gap_low_hi', 0.13).value)    # m: the gap
+        self.gap_hang = (p('gap_hang_lo', 0.20).value, p('gap_hang_hi', 0.60).value)  # m: the fabric
+        self.gap_low_max = p('gap_low_max', 0.25).value     # share of the edge solid in the gap band
+        self.gap_hang_min = p('gap_hang_min', 0.40).value   # share of the edge with fabric on it
+        self.gap_floor_min = p('gap_floor_min', 10).value   # floor points seen through the gap
+        self.turn_kick_after = p('turn_kick_after', 3.0).value   # s told to turn without turning: resend modes
+        self.turn_kick_gap = p('turn_kick_gap', 60.0).value      # s between two such resends
+        self.start_stairs = p('start_stairs', False).value  # full stair check before leaving the start (launch start_stairs:=true)
         # user, 2026-11-26 night: an EMPTY room is scanned from inside: base_link
         # room_scan_in (0.10 m) past the shared edge, then 45 deg left and right with the
         # curtain camera on; a side edge the lidar shows stair-high gets a depth check
@@ -486,6 +514,11 @@ class Explorer(Node):
         self.arrive_fit = p('arrive_fit', True).value
         self.arrive_fit_deg = p('arrive_fit_deg', 8.0).value
         self.arrive_fit_m = p('arrive_fit_m', 0.20).value
+        # Reorient on arrival (user, 2026-11-26 night): once the sides are known, turn on
+        # the spot to the nearest grid direction when more than reorient_deg off it, so the
+        # next job starts square to the cell. reorient:=false = off.
+        self.reorient = p('reorient', True).value
+        self.reorient_deg = p('reorient_deg', 5.0).value
         # Back to 4 m (2026-11-26): with 2 m the correction was refused 9 times out of 16
         # in the 07:45 run (4 of 19 with 4 m in the 05:57 run), the grid drifted and
         # cells' own walls read as objects inside them.
@@ -680,10 +713,21 @@ class Explorer(Node):
         best = max((d for d in dets if centred(d, self.cv_conf)),
                    key=lambda d: d.get('conf', 0.0), default=None)
         self.cv_frames.append((now, best is not None,
-                               float(best.get('bearing', 0.0)) if best else None))
+                               float(best.get('bearing', 0.0)) if best else None,
+                               float(best.get('conf', 0.0)) if best else 0.0))
         if self.state != 'RUN' or self.grid is None or self.pose is None or self.occ is None \
                 or (self.act and self.act[0] in ('turn', 'cv_verify')):
             return                    # while turning the heading of the frame is not known
+        # Nor while the pose cannot be trusted (user, 2026-11-26 night; 22:15 run: one
+        # steady false box at +23 deg after the stairs was pinned on three different edges
+        # as the pose jumped 1.3-1.5 m): the stairs sequence, a pose-jump or odometry hold,
+        # a late feed, and 3 s after any of them.
+        if getattr(self, 'ai_sequence', False) or self.ai_walking \
+                or getattr(self, 'pose_held', None) is not None \
+                or now < getattr(self, 'odom_hold_until', 0.0) + 3.0 \
+                or now < getattr(self, 'map_blind_until', 0.0) + 3.0 \
+                or now < getattr(self, 'pose_trust_from', 0.0):
+            return
         sense = self.sense()
         for d in dets:
             if d.get('conf', 0.0) < self.cv_conf:
@@ -694,7 +738,9 @@ class Explorer(Node):
                     or self.kinds.get(edge) == 'curtain' \
                     or edge in self.links:
                 continue
-            if sense.low_wall(*edge):
+            if not getattr(self, 'curtain_flat', lambda *a: True)(sense, *edge):
+                continue              # beside an uneven cell: never a curtain (user)
+            if getattr(self, 'curtain_height', True) and sense.low_wall(*edge):
                 # an ordinary wall, and the camera sees over it: the curtain hangs somewhere
                 # behind. It is found when the robot gets to its open side.
                 self.get_logger().info(
@@ -703,7 +749,8 @@ class Explorer(Node):
                 continue
             times = [t for t in self.cv_seen.get(edge, []) if now - t <= self.cv_window] + [now]
             self.cv_seen[edge] = times
-            if len(times) >= self.cv_hits:
+            sure = d.get('conf', 0.0) > getattr(self, 'cv_sure', 1.0)    # one sure box will do
+            if len(times) >= self.cv_hits or sure:
                 self.cv_pending.add(edge)
                 self.get_logger().info(f'camera: curtain seen towards cell {edge[0]} side '
                                        f'{edge[1]} on {len(times)} frames: to be verified')
@@ -1147,11 +1194,16 @@ class Explorer(Node):
             return 'free'
         if (cell, d) in self.forced_wall or (cell == self.start and d != 0) or b in self.closed:
             return 'wall'
-        if (cell, d) in self.cv_curtains and self.curtains_on:
+        flat = getattr(self, 'curtain_flat', lambda *a: True)(sense, cell, d)
+        if (cell, d) in self.cv_curtains and self.curtains_on and flat:
             return 'curtain'          # verified with the camera: passable, whatever the map says
-        if (cell, d) in self.curtain_latched and self.curtains_on:
+        if (cell, d) in self.curtain_latched and self.curtains_on and flat:
             return 'curtain'          # read as a curtain before: stays one
         k = getattr(self, 'kept', {}).get((cell, d)) or sense.kind(cell, d, may_exit=cell != self.start)
+        if k == 'curtain' and not flat:
+            k = 'wall'                # a curtain hangs only between two flat cells (user)
+        if k == 'curtain' and not getattr(self, 'curtain_height', True):
+            k = 'wall'                # not by height (user): only a YOLO sighting + the gap
         if k == 'curtain' and (not self.curtains_on or (cell, d) in self.cv_rejected):
             k = 'wall'                # off, or a lidar candidate the camera turned down
         if k == 'curtain' and not self.cv_on \
@@ -1203,12 +1255,14 @@ class Explorer(Node):
             # 11:41 run, 2026-11-25: the prop room (0, 1) read as possible stairs, was put
             # off to the end with the stairs, and would have ended as 'blocked', unseen.
             k = 'object'
-        if checked is None and k == 'blocked' and self.stair_check_on:
+        if checked is None and k == 'blocked' and self.stair_check_on and self.raised(cell, d):
+            # only when the lidar shows something stair-high (user, 2026-11-26 night: the
+            # full stair check only on potential stairs seen by the lidar)
             k = 'stairs'
         # the VLM saw stairs during the look (user, 2026-11-26 night): a candidate again,
         # whatever it reads as; the depth check that follows decides
         if checked is None and (cell, d) in getattr(self, 'vlm_stairs', ()) \
-                and self.stair_check_on and self.stairs_on \
+                and self.stair_check_on and self.stairs_on and self.raised(cell, d) \
                 and not getattr(self, 'stairs_done', False) and k in ('room', 'object', 'blocked'):
             k = 'stairs'
         # stairs copy: our stairs often map as 'object'; check those too if stair-high
@@ -1408,24 +1462,45 @@ class Explorer(Node):
             # 0.53 m) is worth a turn and 3 s of looking (user, 2026-11-26 night; 10:39 run:
             # a 90 deg turn and 3 s for a sighting on the side of the tool cart). Not seen tall
             # yet = it waits; its height measured and low = dropped.
-            share = self.tall_share(sense_now, a, d)
-            if share is not None and share < self.cv_tall_min:
-                if sense_now.low_wall(a, d):
-                    self.cv_pending.discard((a, d))
-                continue
-            if share is None:
+            if getattr(self, 'curtain_height', True):
+                share = self.tall_share(sense_now, a, d)
+                if share is not None and share < self.cv_tall_min:
+                    if sense_now.low_wall(a, d):
+                        self.cv_pending.discard((a, d))
+                    continue
+                if share is None:
+                    continue
+            if not self.curtain_flat(sense_now, a, d):
+                self.cv_pending.discard((a, d))
                 continue
             if a == cur or (nb(cur, d) == a and self.kinds.get((cur, d)) in ('free', 'room')):
                 self.cv_pending.discard((a, d))
                 self.cv_checking.add((a, d))
                 h = self.grid.heading(d)
-                self.queue.extend([('turn', h, 2.0), ('hold', 0.5), ('cv_verify', a, d)])
+                # centred in the cell, facing the curtain (user, 2026-11-26 night): turn,
+                # shift onto the centre (forward / sideways only), turn square again
+                self.queue.extend([('turn', h, 3.0), ('shift', cx, cy), ('turn', h, 2.0),
+                                   ('hold', 0.5), ('cv_verify', a, d)])
                 return
+        # A FULL stair check of the way out before the robot leaves the start cell (user,
+        # 2026-11-26 night): the stairs often stand right ahead of it (19:05, 19:14, 21:12
+        # runs). The detector runs whatever the lidar shows and the floor-first gate is
+        # off for it (full); the floor is read in the same check. Once only.
+        if self.stair_check_on and self.stairs_on and getattr(self, 'start_stairs', False) \
+                and cur == self.start and not self.left_start \
+                and (self.start, 0) not in self.stairs_checked \
+                and not getattr(self, 'stairs_done', False):
+            h = self.grid.heading(0)
+            self.event('stairs: full check of the way out of the start cell before leaving it')
+            self.queue.extend([('drive', cx, cy, h, 'square'), ('turn', h, 2.0), ('hold', 0.5),
+                               ('stair_check', self.start, 0, True, True, False, True)])
+            return
         # Possible stairs beside this cell are checked NOW, with the depth camera, not at
         # the end with the crossings: what is not stairs is a prop to look at (kind()).
         if self.stair_check_on:
             for d in range(4):
-                if self.kinds.get((cur, d)) == 'stairs' and (cur, d) not in self.stairs_checked:
+                if self.kinds.get((cur, d)) == 'stairs' and (cur, d) not in self.stairs_checked \
+                        and self.raised(cur, d):     # the lidar must show potential stairs
                     h = self.grid.heading(d)
                     self.queue.extend([('drive', cx, cy, h, 'square'), ('turn', h, 2.0),
                                        ('hold', 0.5), ('stair_check', cur, d)])
@@ -1499,6 +1574,10 @@ class Explorer(Node):
                 reach = self.cell_size / 2 - self.look_gap - self.fp_front
                 q.extend([('turn', h, 3.0), ('call', lambda: setattr(self, 'step', None)),
                           ('drive', kx + reach * math.cos(h), ky + reach * math.sin(h), h, 'creep')])
+            # Stairs before scene understanding, always (user, 2026-11-26 night): what the
+            # approach shows stair-high is checked here, before the first view; stairs
+            # found = the views are called off and nothing goes to the VLM.
+            q.append(('call', lambda: self.look_late_stairs(c, d)))
             for name, off in (('centre', 0.0), ('left', self.look_angle)):
                 q.extend([('turn', wrap(h + off), 3.0), ('event', f'{what} {name} cell {c} side {d}'),
                           ('hold', self.look_hold)])
@@ -1627,9 +1706,12 @@ class Explorer(Node):
                 b = nb(c, d)
                 if b in been or b in self.closed:
                     continue
-                share = self.tall_share(sense, c, d)
-                if share is None or share < self.cv_tall_min:
-                    continue          # not tall anywhere: a plain wall, not fabric
+                if not getattr(self, 'cv_seen', {}).get((c, d)) or (c, d) in self.cv_rejected:
+                    continue          # never seen as a curtain by the camera (YOLO proposes)
+                if getattr(self, 'curtain_height', True):
+                    share = self.tall_share(sense, c, d)
+                    if share is None or share < self.cv_tall_min:
+                        continue      # not tall anywhere: a plain wall, not fabric
                 # Floor-gap first (user, 2026-11-26 night; 21:12 run: a tall wall was
                 # pushed as the first candidate): a curtain leaves ~0.15 m free under it,
                 # an edge standing down to the floor (solid_base) is almost surely a wall.
@@ -1654,7 +1736,9 @@ class Explorer(Node):
         self.event(f'no exit found anywhere else: asking the camera about the tall edge of '
                    f'cell {c} side {d}'
                    + (' (it stands down to the floor)' if grounded else ''))
-        self.queue.extend([('turn', h, 2.0), ('hold', 0.5), ('cv_verify', c, d, True)])
+        cx, cy = self.grid.centre(c)
+        self.queue.extend([('turn', h, 3.0), ('shift', cx, cy), ('turn', h, 2.0),
+                           ('hold', 0.5), ('cv_verify', c, d, True)])
         return True
 
     def end_stop(self, end, d):
@@ -1848,13 +1932,11 @@ class Explorer(Node):
                      ('hold', self.look_hold)]
             steps += self.room_scan(c, d)     # from inside: sides for stairs or curtains
             q.extendleft(reversed(steps + [done]))
-            self.look_late_stairs(c, d)
             return True
         tail = [('event', f'{what} right cell {c} side {d}'), ('hold', self.look_hold)]
         if self.qr_approach and self.qr_read_t < 0:       # the one code is not read yet
             tail.append(('qr_wait', c, d))
         q.extendleft(reversed(tail + [done]))
-        self.look_late_stairs(c, d)
         return True
 
     def room_scan(self, c, d):
@@ -1897,12 +1979,13 @@ class Explorer(Node):
                                ('stair_check', b, e, True, False)])
 
     def look_late_stairs(self, c, d):
-        """Potential stairs seen during the approach to the room (user, 2026-11-26 night):
-        the look's own stair check runs before the walk up to the room, from the cell
-        centre; from 0.14 m ahead and after three views the lidar has seen much more. If
-        the cell now shows stair-high and was never checked (and has no confirmed tall
-        content: a prop room is never the stairs), one stair check is queued after the
-        look ends, from where the robot stands."""
+        """Potential stairs seen during the approach to the room (user, 2026-11-26 night).
+        Run as the robot stands up at the room, BEFORE the first view: stairs are always
+        checked before scene understanding. The look's own stair check ran from the cell
+        centre; from 0.14 m ahead the lidar sees much more. If the cell now shows
+        stair-high and was never checked (and has no confirmed tall content: a prop room
+        is never the stairs), the depth check runs first, and confirmed stairs call the
+        rest of the look off: no view events, nothing to the VLM."""
         if not (self.stair_check_on and self.stairs_on) or getattr(self, 'stairs_done', False):
             return
         if self.stairs_checked.get((c, d)) is not None or not self.raised(c, d):
@@ -1910,10 +1993,19 @@ class Explorer(Node):
         if self.sense().tall_inside(c, d)[0] >= self.empty_squares:
             return
         h = self.grid.heading(d)
-        self.queue.extend([('event', f'stairs: cell {c} side {d} shows stair-high after the '
-                                     'approach: depth check'),
-                           ('turn', h, 2.0), ('hold', 0.5),
-                           ('stair_check', c, d, True, False)])
+
+        def stop_if_stairs():
+            if self.stairs_checked.get((c, d)) is True:
+                self.queue.clear()        # only the rest of this look is queued
+                self.looked.add((c, d))
+                self.event(f'look called off, cell {c} side {d}: stairs found before the '
+                           'scene views; no scene understanding')
+        self.queue.extendleft(reversed([
+            ('event', f'stairs: cell {c} side {d} shows stair-high from up at the room: depth '
+                      'check before the scene views'),
+            ('turn', h, 2.0), ('hold', 0.5),
+            ('stair_check', c, d, True, False),
+            ('call', stop_if_stairs)]))
 
     def go(self, a, d, how):
         """Queue one step from the centre of cell a through side d."""
@@ -2323,10 +2415,39 @@ class Explorer(Node):
         """Standing still, facing side d of `cell` squarely: does the camera keep seeing a
         curtain straight ahead? Yes = that edge is a curtain, also where it reads as a wall.
         No and `final` = not a curtain: a lidar candidate there becomes a wall. No and not
-        final (the greet) = it stays a candidate, looked at again before the push."""
+        final (the greet) = it stays a candidate, looked at again before the push.
+
+        LIDAR FIRST, then the camera (user, 2026-11-26 night): before the camera is even
+        looked at, the edge must pass the lidar check: curtain-high returns (0.65 m and
+        more) along at least cv_tall_min (20 %) of the edge itself. Unmeasured, or
+        measured low = not a curtain, whatever the camera would say. Every way to a
+        confirmed curtain (normal crossing, greet, camera sighting, no-exit last resort,
+        look check) goes through here."""
         self.send()
-        if self.elapsed() < self.cv_verify_time:
-            return False
+        lidar = getattr(self, 'curtain_lidar_check', lambda *a: '')(cell, d)
+        if lidar:
+            b_ = nb(cell, d)
+            both = {(cell, d), (b_, opp(d))}
+            if final:
+                self.cv_rejected.update(both)
+                self.cv_pending.difference_update(both)
+                self.curtain_latched.difference_update(both)
+            self.event(f'curtain check cell {cell} side {d}: lidar check failed ({lidar}); '
+                       + ('not a curtain, the camera is not asked' if final else
+                          'the camera is not asked yet'))
+            return True
+        if getattr(self, 'curtain_height', True) and getattr(self, 'curtain_lidar_first', True) \
+                and not getattr(self, 'cv_verify_camera', True) \
+                and getattr(self, 'heights', None) is not None and hasattr(self, 'tall_share'):
+            # YOLO proposed it, the lidar has confirmed it (user, 2026-11-27)
+            both = {(cell, d), (nb(cell, d), opp(d))}
+            self.cv_curtains.update(both)
+            self.forced_wall.difference_update(both)
+            self.cv_rejected.difference_update(both)
+            self.cv_pending.difference_update(both)
+            self.event(f'curtain: confirmed by the lidar, cell {cell} side {d} (camera '
+                       f"candidate, {getattr(self, 'lidar_why', 'lidar check passed')}): passable")
+            return True
         frames = [f for f in self.cv_frames if f[0] >= self.act_t0]
 
         def at_edge(f):
@@ -2345,13 +2466,33 @@ class Explorer(Node):
             return e is None or e == (cell, d)
         b, hits = nb(cell, d), sum(at_edge(f) for f in frames)
         both = {(cell, d), (b, opp(d))}
-        if hits >= self.cv_verify_hits and self.sense().low_wall(cell, d):
+        # Sure (user, 2026-11-26 night): one centred box at this edge above cv_sure (0.7)
+        # is a confirmed curtain, at once: no hit count, no wall-height or gap test.
+        sure = max((f[3] for f in frames if len(f) > 3 and at_edge(f)), default=0.0)
+        if sure > getattr(self, 'cv_sure', 1.0):
+            self.cv_curtains.update(both)
+            self.forced_wall.difference_update(both)
+            self.cv_rejected.difference_update(both)
+            self.event(f'curtain: confirmed by the camera, cell {cell} side {d} (confidence '
+                       f'{sure:.2f} > {self.cv_sure:.2f}): passable')
+            return True
+        if self.elapsed() < self.cv_verify_time:
+            return False
+        if hits >= self.cv_verify_hits and getattr(self, 'curtain_height', True) \
+                and self.sense().low_wall(cell, d):
             # the camera looks over a 0.53 m wall at a curtain further back
             self.cv_rejected.update(both)
             self.cv_pending.difference_update(both)
             self.event(f'curtain check cell {cell} side {d}: the camera sees a curtain '
                        f'({hits} of {len(frames)} frames) but an ordinary wall stands here: '
                        'the curtain is behind it; this edge stays a wall')
+            return True
+        if hits >= self.cv_verify_hits and getattr(self, 'curtain_gap', False):
+            # The camera is sure; the gap decides (user, 2026-11-26 night): lie down facing
+            # the curtain, read the lidar along the edge line, stand up again.
+            self.event(f'curtain: the camera sees one, cell {cell} side {d} ({hits} of '
+                       f'{len(frames)} frames): lying down to look for the gap under it')
+            self.queue.extendleft(reversed(self.gap_steps(cell, d, final)))
             return True
         if hits >= self.cv_verify_hits:
             self.cv_curtains.update(both)
@@ -2375,12 +2516,134 @@ class Explorer(Node):
                    f'({why})' + ('; the lidar curtain is a wall now' if lidar else ''))
         return True
 
+    def gap_steps(self, cell, d, final=True):
+        """Lie down facing the curtain, read the gap, stand up and restore the modes."""
+        steps = [('cmd', robot.STAND_SIT), ('call', lambda: setattr(self, 'lying', True)),
+                 ('hold', self.gap_settle), ('gap_check', cell, d, final),
+                 ('cmd', robot.STAND_SIT), ('call', lambda: setattr(self, 'lying', False)),
+                 ('hold', 4.0)]
+        for code in robot.start_sequence(self.cur_gait):
+            steps += [('cmd', code), ('hold', self.cmd_gap)]
+        return steps + [('hold', getattr(self, 'gait_settle', 1.0))]
+
+    def gap_verdict(self, pts, cell, d):
+        """Lidar points (map x, y, height above the floor) taken lying down, facing side d
+        of `cell` -> (curtain?, why). Along the middle 0.6 m of the edge line (+-0.08 m):
+        a curtain hangs there (returns at gap_hang, 0.20-0.60 m, along gap_hang_min of
+        it), leaves the gap free (returns at gap_low, 0.04-0.13 m, along at most
+        gap_low_max of it), and the floor beyond is seen through that gap
+        (gap_floor_min points under 0.04 m, 0.12-0.90 m past the line)."""
+        if pts is None or not len(pts):
+            return False, 'no lidar points while lying'
+        h = self.grid.heading(d)
+        cx, cy = self.grid.centre(cell)
+        mx, my = cx + self.cell_size / 2 * math.cos(h), cy + self.cell_size / 2 * math.sin(h)
+        nx, ny, ax, ay = math.cos(h), math.sin(h), -math.sin(h), math.cos(h)
+        dx, dy, z = pts[:, 0] - mx, pts[:, 1] - my, pts[:, 2]
+        v, u = dx * nx + dy * ny, dx * ax + dy * ay
+        along = np.abs(u) <= 0.30
+        line = along & (np.abs(v) <= 0.08)
+        bins = np.clip(((u + 0.30) / 0.05).astype(int), 0, 12)
+
+        def share(mask):
+            n = np.bincount(bins[mask], minlength=13)
+            return float((n >= 2).mean())
+        low = share(line & (z >= self.gap_low[0]) & (z <= self.gap_low[1]))
+        hang = share(line & (z >= self.gap_hang[0]) & (z <= self.gap_hang[1]))
+        floor = int((along & (v >= 0.12) & (v <= 0.90) & (z < 0.04)).sum())
+        text = (f'{hang * 100:.0f} % of the edge hung at {self.gap_hang[0]:.2f}-'
+                f'{self.gap_hang[1]:.2f} m, {low * 100:.0f} % solid at {self.gap_low[0]:.2f}-'
+                f'{self.gap_low[1]:.2f} m, {floor} floor points seen beyond')
+        if low > self.gap_low_max:
+            return False, f'solid down to the floor: {text}'
+        if hang < self.gap_hang_min:
+            return False, f'nothing hangs on the edge: {text}'
+        if floor < self.gap_floor_min:
+            return False, f'the gap was not seen through: {text}'
+        return True, f'a gap under it: {text}'
+
+    def do_gap_check(self, cell, d, final=True):
+        """Lying down, facing the curtain: gather gap_time s of lidar clouds, then decide."""
+        self.send()
+        mem = self.act_mem
+        if self.cloud is not None and self.pose is not None \
+                and mem.get('last') != getattr(self, 'cloud_time', None):
+            mem['last'] = getattr(self, 'cloud_time', None)
+            x, y, yaw = self.pose
+            c, s_ = math.cos(yaw), math.sin(yaw)
+            p_ = np.asarray(self.cloud, float)
+            if len(p_):
+                mem.setdefault('pts', []).append(np.stack(
+                    [x + c * p_[:, 0] - s_ * p_[:, 1], y + s_ * p_[:, 0] + c * p_[:, 1],
+                     p_[:, 2]], 1))
+        if self.elapsed() < self.gap_time:
+            return False
+        pts = np.concatenate(mem['pts']) if mem.get('pts') else None
+        ok, why = self.gap_verdict(pts, cell, d)
+        b = nb(cell, d)
+        both = {(cell, d), (b, opp(d))}
+        if ok:
+            self.cv_curtains.update(both)
+            self.forced_wall.difference_update(both)
+            self.cv_rejected.difference_update(both)
+            self.event(f'curtain: confirmed, cell {cell} side {d}: the camera sees it and {why}: '
+                       'passable')
+        elif final:
+            self.cv_rejected.update(both)
+            self.cv_pending.difference_update(both)
+            self.curtain_latched.difference_update(both)
+            self.event(f'curtain check cell {cell} side {d}: NOT a curtain, {why}')
+        else:
+            self.event(f'curtain check cell {cell} side {d}: not confirmed yet, {why}')
+        return True
+
+    def curtain_flat(self, sense, cell, d):
+        """A curtain only ever hangs on an edge between two FLAT cells (user, 2026-11-26
+        night). False when either cell is known uneven (rough_cells, rough_known) or the
+        lidar reads uneven floor in the cell behind the edge (Sense.rough). Unknown floor
+        counts as flat. curtain_flat_only:=false = no such rule."""
+        if not getattr(self, 'curtain_flat_only', True):
+            return True
+        b = nb(cell, d)
+        known = getattr(self, 'rough_cells', set()) | getattr(self, 'rough_known', set())
+        if cell in known or b in known:
+            return False
+        try:
+            return not sense.rough(cell, d)
+        except Exception:         # stand-ins without a height map
+            return True
+
+    def curtain_lidar_check(self, cell, d):
+        """'' when the lidar backs a curtain on this edge, else why not (user, 2026-11-26
+        night: lidar check, then camera check). Curtain-high returns (0.65 m and more)
+        along at least cv_tall_min of the edge itself (tall_share); an edge whose height
+        is not measured cannot pass. Always passes without a height map (stand-ins for
+        tests that are about the camera alone) or with curtain_lidar_first:=false."""
+        if not self.curtain_flat(self.sense(), cell, d):
+            return 'one of the two cells is uneven: a curtain hangs only between flat cells'
+        if not getattr(self, 'curtain_height', True) or not getattr(self, 'curtain_lidar_first', True) \
+                or getattr(self, 'heights', None) is None or not hasattr(self, 'tall_share'):
+            return ''
+        sense = self.sense()
+        share = self.tall_share(sense, cell, d)
+        if share is None:
+            return 'the height of the edge is not measured'
+        if share < self.cv_tall_min:
+            return f'only {share * 100:.0f} % of the edge curtain-high (needs {self.cv_tall_min * 100:.0f} %)'
+        need = getattr(self, 'curtain_width', 0.0)
+        width = sense.tall_width(cell, d) if need > 0 and hasattr(sense, 'tall_width') else None
+        if width is not None and width <= need:
+            return f'curtain-high only {width:.2f} m wide (must be wider than {need:.2f} m)'
+        self.lidar_why = (f'{share * 100:.0f} % curtain-high'
+                          + (f', {width:.2f} m wide' if width is not None else ''))
+        return ''
+
     def raised(self, cell, d):
         """The lidar shows something stair-high (not just terrain) in the cell behind side d."""
         _, front, top = self.sense().interior(cell, d)
         return max([v for v in (front, top) if not math.isnan(v)], default=0.0) >= self.stair_raise_min
 
-    def do_stair_check(self, cell, d, stairs=True, terrain=True, close=False):
+    def do_stair_check(self, cell, d, stairs=True, terrain=True, close=False, full=False):
         """Standing still, facing side d: watch the depth camera for stair_check_time s.
         It looks for stairs (unless stairs=False) and reads the floor of the next cell for
         uneven terrain (terrain_from_depth). close = the one close-up recheck (below)."""
@@ -2427,7 +2690,7 @@ class Explorer(Node):
                 # stair-high (user, 2026-11-26 night): the floor reading and the lidar can
                 # disagree on a thin view, and the detector is the one that settles it.
                 gated = stairs and self.stair_gate and self.terrain_on and self.terrain_depth \
-                    and not self.raised(cell, d)
+                    and not self.raised(cell, d) and not full
                 if gated and mem.get('gate') is None:
                     look = False
                 if self.terrain_on and self.terrain_depth and (
@@ -2780,16 +3043,21 @@ class Explorer(Node):
             if self.pose_held is not None:
                 self.send()
                 self.why = 'pose jumped: standing until it is still, then realigning'
+                self.act_t0 += 0.1                     # the action's clock stands still too
+                if 't' in self.act_mem:                # (a turn held here used to time out)
+                    self.act_mem['t'] += 0.1
                 now = self.now()
                 recent = [q for t_, q in self.poses if now - t_ <= 2.0]
                 still = now - self.pose_held >= 2.0 and len(recent) >= 10 and all(
                     math.hypot(q[0] - self.pose[0], q[1] - self.pose[1]) < 0.03 for q in recent)
                 if (still or now - self.pose_held > 12.0) and getattr(self, 'ai_sequence', False):
                     self.pose_held = None
+                    self.pose_trust_from = now + 3.0
                     self.event(f'pose {"still" if still else "not still after 12 s"}: going on '
                                'with the stairs sequence')
                 elif still or now - self.pose_held > 12.0:
                     self.pose_held = None
+                    self.pose_trust_from = now + 3.0
                     if self.aligned and self.grid is not None:
                         self.align_grid(arrived=True)
                     cur = self.cur_cell()
@@ -2920,6 +3188,28 @@ class Explorer(Node):
         # went nowhere cost 2.5 minutes).
         if 'limit' not in mem:
             mem['limit'] = self.turn_timeout + 1.5 * abs(mem['turn']) / max(top, 0.1)
+        # Told to turn, not turning at all (user, 2026-11-26 night; 22:15 run: right after
+        # the AI leave sequence a 143 deg turn did not move the robot by a degree in 12 s,
+        # pose fresh, robot standing; stopped by hand): after turn_kick_after s with under
+        # 3 deg turned, Move -> gait -> navigation mode is sent again and the turn starts
+        # over. Once per turn_kick_gap s, so a robot that really cannot turn still times out.
+        turned = abs(wrap(yaw - mem['start'][2]))
+        now = self.now()
+        if getattr(self, 'cur_gait', None) is not None and getattr(self, 'queue', None) is not None \
+                and self.elapsed() > getattr(self, 'turn_kick_after', 3.0) and turned < math.radians(3) \
+                and abs(err) > math.radians(10) \
+                and now - getattr(self, 'turn_kick_t', -1e9) > getattr(self, 'turn_kick_gap', 60.0):
+            self.turn_kick_t = now
+            self.send()
+            self.event(f'turn: not turning after {self.elapsed():.1f} s although told to '
+                       f'({math.degrees(turned):.1f} deg): sending Move, {self.cur_gait} and '
+                       'navigation mode again, then the turn once more')
+            redo = [self.act]
+            codes = []
+            for code in robot.start_sequence(self.cur_gait):
+                codes += [('cmd', code), ('hold', self.cmd_gap)]
+            self.queue.extendleft(reversed(codes + [('hold', 1.0)] + redo))
+            return True
         if self.elapsed() > mem['limit']:
             self.get_logger().warn(f'turn timed out {math.degrees(err):.0f} deg short '
                                    f'(after {mem["limit"]:.0f} s)')
@@ -3007,7 +3297,7 @@ class Explorer(Node):
         if along < mem['best'] - 0.05:
             mem['best'], mem['t'] = along, self.now()
         # no progress: 8 s (12 s in AI mode; terrain_push_time when pushing onto uneven floor)
-        patience = 12.0 if mode == 'ai' else getattr(self, 'terrain_push_time', 10.0) \
+        patience = 12.0 if mode == 'ai' else getattr(self, 'terrain_push_time', 15.0) \
             if mode == 'rough' and getattr(self, 'terrain_push', True) else 8.0
         if self.now() - mem.setdefault('t', self.now()) > patience:
             self.send()
@@ -3473,6 +3763,7 @@ class Explorer(Node):
         self.update_kinds()
         unknown = [d for d in range(4) if self.kinds.get((cell, d)) == 'unknown']
         if not unknown or cell in self.closed:
+            self.queue_reorient(cell)
             return True
         if self.elapsed() < 2.5:
             return False
@@ -3487,7 +3778,25 @@ class Explorer(Node):
                     self.forced_wall.add((cell, d))
             self.queue.extendleft(reversed([('turn', self.grid.heading(d), 4.0), ('hold', 2.0),
                                             ('call', settle)]))
-        return True
+        return True                     # facing an unknown side ends square to the grid
+
+    def queue_reorient(self, cell):
+        """Arrived in `cell`: turn on the spot to the nearest grid direction when the body
+        is more than reorient_deg off it. Not with an untrusted pose (stairs sequence,
+        scans to SLAM off) or in the end row (the end stop squares up by itself)."""
+        if not self.reorient or self.grid is None or self.pose is None:
+            return
+        if getattr(self, 'ai_sequence', False) or self.now() < getattr(self, 'map_blind_until', 0.0):
+            return
+        if self.maze_rows > 0 and cell[0] >= self.maze_rows:
+            return
+        yaw = self.pose[2]
+        h = min((self.grid.heading(d) for d in range(4)), key=lambda a: abs(wrap(a - yaw)))
+        err = math.degrees(abs(wrap(h - yaw)))
+        if err <= self.reorient_deg:
+            return
+        self.get_logger().info(f'cell {cell}: {err:.1f} deg off the grid on arrival, turning square')
+        self.queue.appendleft(('turn', h, 2.0))
 
     # ---- display ------------------------------------------------------------------------
     def publish_cells(self):

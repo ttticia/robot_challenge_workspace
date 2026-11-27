@@ -31,6 +31,7 @@ class Robot:
         self.cv_tall_min, self.job = 0.2, ''
         self.queue, self.events, self.gone = deque(), [], []
         self.shares, self.talls, self.grounded = {}, {}, set()
+        self.cv_seen = {}             # YOLO proposes (user, 2026-11-27): sightings per edge
 
     def get_logger(self): return self.Log()
     def event(self, text): self.events.append(text)
@@ -80,10 +81,11 @@ def test_a_tall_edge_is_asked_of_the_camera_once():
     # resort faces the tall edge and runs cv_verify, it never pushes unconfirmed
     r = Robot()
     r.talls[((1, 0), 0)] = 0.6                # tall along most of it: fabric-like
+    r.cv_seen[((1, 0), 0)] = [1.0]            # and YOLO has proposed it
     assert r.force_tall_curtain((1, 0), r.visited)
     e = ((1, 0), 0)
     assert e in r.curtain_forced and e not in r.cv_curtains   # the camera decides
-    assert [a[0] for a in r.queue] == ['turn', 'hold', 'cv_verify']
+    assert [a[0] for a in r.queue] == ['turn', 'shift', 'turn', 'hold', 'cv_verify']   # centred first
     assert r.queue[-1][1:] == ((1, 0), 0, True)               # final: a no is a wall
     assert any('asking the camera' in ev for ev in r.events)
     assert not r.force_tall_curtain((1, 0), r.visited)        # each edge once
@@ -91,6 +93,7 @@ def test_a_tall_edge_is_asked_of_the_camera_once():
 
 def test_a_low_or_failed_edge_is_never_forced():
     r = Robot()
+    r.cv_seen[((1, 0), 0)] = [1.0]
     r.talls[((1, 0), 0)] = 0.1                # measured low: a plain wall
     assert not r.force_tall_curtain((1, 0), r.visited)
     r.talls[((1, 0), 0)] = 0.9
@@ -120,6 +123,7 @@ def test_an_edge_standing_on_the_floor_goes_last():
         r.kinds[((2, 0), d)] = 'wall'
     r.kinds[((1, 0), 0)] = r.kinds[((2, 0), 2)] = 'free'
     r.talls[((1, 0), 1)] = 0.9                # near, but stands down to the floor
+    r.cv_seen.update({((1, 0), 1): [1.0], ((2, 0), 0): [1.0]})
     r.grounded.add(((1, 0), 1))
     r.talls[((2, 0), 0)] = 0.9                # a cell away, floor-gap under it
     assert r.force_tall_curtain((1, 0), r.visited)

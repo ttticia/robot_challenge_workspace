@@ -298,3 +298,38 @@ def test_no_dead_reckoning_without_the_walk_count():
     r.pose_time = 40.0
     assert r.run((2, 0), fresh=False) and 'no dead reckoning' in r.events[0]
     assert len(r.cmds) == 1                             # nothing driven
+
+
+def test_a_full_check_runs_the_detector_whatever_the_floor_says(monkeypatch):
+    # user, 2026-11-26 night: full stair check before leaving the start cell; the
+    # floor-first gate (flat floor = detector never runs) is off for it
+    r = gate_robot([(False, 0)])                          # the floor frames say flat
+    calls = []
+
+    def detect(*a):
+        calls.append(1)
+        return None
+    detect.last_why = 'no treads'
+    monkeypatch.setattr(explorer.stair_levels, 'detect', detect)
+    monkeypatch.setattr(explorer.stair_levels, 'Confirm',
+                        lambda: __import__('types').SimpleNamespace(add=lambda now, seen: None))
+    for i in range(80):
+        if 'subs' in r.act_mem:
+            r.act_mem['frame'], r.act_mem['k'] = object(), (1.0, 1.0, 1.0, 1.0)
+        if explorer.Explorer.do_stair_check(r, (0, 0), 0, True, True, False, True):
+            break
+        r.t += 0.1
+    assert calls                                          # the detector ran
+    assert r.stairs_checked[((0, 0), 0)] is False
+
+
+def test_the_way_out_of_the_start_cell_gets_a_full_check_first():
+    import inspect
+    src = inspect.getsource(explorer.Explorer.plan)
+    assert "('stair_check', self.start, 0, True, True, False, True)" in src
+    assert "not self.left_start" in src
+    # off by default; on only when named at launch (user, 2026-11-26 night)
+    assert "p('start_stairs', False)" in inspect.getsource(explorer.Explorer.__init__)
+    launch = open(__import__('os').path.join(__import__('os').path.dirname(__file__), '..',
+                                             'launch', 'explore.launch.py')).read()
+    assert "'start_stairs': ('false'" in launch and "'start_stairs': val('start_stairs', bool)" in launch

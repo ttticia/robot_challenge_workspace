@@ -204,12 +204,31 @@ def test_confirmed_stairs_on_a_room_side_free_the_room():
 
 
 def test_stairs_seen_during_the_approach_get_a_late_check():
-    # user, 2026-11-26 night: the look's stair check runs from the cell centre, before
-    # the walk up to the room; stair-high seen after the approach still gets one check
+    # user, 2026-11-26 night: stairs are always checked BEFORE scene understanding; what
+    # the approach shows stair-high is checked before the first view, at the FRONT of
+    # the queue, and confirmed stairs call the rest of the look off (nothing to the VLM)
     r = Robot('room', raised=True)
+    r.queue.extend([('event', 'room centre cell (3, 0) side 0'), ('hold', 1.0)])  # the views
     r.look_late_stairs(C, D)
     acts = [a[0] for a in r.queue]
-    assert acts[-1] == 'stair_check' and r.queue[-1][3] is True and r.queue[-1][4] is False
+    i = acts.index('stair_check')
+    assert i < acts.index('event', i - 3 if i >= 3 else 0) or acts[0] == 'event'
+    assert acts.index('stair_check') < len(acts) - 2               # before the views
+    check = r.queue[i]
+    assert check[3] is True and check[4] is False
+    stop = r.queue[i + 1]
+    assert stop[0] == 'call'
+    r.stairs_checked[(C, D)] = True                                 # the check says stairs
+    stop[1]()
+    assert not r.queue and (C, D) in r.looked                       # views called off
+    assert any('no scene understanding' in e for e in r.events)
+    r1 = Robot('room', raised=True)                                 # not stairs: views stay
+    r1.queue.extend([('event', 'room centre cell (3, 0) side 0')])
+    r1.look_late_stairs(C, D)
+    r1.stairs_checked[(C, D)] = False
+    stop = next(a for a in r1.queue if a[0] == 'call')
+    stop[1]()
+    assert any(a[0] == 'event' and a[1].startswith('room centre') for a in r1.queue)
     r2 = Robot('room', raised=True)          # already checked: nothing queued
     r2.stairs_checked[(C, D)] = False
     r2.look_late_stairs(C, D)
@@ -223,6 +242,13 @@ def test_stairs_seen_during_the_approach_get_a_late_check():
     assert not r4.queue
 
 
+def test_no_stair_check_is_ever_queued_after_the_scene_views():
+    import inspect
+    src = inspect.getsource(E.do_look_last)
+    assert 'look_late_stairs' not in src
+    plan = inspect.getsource(E.plan)
+    a, b = plan.index('look_late_stairs(c, d)'), plan.index("'centre', 0.0")
+    assert a < b                             # queued before the first view
 def test_no_curtain_check_during_a_scene_check():
     # user, 2026-11-26 night: the look queues no cv_verify of its own (look_curtain
     # brings it back); candidates come from the side scan or the checks outside looks
@@ -230,3 +256,14 @@ def test_no_curtain_check_during_a_scene_check():
     src = inspect.getsource(E.look_check)
     assert "getattr(self, 'look_curtain', False)" in src
     assert "p('look_curtain', False)" in inspect.getsource(E.__init__)
+
+
+def test_the_full_stair_check_needs_potential_stairs_by_the_lidar():
+    # user, 2026-11-26 night: only do the full stair check if the lidar detects potential
+    # stairs; a 'blocked' cell or a VLM 'stairs' answer alone is not enough
+    import inspect
+    src = inspect.getsource(E.kind)
+    assert "k == 'blocked' and self.stair_check_on and self.raised(cell, d)" in src
+    assert "self.stair_check_on and self.stairs_on and self.raised(cell, d)" in src
+    plan = inspect.getsource(E.plan)
+    assert "and self.raised(cur, d):     # the lidar must show potential stairs" in plan
