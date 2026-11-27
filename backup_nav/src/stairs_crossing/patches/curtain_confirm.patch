@@ -1,0 +1,115 @@
+--- a/src/stairs_crossing/stairs_crossing/explorer_stairs.py
++++ b/src/stairs_crossing/stairs_crossing/explorer_stairs.py
+@@ -100,7 +100,12 @@
+         # counts when the box lies across the middle of the image on cv_verify_hits frames.
+         # A verified edge is a curtain (passable) even where the map and the height map call
+         # it a wall.
+-        self.cv_on = p('curtain_cv', False).value and self.curtains_on
++        # With curtain_cv on, the lidar's curtain is a CANDIDATE only (user, 2026-11-25): no
++        # push until the camera has confirmed it. An aluminium-frame wall reads as a curtain
++        # to the lidar (bag stairs10, 23.4 s; run 09:19 11-25: pushed into it in cell (1, 0)).
++        # Two looks: during the greet (a miss is not final) and just before the push (a miss
++        # = a wall). No camera frames at all = not confirmed either. ON by default here too.
++        self.cv_on = p('curtain_cv', True).value and self.curtains_on
+         self.cv_conf = p('cv_conf', 0.5).value
+         self.cv_hits = p('cv_hits', 3).value                 # frames, within cv_window s
+         self.cv_window = p('cv_window', 3.0).value
+@@ -427,6 +432,10 @@
+             # the wrong places
+             self.forced_wall.clear()
+             self.looked.clear()
++            self.cv_curtains.clear()          # same: they name cells of the unfitted grid
++            self.cv_rejected.clear()
++            self.cv_pending.clear()
++            self.cv_seen.clear()
+             self.get_logger().info(f'grid lined up with the walls: turned {turned:+.1f} deg, '
+                                    f'moved {moved:.2f} m (quality {q:.2f})')
+             return True
+@@ -444,8 +453,8 @@
+         if (cell, d) in self.cv_curtains and self.curtains_on:
+             return 'curtain'          # verified with the camera: passable, whatever the map says
+         k = sense.kind(cell, d, may_exit=cell != self.start)
+-        if k == 'curtain' and not self.curtains_on:
+-            k = 'wall'
++        if k == 'curtain' and (not self.curtains_on or (cell, d) in self.cv_rejected):
++            k = 'wall'                # off, or a lidar candidate the camera turned down
+         if k == 'stairs' and not self.stairs_on:
+             k = 'blocked'
+         # The depth camera has the last word on stairs. Until it has looked, something that
+@@ -543,8 +552,13 @@
+             return
+         c, d, h = j['cell'], j['d'], None if self.grid is None else self.grid.heading(j['d'])
+         if j['job'] == 'greet':
+-            q.extend([('turn', h, 2.0), ('event', f'curtain cell {c} side {d}'),
+-                      ('hold', self.greet_hold), ('call', lambda: self.greeted.add((c, d)))])
++            q.extend([('turn', h, 2.0), ('event', f'curtain cell {c} side {d}')])
++            if self.cv_on and (c, d) not in self.cv_curtains:
++                # facing it squarely anyway: the camera's first look at the candidate
++                q.extend([('hold', 0.5), ('cv_verify', c, d, False)])
++            else:
++                q.append(('hold', self.greet_hold))
++            q.append(('call', lambda: self.greeted.add((c, d))))
+         elif j['job'] == 'visit':
+             self.go(c, d, 'walk')
+         elif j['job'] == 'look':
+@@ -588,6 +602,13 @@
+             q.extend([('turn', h, 4.0), ('call', lambda: setattr(self, 'step', (a, d, b))),
+                       ('drive', bx, by, h, 'normal'),
+                       ('call', lambda: (self.walked.update({(a, d), (b, opp(d))}), self.arrive(b)))])
++        elif how == 'curtain' and self.cv_on and (a, d) not in self.cv_curtains \
++                and (a, d) not in self.links:
++            # A lidar candidate: the camera has the last word before any push. Confirmed ->
++            # the next plan pushes; not confirmed -> the edge is a wall (kind()).
++            q.extend([('drive', ax, ay, h, 'square'), ('turn', h, 2.0), ('hold', 0.5),
++                      ('event', f'curtain: camera check before the push, cell {a} side {d}'),
++                      ('cv_verify', a, d, True)])
+         elif how == 'curtain':
+             bx, by = self.grid.centre(b)
+ 
+@@ -625,23 +646,35 @@
+                 q.extend([('cmd', code), ('hold', self.cmd_gap)])
+             q.extend([('event', f'stairs: crossed, {self.gait} again'), ('call', crossed)])
+ 
+-    def do_cv_verify(self, cell, d):
++    def do_cv_verify(self, cell, d, final=True):
+         """Standing still, facing side d of `cell` squarely: does the camera keep seeing a
+-        curtain straight ahead? Yes = that edge is a curtain, also where it reads as a wall."""
++        curtain straight ahead? Yes = that edge is a curtain, also where it reads as a wall.
++        No and `final` = not a curtain: a lidar candidate there becomes a wall. No and not
++        final (the greet) = it stays a candidate, looked at again before the push."""
+         self.send()
+         if self.elapsed() < self.cv_verify_time:
+             return False
+         frames = [hit for t, hit in self.cv_frames if t >= self.act_t0]
+-        b = nb(cell, d)
+-        if sum(frames) >= self.cv_verify_hits:
+-            self.cv_curtains.update({(cell, d), (b, opp(d))})
+-            self.forced_wall.difference_update({(cell, d), (b, opp(d))})
++        b, hits = nb(cell, d), sum(frames)
++        both = {(cell, d), (b, opp(d))}
++        if hits >= self.cv_verify_hits:
++            self.cv_curtains.update(both)
++            self.forced_wall.difference_update(both)
+             self.event(f'curtain: seen by the camera, cell {cell} side {d} '
+-                       f'({sum(frames)} of {len(frames)} frames): passable')
+-        else:
+-            self.cv_rejected.add((cell, d))
+-            self.event(f'curtain check cell {cell} side {d}: not confirmed by the camera '
+-                       f'({sum(frames)} of {len(frames)} frames)')
++                       f'({hits} of {len(frames)} frames): passable')
++            return True
++        why = f'{hits} of {len(frames)} frames'
++        if not frames:
++            why = 'no camera frames: is curtain_node running? see /curtain/status'
++            self.get_logger().warn(f'curtain check cell {cell} side {d}: {why}')
++        if not final:
++            self.event(f'curtain check cell {cell} side {d}: not confirmed by the camera yet '
++                       f'({why}); looked at again before the push')
++            return True
++        self.cv_rejected.update(both)
++        self.cv_pending.difference_update(both)
++        self.event(f'curtain check cell {cell} side {d}: not confirmed by the camera '
++                   f'({why}); a wall now')
+         return True
+ 
+     def raised(self, cell, d):

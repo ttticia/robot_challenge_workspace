@@ -1,0 +1,58 @@
+#!/bin/bash
+# Go / no-go before a run: are the robot's sensor streams arriving at full rate, and is the
+# robot's ROS domain free of other stacks?   (alias: explore_check)
+# Fast-LIO diverges within seconds when /livox/imu arrives slowly (2026-11-23: 8-20 Hz instead
+# of 200 gave a pose kilometres off), so do not start a run on a NO-GO.
+source /opt/ros/humble/setup.bash
+export PYTHONUNBUFFERED=1      # else `ros2 topic hz` can die at the timeout with its output unflushed (reads as 0 Hz)
+export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-4}
+ok=1
+rate() { timeout 6 ros2 topic hz "$1" 2>&1 | grep 'average rate' | tail -1 | awk '{print int($3)}'; }
+check() {   # topic, minimum Hz
+    r=$(rate "$1"); r=${r:-0}
+    if [ "$r" -ge "$2" ]; then echo "  ok     $1  ${r} Hz"; else echo "  NO-GO  $1  ${r} Hz (needs >= $2)"; ok=0; fi
+}
+# This computer first (2026-11-26): hot, throttled, or RViz / a simulator / tests running =
+# Fast-LIO falls behind, the feed reads late and the odometry jumps.
+if python3 -m maze_explore.heat 2>/dev/null; then :; else
+    [ $? = 1 ] && ok=0 || echo "  ?      heat check not available (source ~/challenge_ws/install/setup.bash)"
+fi
+echo "sensor rates:"
+check /livox/imu 150
+check /livox/lidar 9
+check /imu/data 150
+check /camera/color/image_raw/compressed 20
+nodes=$(timeout 6 ros2 node list 2>/dev/null)
+# The explore launch's own helpers. With the launch up (rec_test is run on a running stack)
+# they belong there; without it they are leftovers of an earlier launch.
+STACK='junction_trigger|qr_scanner|task_reporter|curtain_node'
+others=$(echo "$nodes" | grep -v -e lite3_domain_bridge -e _ros2cli -e "^/rviz" -e transform_listener_impl \
+         -e laser_mapping -e odom_relay -e wall_scan -e slam_toolbox -e maze_explorer -e rosbag2_recorder \
+         -e "${EXPLORE_CHECK_ALLOW:-__none__}" | grep -v '^$')   # EXPLORE_CHECK_ALLOW=<node name>: one more node that may be there
+helpers=""
+if echo "$nodes" | grep -q -e wall_scan -e maze_explorer; then      # the launch is running
+    helpers=$(echo "$others" | grep -E "/($STACK)\$" | sort -u)
+    others=$(echo "$others" | grep -v -E "/($STACK)\$")
+fi
+# Any subscriber to raw depth or /livox/points (even one, even BEST_EFFORT) slows EVERY bridge
+# stream to ~10 Hz (2026-11-23: /imu/data 195 -> 11 Hz). Nodes show above; this catches the rest.
+for t in /camera/depth/image_raw /camera/depth/points /livox/points; do
+    n=$(timeout 6 ros2 topic info "$t" 2>/dev/null | sed -n 's/Subscription count: //p')
+    if [ "${n:-0}" -gt 0 ]; then echo "  NO-GO  $t has $n subscriber(s): stop them (RViz depth display, ros2 topic hz/echo, a depth node)"; ok=0; fi
+done
+if [ -n "$others" ]; then echo "  NO-GO  other nodes on domain $ROS_DOMAIN_ID:"; echo "$others" | sed 's/^/           /'; ok=0
+else echo "  ok     no other stacks on domain $ROS_DOMAIN_ID"; fi
+if [ -n "$helpers" ] && [ $ok = 1 ]; then
+    # Not a fault, but say so and let the operator decide (user, 2026-11-25).
+    echo "  NOTICE the explore launch is already running (this is the check rec_test makes), with its own nodes:"
+    echo "$helpers" | sed 's/^/           /'
+    echo "         Fine when you are recording that run. Not fine if you meant to start a NEW run:"
+    echo "         stop the old launch first."
+    if [ -t 0 ]; then
+        read -r -p "         Proceed? [y/N] " ans || ans=n
+        case "$ans" in [yY]*) ;; *) echo "NO-GO: not confirmed."; exit 1 ;; esac
+    else
+        echo "NO-GO: needs a y at the keyboard to proceed (no terminal here)."; exit 1
+    fi
+fi
+if [ $ok = 1 ]; then echo "GO"; else echo "NO-GO. A hot or busy computer: cool it, close RViz / simulators / tests. Slow streams with a cool, idle computer come from the robot / bridge side: wait or ask the lab. Then check again."; exit 1; fi

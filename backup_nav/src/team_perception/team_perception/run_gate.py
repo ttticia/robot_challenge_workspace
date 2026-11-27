@@ -1,0 +1,123 @@
+"""Run a perception node only when maze_explorer wants it.
+
+Dead ends only (user 2026-11-19): maze_explorer publishes /maze/perceive (std_msgs/Bool,
+latched; explorer.py at_dead_end) - True while it looks at a dead end (DEAD_END from
+scene_trigger's /scene/trigger, the dead-end parts of a JUNCTION look and its follow-up)
+and while FACING_QR / LOOKING. Once a /maze/perceive message has arrived, the node runs
+only while it is True. Before that (an older explorer, or perception on its own) the
+pause_states rule below applies.
+
+maze_explorer publishes its state on /maze/status (std_msgs/String, latched,
+"STATE: why" or "STATE"). While that state is one of `pause_states` the node skips its
+image work, which leaves the CPU to Fast-LIO / wall_scan / the stair and curtain
+manoeuvres. Default pause states:
+  STARTING             no map yet; also the start-up window when wall_scan is most fragile
+  STAIRS, AT_STAIRS    stair_detector drives / the robot climbs in AI mode
+  CURTAIN, AT_CURTAIN  curtain_detector walks through / holds for the operator
+Turning, LOOKING, JUNCTION, DEAD_END, FACING_QR etc. keep perception on (scene
+understanding needs it). No /maze/status ever received (perception run on its own) or
+`status_topic` '' = never paused.
+
+Two levels (user 2026-11-20, qr_scanner):
+  active   the dead-end window above (/maze/perceive, else pause_states): QR detection
+           (locating unread codes for FACING_QR, slow full scans) and survivor detection.
+  running  pause_states only, /maze/perceive ignored: QR READING (plain decodes), which
+           stays on everywhere except the stair / curtain manoeuvres.
+
+Parameters (declared by attach()): status_topic, pause_states, perceive_topic ('' = ignore
+/maze/perceive: run everywhere but pause_states).
+
+maze_explore (the v2 explorer, 2026-11-24) has neither topic. With `explore_status_topic`
+set (/explore/status, "STATE cell=(i, j) job=[...] act=..."), the window is "the explorer is
+on a room / object look in the cell it stands in": the same moment scene understanding takes
+its three views, so both work on the room at the same time. The window closes
+EXPLORE_STALE s after the last status that showed a look (explorer stopped or gone).
+"""
+import re
+import time
+
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool, String
+
+DEFAULT_PAUSE = ['STARTING', 'STAIRS', 'AT_STAIRS', 'CURTAIN', 'AT_CURTAIN']
+EXPLORE_LOOK = re.compile(r'RUN .*job=\[look cell .* via 0 cells\]')
+EXPLORE_STALE = 3.0
+LATCHED = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                     durability=DurabilityPolicy.TRANSIENT_LOCAL)
+
+
+def state_of(status):
+    """'STAIRS: why' -> 'STAIRS'."""
+    return str(status).split(':', 1)[0].strip().upper()
+
+
+class RunGate:
+    """No ROS node needed (tests): feed on_status() the status strings, read `active`."""
+
+    def __init__(self, pause_states, logger=None, name='perception'):
+        self.pause = {s.strip().upper() for s in pause_states if str(s).strip()}
+        self.logger, self.name = logger, name
+        self.state = None              # None = no status seen: run
+        self.perceive = None           # None = no /maze/perceive seen: pause_states rule
+        self.look_seen = None          # monotonic time of the last look status (maze_explore)
+
+    @property
+    def active(self):
+        if self.look_seen is not None:
+            return bool(self.perceive) and time.monotonic() - self.look_seen <= EXPLORE_STALE
+        if self.perceive is not None:
+            return self.perceive
+        return self.state is None or self.state not in self.pause
+
+    @property
+    def running(self):
+        """pause_states only: True everywhere but STARTING / stairs / curtains."""
+        return self.state is None or self.state not in self.pause
+
+    def on_perceive(self, on):
+        was = self.active
+        self.perceive = bool(on)
+        if self.logger is not None and self.active != was:
+            self.logger.info(f'{self.name} {"ON" if self.active else "off"} '
+                             '(/maze/perceive: dead ends only)')
+
+    def on_explore_status(self, status, now=None):
+        """One /explore/status line from maze_explore."""
+        look = EXPLORE_LOOK.match(str(status)) is not None
+        if look or self.look_seen is None:
+            self.look_seen = time.monotonic() if now is None else now
+        if look != bool(self.perceive) or self.perceive is None:
+            self.perceive = look
+            if self.logger is not None:
+                self.logger.info(f'{self.name} ' + (
+                    'ON (explorer look)' if look else
+                    'idle: it switches on by itself at the next room / object look'))
+
+    def on_status(self, status):
+        was = self.active
+        self.state = state_of(status)
+        if self.logger is not None and self.active != was:
+            if self.active:
+                self.logger.info(f'maze_explorer {self.state}: {self.name} resumed')
+            else:
+                self.logger.info(f'maze_explorer {self.state}: {self.name} paused '
+                                 f'(pause_states)')
+
+
+def attach(node, name='perception'):
+    """Declare the parameters on node and subscribe; returns the RunGate."""
+    node.declare_parameter('status_topic', '/maze/status')
+    node.declare_parameter('pause_states', DEFAULT_PAUSE)
+    node.declare_parameter('perceive_topic', '/maze/perceive')
+    topic = node.get_parameter('status_topic').value
+    gate = RunGate(node.get_parameter('pause_states').value, node.get_logger(), name)
+    if topic:
+        node.create_subscription(String, topic, lambda m: gate.on_status(m.data), LATCHED)
+    node.declare_parameter('explore_status_topic', '')
+    explore = node.get_parameter('explore_status_topic').value
+    if explore:
+        node.create_subscription(String, explore, lambda m: gate.on_explore_status(m.data), 10)
+    perceive = node.get_parameter('perceive_topic').value
+    if perceive:
+        node.create_subscription(Bool, perceive, lambda m: gate.on_perceive(m.data), LATCHED)
+    return gate

@@ -1,0 +1,35 @@
+# Speeds of the maze explorer, in one place (user, 2026-11-26).
+# explore.launch.py loads this file into maze_explorer. With --symlink-install an edit here
+# counts at the next launch; no rebuild. Team limit for walking: 0.25 m/s.
+# Back to the speeds that worked (user, 2026-11-26 evening): 0.20 walking and 0.10 sideways
+# are yesterday's, when about 13 sideways steps onto uneven floor went without an odometry
+# jump; the stairs were crossed at 0.55. For a few hours that day: 0.30 / 0.25 / 0.60.
+/**:
+  ros__parameters:
+    v_max: 0.3      # m/s    normal walk, cell centre to cell centre
+    terrain_push_speed: 0.15   # m/s  into an uneven cell (head on, pushing: obstacle stop off, 10 s patience)
+    ai_speed: 0.55        # m/s    stairs, in AI mode
+    ai_centre_speed: 0.20  # m/s  after the stairs, still in AI mode: walking onto the centre of the cell after
+    curtain_speed: 0.20  # m/s    curtains (sideways push)
+    qr_speed: 0.08       # m/s    QR sideways check (stepping into the room and back out)
+    w_max: 0.6       # rad/s  turning on the spot, top rate (0.5 until the night of 2026-11-26; above the old team limit of 0.5, user)
+    terrain_w_max: 0.3       # rad/s  turning on the spot in an uneven cell (top rate)
+    min_spin: 0.2        # rad/s  slowest turn commanded; the Lite3 does not turn below ~0.1
+
+    # Turning on the spot (user, 2026-11-26): about the robot's own pivot where it stands
+    # when the turn begins, NOT the cell centre. Measured on 17 recorded turns, the Lite3
+    # turns about base_link itself (1 cm ahead of it, quartiles 3.5 cm ahead to 1 cm
+    # behind), so pivot_offset is 0. Only the rotation is commanded, plus turn_forward,
+    # unless the pivot drifts more than pivot_slack; then it is steered back.
+    # After every turn of more than 20 deg maze_explorer logs "turn ... done: base_link
+    # moved X cm (F cm along the heading it started with), pivot moved P cm".
+    #   F clearly negative on most turns (it backs away) -> raise turn_forward
+    #   F clearly positive (it creeps forward)           -> lower turn_forward
+    pivot_offset: 0.0    # m behind base_link
+    pivot_slack: 0.03    # m the pivot may drift before it is steered back
+    turn_forward: 0.02   # m/s forward added at full turn rate (was 0.03 with the old pivot,
+                         # where turns ended 2-6 cm ahead of it)
+    turn_kp: 1.5         # 1/s on the heading error
+    pivot_kp: 1.5        # 1/s on the pivot's drift
+    pivot_vx: 0.12       # m/s most forward correction (nothing is commanded backwards)
+    pivot_vy: 0.10       # m/s most sideways correction

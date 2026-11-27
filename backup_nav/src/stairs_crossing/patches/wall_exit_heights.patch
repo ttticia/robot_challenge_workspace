@@ -1,0 +1,98 @@
+--- a/src/stairs_crossing/stairs_crossing/explorer_stairs.py
++++ b/src/stairs_crossing/stairs_crossing/explorer_stairs.py
+@@ -198,6 +198,9 @@
+         self.grid = None
+         self.aligned = False          # the grid has been lined up with the walls once
+         self.heights = HeightMap()
++        self.heights_turn_max = p('heights_turn_max', 0.2).value   # rad/s: faster = no heights
++        self.heights_settle = p('heights_settle', 0.3).value       # s after the turning stops
++        self.turned_at, self.last_yaw = -1e9, None
+         self.occ = None
+         self.pose = None              # x, y, yaw in map
+         self.pose_time = None
+@@ -276,6 +279,13 @@
+                     or self.kinds.get(edge) == 'curtain' \
+                     or edge in self.links:
+                 continue
++            if sense.low_wall(*edge):
++                # an ordinary wall, and the camera sees over it: the curtain hangs somewhere
++                # behind. It is found when the robot gets to its open side.
++                self.get_logger().info(
++                    f'camera: curtain seen over the wall of cell {edge[0]} side {edge[1]}: '
++                    'it is behind that wall, not on it; ignored', throttle_duration_sec=5.0)
++                continue
+             times = [t for t in self.cv_seen.get(edge, []) if now - t <= self.cv_window] + [now]
+             self.cv_seen[edge] = times
+             if len(times) >= self.cv_hits:
+@@ -294,6 +304,13 @@
+         self.clouds.append(pts)
+         if self.pose is None or not len(pts) or self.now() < self.blind_until:
+             return
++        # Not while the robot turns: the pose used here is the last tick's, a little older
++        # than the cloud, and at turning speed that swings the walls of the next cell into
++        # its middle. On 2026-11-25 10:02 that made the terrain cell ahead of the start an
++        # 'object' during the first turn (bag explore_20261125_100238, 17.9 s) and set off
++        # a look and scene understanding there. Replayed: 12 squares as it was, 0 with this.
++        if self.now() - self.turned_at < self.heights_settle:
++            return
+         x, y, yaw = self.pose
+         c, s = math.cos(yaw), math.sin(yaw)
+         self.heights.add(x + c * pts[:, 0] - s * pts[:, 1], y + s * pts[:, 0] + c * pts[:, 1],
+@@ -310,6 +327,11 @@
+         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+         p, q = msg.pose.pose.position, msg.pose.pose.orientation
+         self.odom_rot = stair_levels.quat_to_matrix(q.x, q.y, q.z, q.w)
++        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
++        if self.last_yaw is not None and t > self.last_yaw[0] and \
++                abs(wrap(yaw - self.last_yaw[1])) / (t - self.last_yaw[0]) > self.heights_turn_max:
++            self.turned_at = self.now()
++        self.last_yaw = (t, yaw)
+         if self.last_odom is not None:
+             t0, x0, y0 = self.last_odom
+             jump = math.hypot(p.x - x0, p.y - y0)
+@@ -484,6 +506,9 @@
+             k = 'blocked'
+         if k == 'room' and any((b, e) in self.cv_curtains for e in range(4)):
+             k = 'free'                # not a dead end: one of its "walls" is a curtain
++        if self.exit_cell is not None and (cell, d) == (self.exit_cell, self.exit_d) and k != 'exit':
++            self.exit_cell = self.exit_d = None       # seen better since: not the way out
++            self.event(f'exit withdrawn: cell {cell} side {d} is {k}')
+         if k == 'exit' and self.exit_cell is None:
+             self.exit_cell, self.exit_d = cell, d
+             self.event(f'exit seen from cell {cell} side {d}')
+@@ -572,8 +597,17 @@
+         elif j['job'] in ('curtain', 'stairs'):
+             self.go(c, d, j['job'])
+         elif j['job'] == 'exit':
+-            q.extend([('turn', self.grid.heading(self.exit_d), 3.0),
+-                      ('event', f'exit: stopped in the last cell {c}'),
++            # Stop in the MIDDLE of the last cell, facing out (user, 2026-11-25; "inside the
++            # final cell" = all four legs in it, nothing touching the frame). The body is
++            # centred, not base_link: 0.27 m ahead of it and 0.42 m behind, so base_link
++            # ends side_offset ahead of the cell centre and both ends are 0.165 m inside.
++            h = self.grid.heading(self.exit_d)
++            cx, cy = self.grid.centre(c)
++            tx, ty = cx + self.side_offset * math.cos(h), cy + self.side_offset * math.sin(h)
++            q.extend([('turn', h, 3.0), ('drive', tx, ty, h, 'square'),
++                      ('drive', tx, ty, h, 'creep'), ('drive', tx, ty, h, 'square'),
++                      ('turn', h, 2.0),
++                      ('event', f'exit: stopped in the middle of the last cell {c}'),
+                       ('call', lambda: self.halt('DONE', 'in the last cell'))])
+         else:
+             self.halt('DONE', 'nothing left to explore and no exit seen')
+@@ -680,7 +714,14 @@
+             return False
+         frames = [hit for t, hit in self.cv_frames if t >= self.act_t0]
+         b = nb(cell, d)
+-        if sum(frames) >= self.cv_verify_hits:
++        if sum(frames) >= self.cv_verify_hits and self.sense().low_wall(cell, d):
++            # the camera looks over a 0.53 m wall at a curtain further back
++            self.cv_rejected.update({(cell, d), (b, opp(d))})
++            self.cv_pending.difference_update({(cell, d), (b, opp(d))})
++            self.event(f'curtain check cell {cell} side {d}: the camera sees a curtain '
++                       f'({sum(frames)} of {len(frames)} frames) but an ordinary wall stands '
++                       'here: the curtain is behind it; this edge stays a wall')
++        elif sum(frames) >= self.cv_verify_hits:
+             self.cv_curtains.update({(cell, d), (b, opp(d))})
+             self.forced_wall.difference_update({(cell, d), (b, opp(d))})
+             self.event(f'curtain: seen by the camera, cell {cell} side {d} '

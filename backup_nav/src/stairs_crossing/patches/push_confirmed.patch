@@ -1,0 +1,54 @@
+--- a/src/stairs_crossing/stairs_crossing/explorer_stairs.py
++++ b/src/stairs_crossing/stairs_crossing/explorer_stairs.py
+@@ -184,6 +184,12 @@
+         self.leg_time = 0.0
+         self.curtain_speed = p('curtain_speed', 0.20).value
+         self.pose_timeout = p('pose_timeout', 1.0).value
++        # A curtain the CAMERA has confirmed is pushed through with the obstacle stop off
++        # (2026-11-25): the fabric itself is 'something beside the body', so with the stop
++        # on the robot gave up 3 cm into the step (10:42 run, cell (2, 2) side 0, confirmed
++        # on 9 of 9 frames) and the curtain became a wall. push_stop still rules a curtain
++        # only the lidar has seen (curtain_cv off). No progress for 8 s still ends a push.
++        self.push_sure = False
+         self.push_stop = p('push_stop', True).value    # obstacle stop also while pushing (a
+         #                                                real curtain then stops the push too)
+         # Body outline from base_link, m. The rear is the 0.37 m body plus 0.05 m for the bent
+@@ -784,6 +790,10 @@
+                 self.arrive(b)
+             def blind(on):
+                 self.curtain_blind = on
++                self.push_sure = bool(on and self.cv_on and (a, d) in self.cv_curtains)
++                if self.push_sure:
++                    self.event(f'curtain: confirmed by the camera, obstacle stop off for '
++                               f'this push, cell {a} side {d}')
+             # Sideways (user, 2026-11-25): square up on the centre line facing the curtain,
+             # make the nearer quarter turn on the spot, step sideways through it all the way
+             # to the centre of the cell behind. There, on the spot about that centre: 180 deg
+@@ -1174,7 +1184,8 @@
+         if abs(herr) > math.radians(25):
+             self.send(wz=math.copysign(max(self.min_spin, min(self.w_max, 1.5 * abs(herr))), herr))
+             return False
+-        checked = mode in ('normal', 'creep') or (mode == 'push' and self.push_stop)
++        checked = mode in ('normal', 'creep') or (mode == 'push' and self.push_stop
++                                                  and not self.push_sure)
+         if checked and along > 0.10 and self.front_blocked():
+             self.send()
+             mem['blocked'] = mem.get('blocked', 0) + 1
+@@ -1273,7 +1284,8 @@
+             self.send(wz=math.copysign(max(self.min_spin, min(self.w_max, 1.5 * abs(herr))), herr))
+             return False
+         side = 1.0 if math.sin(wrap(travel - body)) > 0 else -1.0     # +1: stepping to the left
+-        if (mode != 'push' or self.push_stop) and along > 0.10 and self.side_blocked(side):
++        if (mode != 'push' or (self.push_stop and not self.push_sure)) and along > 0.10 \
++                and self.side_blocked(side):
+             self.send()
+             mem['blocked'] = mem.get('blocked', 0) + 1
+             if mem['blocked'] >= 8:
+@@ -1423,6 +1435,7 @@
+         a, d, b = self.step
+         self.queue.clear()
+         self.curtain_blind = False      # the crossing is over, whichever way
++        self.push_sure = False
+         cur = self.cur_cell()
+         self.step = None
+         if cur == b and along < 0.35:           # far enough in: count the cell as reached

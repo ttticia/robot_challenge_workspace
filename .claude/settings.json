@@ -126,7 +126,9 @@
       "Bash(./record.sh explore *)",
       "Bash(./record.sh curtain *)",
       "Bash(git -C /home/user/challenge_ws diff --stat)",
-      "Bash(grep -n \"Decide whether\\\\|| \\\\`curtain\\\\` |\" AGENTS.md)"
+      "Bash(grep -n \"Decide whether\\\\|| \\\\`curtain\\\\` |\" AGENTS.md)",
+      "Bash(grep -n \"rec_test\\\\` and\" AGENTS.md)",
+      "Bash(bash -ic 'source ~/challenge_ws/backup_nav/install/local_setup.bash && ros2 pkg prefix maze_explore && ros2 pkg prefix task_reporter')"
     ],
     "additionalDirectories": [
       "/home/user/challenge_ws/runs"
